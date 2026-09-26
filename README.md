@@ -1,10 +1,10 @@
 # Causal-Slash Protocol
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-BUSL_1.1-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Specification%20%26%20Reference%20Implementation-green.svg)]()
 [![Bitcoin-Timestamp](https://img.shields.io/badge/Bitcoin%20OTS-Anchored-orange.svg)](USPTO_PROVISIONAL_PATENT_APPLICATION.md.ots)
 
-> **High-frequency, sub-millisecond, zero-gas peer-to-peer streaming micro-settlement architecture with deterministic key-exposure equivocation traps for autonomous computational agents.**
+> **High-frequency, sub-millisecond, zero-gas peer-to-peer streaming micro-settlement architecture with deterministic key-exposure equivocation traps and pipelined exposure bounds for autonomous computational agents.**
 
 ---
 
@@ -17,7 +17,7 @@ Traditional rails impose fatal bottlenecks:
 * **Layer-1 / Layer-2 Blockchains (Ethereum, Base, Solana):** 400ms – 12s block latency and gas overhead ($0.001 – $0.05 per TX) congest mempools during continuous token streaming.
 * **Bilateral State Channels (Lightning Network):** Requires fragmented, locked bidirectional capital along every hop, suffering >30% routing failure rates for dynamic multi-vendor graphs.
 
-**Causal-Slash** eliminates distributed ledgers from intermediate micro-transactions. Agents stream cryptographically signed cheques directly over existing transport connections (HTTP/WebSocket/QUIC). If an agent attempts equivocation or double-spending, any observer algebraically extracts the agent's private key in **$O(1)$ arithmetic time ($\approx 20\ \mu\text{s}$)** and slashes the agent's on-chain surety bond.
+**Causal-Slash** eliminates distributed ledgers from intermediate micro-transactions. Agents stream cryptographically signed cheques directly over existing transport connections (HTTP/WebSocket/QUIC). If an agent attempts equivocation or double-spending, any observer algebraically extracts the agent's private key via localized modular arithmetic ($\approx 20\ \mu\text{s}$) and triggers collateral foreclosure for liquidated damages on-chain.
 
 ---
 
@@ -146,8 +146,8 @@ gcc -O3 -pthread test_concurrency.c -o concurrency_test
 ## 6. Patent & Prior Art Notice
 
 * **Filing Document:** [USPTO_PROVISIONAL_PATENT_APPLICATION.pdf](USPTO_PROVISIONAL_PATENT_APPLICATION.pdf)
-* **Title:** *System and Method for Cryptographically Enforced Peer-to-Peer Micro-Settlements and Equivocation-Based Collateral Slashing in Autonomous Computational Agent Networks*
-* **SHA-256 Digest:** `d3940e98fd5c14bb3df11f5f5f2363cfcf812e97147e0d39d63f35d79166633c`
+* **Title:** *System and Method for Reducing Network Latency and Eliminating Distributed Consensus Bottlenecks in Asynchronous Machine-to-Machine Streaming Settlements and Collateral Foreclosure*
+* **SHA-256 Digest:** `3b97fb8ff87807f9e90ad5b7b249c26f200c7399ea40bb793f08fa509375905a`
 * **Bitcoin Timestamp:** Anchored on Bitcoin via OpenTimestamps (`USPTO_PROVISIONAL_PATENT_APPLICATION.md.ots`).
 * **Statutory Grace Period:** Under 35 U.S.C. § 102(b), global prior art is established, preserving 1-year priority rights.
 
@@ -155,4 +155,4 @@ gcc -O3 -pthread test_concurrency.c -o concurrency_test
 
 ## 7. License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Licensed under the [Business Source License 1.1 (BUSL-1.1)](LICENSE). Free for research, evaluation, and non-commercial testing. Production commercial deployment requires a commercial agreement. Conveys to Apache-2.0 on 2030-01-01.
