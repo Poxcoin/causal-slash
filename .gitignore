@@ -13,6 +13,10 @@ state_bloat_test
 # Internal research and draft scratchpad
 .internal/
 
+# Evidence archives & OTS timestamps
+CAUSAL_SLASH_IP_EVIDENCE_BUNDLE.*
+*.ots
+
 # OS and Editor artifacts
 .DS_Store
 Thumbs.db
