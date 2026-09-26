@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C binaries
+*.o
+*.so
+a.out
+concurrency_test
+state_bloat_test
+
+# Internal research and draft scratchpad
+.internal/
+
+# OS and Editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
