@@ -100,27 +100,35 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 ## 4. Repository Structure
 
 ```
-├── contracts/                                # Solidity Smart Contracts (Base / EVM)
+├── contracts/                                # Solidity Smart Contracts (Base L2)
 │   ├── PerformanceCollateralVault.sol        # Collateral Vault & O(1) Fraud Slashing Engine
 │   └── MockUSDC.sol                          # Mock USDC (6 decimals) for local testing
-├── test/                                     # Foundry Smart Contract Test Suite
-│   └── PerformanceCollateralVault.t.sol      # 100% Passing Foundry Tests & Fuzzing
-├── examples/                                 # Runnable Agent Quickstarts
-│   └── quickstart_agent.py                   # High-frequency agent streaming payment client
+├── src/                                      # C11 Core Engine (High-Frequency Wire Daemon)
+│   ├── causal_daemon.c                       # Wire Protocol, Ring Buffer, Equivocation Trap
+│   └── causal_daemon.h                       # Binary Framing & C-FFI Header
+├── sdk/                                      # Autonomous Agent Native SDK
+│   └── causal_slash.py                       # Python High-Performance C-FFI Interface (80k+ ops/sec)
+├── test/                                     # Verification & Stress Tests
+│   ├── PerformanceCollateralVault.t.sol      # Foundry Fuzzing & Invariant Suite (100% Pass)
+│   └── c/                                    # C Concurrency & Memory Bloat Audits
+│       ├── test_concurrency.c
+│       └── test_state_bloat.c
+├── examples/                                 # Runnable Agent Quickstarts & Demos
+│   ├── quickstart_agent.py                   # High-frequency agent streaming payment client
+│   └── full_system_demo.py                   # End-to-end benchmark & key extraction demo
+├── docs/                                     # Technical Documentation & Assets
+│   ├── assets/                               # Architecture blueprints & UI dashboards
+│   │   ├── architecture_blueprint.jpg        # High-res technical modular stack schematic
+│   │   └── dashboard_mockup.jpg              # Network Explorer & Developer CLI interface
+│   └── patent/                               # US Provisional Patent Application
+│       ├── USPTO_PROVISIONAL_PATENT_APPLICATION.pdf
+│       ├── USPTO_PROVISIONAL_PATENT_APPLICATION.md
+│       └── USPTO_PROVISIONAL_PATENT_APPLICATION.md.ots
 ├── .github/workflows/ci.yml                  # GitHub Actions Automated CI Pipeline
 ├── foundry.toml                              # Foundry EVM Build & Fuzzing Configuration
-├── causal_daemon.h                           # C11 Binary Wire Protocol & API Header
-├── causal_daemon.c                           # C11 High-Frequency P2P Engine & Self-Test Suite
-├── causal_slash.py                           # Python High-Performance Native SDK (C-FFI, 80k+ ops/sec)
-├── full_system_demo.py                       # End-to-end benchmark & key extraction demo (Python)
 ├── Makefile                                  # Build system (make test / make test-asan)
-├── test_concurrency.c                        # C11 POSIX multi-threaded atomics stress test
-├── test_state_bloat.c                        # Memory footprint & state bloat audit
 ├── LICENSE                                   # BUSL-1.1 Business Source License
-├── README.md                                 # Architecture & benchmark summary
-├── USPTO_PROVISIONAL_PATENT_APPLICATION.pdf  # Compiled USPTO Provisional Patent Document
-├── USPTO_PROVISIONAL_PATENT_APPLICATION.md   # Complete Patent Specification & 10 Claims
-└── USPTO_PROVISIONAL_PATENT_APPLICATION.md.ots # Bitcoin OpenTimestamps Proof Receipt
+└── README.md                                 # Architecture & benchmark summary
 ```
 
 ---
@@ -136,7 +144,7 @@ forge test -vvv
 Simulates 1,000 sequential micro-payments, introduces a concurrent equivocation attack, and extracts the attacker's private key:
 
 ```bash
-python3 full_system_demo.py
+python3 examples/full_system_demo.py
 ```
 
 *Expected output:*

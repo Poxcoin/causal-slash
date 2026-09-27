@@ -53,10 +53,10 @@ jobs:
         run: pip install coincurve ecdsa
 
       - name: Build C Library
-        run: make lib
+        run: make libcausal_slash.so
 
       - name: Run End-to-End Key Extraction Simulation
-        run: python3 full_system_demo.py
+        run: python3 examples/full_system_demo.py
 
       - name: Run Runnable Agent Quickstart
         run: python3 examples/quickstart_agent.py

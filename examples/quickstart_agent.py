@@ -8,8 +8,10 @@ for LLM inference tokens with zero gas and 12-microsecond latency.
 import sys
 import os
 
-# Add parent directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# Add parent and sdk directory to path
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(_ROOT, "sdk"))
+sys.path.insert(0, _ROOT)
 from causal_slash import CausalAgentWallet, CausalVendorNode
 
 def run_agent_workflow():

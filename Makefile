@@ -2,24 +2,37 @@
 # Copyright (c) 2026 Causal-Slash Protocol Developers
 
 CC ?= gcc
-CFLAGS ?= -O3 -Wall -Wextra -pthread -fPIC
+CFLAGS ?= -O3 -Wall -Wextra -pthread -fPIC -Isrc
 LDFLAGS ?= -lcrypto
+
+SRCS = src/causal_daemon.c src/causal_daemon.h
 
 all: causal_daemon libcausal_slash.so
 
-causal_daemon: causal_daemon.c causal_daemon.h
-	$(CC) $(CFLAGS) causal_daemon.c $(LDFLAGS) -o causal_daemon
+causal_daemon: $(SRCS)
+	$(CC) $(CFLAGS) src/causal_daemon.c $(LDFLAGS) -o causal_daemon
 
-libcausal_slash.so: causal_daemon.c causal_daemon.h
-	$(CC) $(CFLAGS) -shared causal_daemon.c $(LDFLAGS) -o libcausal_slash.so
+libcausal_slash.so: $(SRCS)
+	$(CC) $(CFLAGS) -shared src/causal_daemon.c $(LDFLAGS) -o libcausal_slash.so
 
 test: causal_daemon
 	./causal_daemon --all
+	rm -f causal_daemon
 
 test-asan:
-	$(CC) -O3 -fsanitize=address,undefined -g -Wall -Wextra -pthread causal_daemon.c $(LDFLAGS) -o causal_daemon_asan
+	$(CC) -O3 -fsanitize=address,undefined -g -Wall -Wextra -pthread -Isrc src/causal_daemon.c $(LDFLAGS) -o causal_daemon_asan
 	./causal_daemon_asan --all
 	rm -f causal_daemon_asan
 
+test-concurrency:
+	$(CC) $(CFLAGS) test/c/test_concurrency.c $(LDFLAGS) -o test_concurrency
+	./test_concurrency
+	rm -f test_concurrency
+
+test-bloat:
+	$(CC) $(CFLAGS) test/c/test_state_bloat.c $(LDFLAGS) -o test_state_bloat
+	./test_state_bloat
+	rm -f test_state_bloat
+
 clean:
-	rm -f causal_daemon libcausal_slash.so causal_daemon_asan *.o
+	rm -f causal_daemon libcausal_slash.so causal_daemon_asan test_concurrency test_state_bloat *.o
