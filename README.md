@@ -101,12 +101,15 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 
 ```
 ├── README.md                                 # Architecture & benchmark summary
-├── LICENSE                                   # Apache-2.0 open-source license
+├── LICENSE                                   # BUSL-1.1 Business Source License
 ├── USPTO_PROVISIONAL_PATENT_APPLICATION.pdf  # Compiled USPTO Provisional Patent Document
 ├── USPTO_PROVISIONAL_PATENT_APPLICATION.md   # Complete Patent Specification & 10 Claims
 ├── USPTO_PROVISIONAL_PATENT_APPLICATION.md.ots # Bitcoin OpenTimestamps Proof Receipt
-├── full_system_demo.py                       # End-to-end benchmark & key extraction demo
-├── test_concurrency.c                        # C11 POSIX multi-threaded atomics test
+├── full_system_demo.py                       # End-to-end benchmark & key extraction demo (Python)
+├── causal_daemon.h                           # C11 Binary Wire Protocol & API Header
+├── causal_daemon.c                           # C11 High-Frequency P2P Engine & Self-Test Suite
+├── Makefile                                  # Build system (make test / make test-asan)
+├── test_concurrency.c                        # C11 POSIX multi-threaded atomics stress test
 └── test_state_bloat.c                        # Memory footprint & state bloat audit
 ```
 
@@ -133,7 +136,36 @@ python3 full_system_demo.py
 [ECONOMICS] Cumulative fee savings vs L2 gas: 99.4%
 ```
 
-### 5.2 Run Multi-Threaded Concurrency Test (C)
+### 5.2 Build & Run the C11 P2P Daemon (Requires: gcc, libcrypto)
+Compiles and runs the sovereign high-frequency engine benchmark, equivocation key-extraction test, and real TCP socket streaming test:
+
+```bash
+make test
+```
+
+*Expected output:*
+```text
+⚡ CAUSAL-SLASH: C11 HIGH-FREQUENCY ENGINE BENCHMARK
+  ✅ Processed: 50000 cheques
+  ⚡ Latency per End-to-End Cheque (Sign + Verify): 3.30 microseconds
+  🚀 Throughput: 302844 operations/second
+
+🛡️ CAUSAL-SLASH: EQUIVOCATION & EOTS KEY EXTRACTION TEST
+  [3] Vendor Detection Result: Code -20 (EQUIVOCATION DETECTED)
+  🔑 Secret Key Match: 100% IDENTICAL (PROVEN)
+  🔥 FRAUD PROOF READY FOR ON-CHAIN SLASHING
+
+🌐 CAUSAL-SLASH: P2P TCP SOCKET LOOPBACK BENCHMARK
+  ⚡ Real Socket RTT: 15.49 microseconds
+  🚀 Network Throughput: 64557 cheques/second over loopback TCP!
+```
+
+Run with AddressSanitizer + UndefinedBehaviorSanitizer (zero memory errors guaranteed):
+```bash
+make test-asan
+```
+
+### 5.3 Run Multi-Threaded Concurrency Test (C)
 Verifies that hardware-atomic monotonic height counters prevent race conditions:
 
 ```bash

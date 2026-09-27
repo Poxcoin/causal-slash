@@ -9,6 +9,10 @@ __pycache__/
 a.out
 concurrency_test
 state_bloat_test
+/causal_daemon
+/causal_daemon_asan
+/causal_daemon_test
+/libcausal_slash.so
 
 # Internal research and draft scratchpad
 .internal/
