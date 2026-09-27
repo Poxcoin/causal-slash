@@ -100,18 +100,23 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 ## 4. Repository Structure
 
 ```
-├── README.md                                 # Architecture & benchmark summary
-├── LICENSE                                   # BUSL-1.1 Business Source License
-├── USPTO_PROVISIONAL_PATENT_APPLICATION.pdf  # Compiled USPTO Provisional Patent Document
-├── USPTO_PROVISIONAL_PATENT_APPLICATION.md   # Complete Patent Specification & 10 Claims
-├── USPTO_PROVISIONAL_PATENT_APPLICATION.md.ots # Bitcoin OpenTimestamps Proof Receipt
-├── full_system_demo.py                       # End-to-end benchmark & key extraction demo (Python)
+├── contracts/                                # Solidity Smart Contracts (Base / EVM)
+│   ├── PerformanceCollateralVault.sol        # Collateral Vault & O(1) Fraud Slashing Engine
+│   └── MockUSDC.sol                          # Mock USDC (6 decimals) for local testing
+├── examples/                                 # Runnable Agent Quickstarts
+│   └── quickstart_agent.py                   # High-frequency agent streaming payment client
 ├── causal_daemon.h                           # C11 Binary Wire Protocol & API Header
 ├── causal_daemon.c                           # C11 High-Frequency P2P Engine & Self-Test Suite
 ├── causal_slash.py                           # Python High-Performance Native SDK (C-FFI, 80k+ ops/sec)
+├── full_system_demo.py                       # End-to-end benchmark & key extraction demo (Python)
 ├── Makefile                                  # Build system (make test / make test-asan)
 ├── test_concurrency.c                        # C11 POSIX multi-threaded atomics stress test
-└── test_state_bloat.c                        # Memory footprint & state bloat audit
+├── test_state_bloat.c                        # Memory footprint & state bloat audit
+├── LICENSE                                   # BUSL-1.1 Business Source License
+├── README.md                                 # Architecture & benchmark summary
+├── USPTO_PROVISIONAL_PATENT_APPLICATION.pdf  # Compiled USPTO Provisional Patent Document
+├── USPTO_PROVISIONAL_PATENT_APPLICATION.md   # Complete Patent Specification & 10 Claims
+└── USPTO_PROVISIONAL_PATENT_APPLICATION.md.ots # Bitcoin OpenTimestamps Proof Receipt
 ```
 
 ---
