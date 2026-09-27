@@ -108,6 +108,7 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 ├── full_system_demo.py                       # End-to-end benchmark & key extraction demo (Python)
 ├── causal_daemon.h                           # C11 Binary Wire Protocol & API Header
 ├── causal_daemon.c                           # C11 High-Frequency P2P Engine & Self-Test Suite
+├── causal_slash.py                           # Python High-Performance Native SDK (C-FFI, 80k+ ops/sec)
 ├── Makefile                                  # Build system (make test / make test-asan)
 ├── test_concurrency.c                        # C11 POSIX multi-threaded atomics stress test
 └── test_state_bloat.c                        # Memory footprint & state bloat audit
@@ -171,6 +172,29 @@ Verifies that hardware-atomic monotonic height counters prevent race conditions:
 ```bash
 gcc -O3 -pthread test_concurrency.c -o concurrency_test
 ./concurrency_test
+```
+
+### 5.4 Python Native SDK (3 Lines of Code)
+Autonomous agents (LangGraph, CrewAI, AutoGen, ElizaOS) can stream payments directly from Python at native C hardware speeds (~12 microseconds latency, 80,000+ cheques/sec):
+
+```python
+from causal_slash import CausalAgentWallet, CausalVendorNode
+
+# 1. Initialize agent & vendor
+agent = CausalAgentWallet()
+vendor = CausalVendorNode(delta_v_usdc=1.0) # $1.00 local exposure cap
+
+# 2. Stream off-chain micro-payment (0 ms consensus RTT, $0.00 gas)
+cheque = agent.sign_cheque(vendor.public_key, amount_usdc=0.001) # $0.001
+
+# 3. Vendor verifies in 12 microseconds
+result = vendor.process_cheque(cheque)
+assert result.accepted
+```
+
+Run Python SDK live benchmark & equivocation tests:
+```bash
+python3 causal_slash.py
 ```
 
 ---
