@@ -67,7 +67,10 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         uint256 extractedSk;
         bytes32 salt;
         address damagedVendor;
-        uint256 damageAmount; // Verified damage amount in USDC
+        uint256 chequeCumulativeAmount;
+        uint256 chequeSessionNonce;
+        uint256 chequeDeadline;
+        bytes chequeSignature;
     }
 
     mapping(address => AgentVault) public vaults;
@@ -371,11 +374,39 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         vault.collateralBond = 0;
         vault.pendingWithdrawal = 0;
         vault.withdrawalTimestamp = 0;
+        uint256 agentAllocatedExposure = allocatedExposure[args.maliciousAgent];
         allocatedExposure[args.maliciousAgent] = 0;
 
         // Waterfall Distribution (Closed Loop):
-        // 1. Priority 1: 100% Verified Vendor Damage Restitution
-        uint256 damage = args.damageAmount > totalBond ? totalBond : args.damageAmount;
+        // 1. Priority 1: Verified Vendor Damage Restitution via Cryptographic Cheque Proof
+        uint256 damage = 0;
+        if (args.damagedVendor != address(0) && args.chequeSignature.length == 65) {
+            bytes32 structHash = keccak256(
+                abi.encode(
+                    CHEQUE_TYPEHASH,
+                    args.maliciousAgent,
+                    args.damagedVendor,
+                    args.chequeCumulativeAmount,
+                    args.chequeSessionNonce,
+                    args.chequeDeadline
+                )
+            );
+            bytes32 digest = _hashTypedDataV4(structHash);
+            (address recoveredSigner, ECDSA.RecoverError err, ) = ECDSA.tryRecover(digest, args.chequeSignature);
+            if (err == ECDSA.RecoverError.NoError && recoveredSigner == vault.signingAddress) {
+                uint256 prevSettled = settledAmounts[args.maliciousAgent][args.damagedVendor];
+                if (args.chequeCumulativeAmount > prevSettled) {
+                    damage = args.chequeCumulativeAmount - prevSettled;
+                }
+            }
+        }
+        // Structurally cap damage by allocated exposure and total collateral bond
+        if (agentAllocatedExposure > 0 && damage > agentAllocatedExposure) {
+            damage = agentAllocatedExposure;
+        }
+        if (damage > totalBond) {
+            damage = totalBond;
+        }
         uint256 remaining = totalBond - damage;
 
         // 2. Priority 2: 15% Whistleblower / Finder Bounty
@@ -437,5 +468,9 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
 
     function DOMAIN_SEPARATOR() external view returns (bytes32) {
         return _domainSeparatorV4();
+    }
+
+    function hashTypedDataV4(bytes32 structHash) external view returns (bytes32) {
+        return _hashTypedDataV4(structHash);
     }
 }

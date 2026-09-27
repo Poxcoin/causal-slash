@@ -103,8 +103,12 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 ├── contracts/                                # Solidity Smart Contracts (Base / EVM)
 │   ├── PerformanceCollateralVault.sol        # Collateral Vault & O(1) Fraud Slashing Engine
 │   └── MockUSDC.sol                          # Mock USDC (6 decimals) for local testing
+├── test/                                     # Foundry Smart Contract Test Suite
+│   └── PerformanceCollateralVault.t.sol      # 100% Passing Foundry Tests & Fuzzing
 ├── examples/                                 # Runnable Agent Quickstarts
 │   └── quickstart_agent.py                   # High-frequency agent streaming payment client
+├── .github/workflows/ci.yml                  # GitHub Actions Automated CI Pipeline
+├── foundry.toml                              # Foundry EVM Build & Fuzzing Configuration
 ├── causal_daemon.h                           # C11 Binary Wire Protocol & API Header
 ├── causal_daemon.c                           # C11 High-Frequency P2P Engine & Self-Test Suite
 ├── causal_slash.py                           # Python High-Performance Native SDK (C-FFI, 80k+ ops/sec)
@@ -123,7 +127,12 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 
 ## 5. Quickstart & Verification
 
-### 5.1 Run the Full System Benchmark (Python)
+### 5.1 Run the Foundry EVM Test Suite & Fuzzing (Solidity)
+```bash
+forge test -vvv
+```
+
+### 5.2 Run the Full System Benchmark (Python)
 Simulates 1,000 sequential micro-payments, introduces a concurrent equivocation attack, and extracts the attacker's private key:
 
 ```bash
@@ -142,7 +151,7 @@ python3 full_system_demo.py
 [ECONOMICS] Cumulative fee savings vs L2 gas: 99.4%
 ```
 
-### 5.2 Build & Run the C11 P2P Daemon (Requires: gcc, libcrypto)
+### 5.3 Build & Run the C11 P2P Daemon (Requires: gcc, libcrypto)
 Compiles and runs the sovereign high-frequency engine benchmark, equivocation key-extraction test, and real TCP socket streaming test:
 
 ```bash
@@ -171,7 +180,7 @@ Run with AddressSanitizer + UndefinedBehaviorSanitizer (zero memory errors guara
 make test-asan
 ```
 
-### 5.3 Run Multi-Threaded Concurrency Test (C)
+### 5.4 Run Multi-Threaded Concurrency Test (C)
 Verifies that hardware-atomic monotonic height counters prevent race conditions:
 
 ```bash
@@ -179,7 +188,7 @@ gcc -O3 -pthread test_concurrency.c -o concurrency_test
 ./concurrency_test
 ```
 
-### 5.4 Python Native SDK (3 Lines of Code)
+### 5.5 Python Native SDK (3 Lines of Code)
 Autonomous agents (LangGraph, CrewAI, AutoGen, ElizaOS) can stream payments directly from Python at native C hardware speeds (~12 microseconds latency, 80,000+ cheques/sec):
 
 ```python

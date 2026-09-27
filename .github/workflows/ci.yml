@@ -1,0 +1,62 @@
+name: Protocol CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  forge-solidity:
+    name: Foundry EVM Smart Contract Tests & Fuzzing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Run Forge Tests & Invariant Fuzzing
+        run: forge test -vvv
+
+  c11-daemon:
+    name: C11 High-Frequency Engine & AddressSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc libssl-dev make
+
+      - name: Build & Run Benchmark Tests
+        run: make test
+
+      - name: Run Memory Safety Tests (AddressSanitizer & UB Sanitizer)
+        run: make test-asan
+
+  python-sdk:
+    name: Python Native SDK & Multi-Agent Simulations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python Dependencies
+        run: pip install coincurve ecdsa
+
+      - name: Build C Library
+        run: make lib
+
+      - name: Run End-to-End Key Extraction Simulation
+        run: python3 full_system_demo.py
+
+      - name: Run Runnable Agent Quickstart
+        run: python3 examples/quickstart_agent.py
