@@ -654,7 +654,7 @@ int csls_run_network_test(uint16_t port, uint32_t count) {
     printf("  TCP Streaming Completed: %u roundtrips\n", count);
     printf("  Total Time: %.4f seconds\n", total_sec);
     printf("  Real Socket RTT (Sign + TCP Tx + Verify + TCP Ack): %.2f microseconds\n", rtt_us);
-    printf("  Network Throughput: %.0f cheques/second over loopback TCP!\n", tps);
+    printf("  Network Throughput: %.0f cheques/second over loopback TCP\n", tps);
 
     close(sock);
     pthread_join(thread, NULL);
