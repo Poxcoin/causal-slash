@@ -2,7 +2,8 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Specification%20%26%20Reference%20Implementation-green.svg)]()
-[![Base Sepolia](https://img.shields.io/badge/Base_Sepolia-Contract_Verified-success?logo=ethereum)](https://sepolia.basescan.org/address/0xdC68e06331aF5aC885E5A7Cb875d364dedcD1D34#code)
+[![Base Sepolia](https://img.shields.io/badge/Base_Sepolia-Contract_Verified-success?logo=ethereum)](https://sepolia.basescan.org/address/0x33BD2908a372cf6A533B75e79D3cAa754da8775c#code)
+[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-17%2F17_Passing-brightgreen?logo=solidity)](test/PerformanceCollateralVault.t.sol)
 [![Pitch Deck](https://img.shields.io/badge/Pitch_Deck-8_Slides_PDF-blueviolet)](docs/causal_slash_pitch_deck.pdf)
 
 > Streaming micropayment protocol for AI agents on Base L2. Single shared bond, zero gas, sub-microsecond settlement.
@@ -30,9 +31,9 @@ With Causal-Slash, the agent locks **one USDC bond on Base** that covers all ven
 ### Live Deployment & Verified Contracts (Base Sepolia)
 * **Network:** Base Sepolia (Chain ID `84532`)
 * **Smart Contract:** `PerformanceCollateralVault`
-* **Explorer & Source Code:** [`0xdC68e06331aF5aC885E5A7Cb875d364dedcD1D34`](https://sepolia.basescan.org/address/0xdC68e06331aF5aC885E5A7Cb875d364dedcD1D34#code) (Verified Exact Match)
+* **Explorer & Source Code:** [`0x33BD2908a372cf6A533B75e79D3cAa754da8775c`](https://sepolia.basescan.org/address/0x33BD2908a372cf6A533B75e79D3cAa754da8775c#code) (Verified Exact Match)
 * **Settlement Currency:** Base Sepolia USDC (`0x036CbD53842c5426634e7929541eC2318f3dCF7e`)
-* **Security & Invariants:** 14/14 Passing Foundry Fuzz & Invariant Tests (`forge test`)
+* **Security & Invariants:** 17/17 Passing Foundry Fuzz & Invariant Tests (`forge test`)
 
 ## 2. Cryptographic Mechanism
 

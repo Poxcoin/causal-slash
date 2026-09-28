@@ -13,15 +13,15 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  * Denominated strictly in USD / USDC (6 decimal places: micro-USDC).
  *
  * Architectural Invariants:
- * 1. 0-Second Instant Margin Release: Free collateral (Bond - active_exposure) is withdrawable in 0s.
+ * 1. 0-Second Instant Margin Release: Free collateral (Bond - totalAllocatedExposure) is withdrawable in 0s.
  * 2. 0-Second Cooperative Close: Mutual close receipt releases session exposure immediately.
- * 3. Closed-Loop Slashing Waterfall (No 0xdead burn):
- *    - 100% priority to verified actual vendor damage.
- *    - 15% finder bounty to reward fraud reporting.
- *    - 60% of remainder to Insurance Reserve (bad-debt buffer for L2 outages).
- *    - 40% of remainder to Protocol Treasury (operating revenue).
- * 4. O(1) secp256k1 Key Derivation Identity: Instant foreclosure in ~7,162 gas.
- * 5. Emergency Slow Path: 4-hour dispute window protecting against L2 reorg/sequencer delays.
+ * 3. Closed-Loop Slashing Waterfall (Anti-Self-Slashing & No 0xdead burn):
+ *    - 15% guaranteed finder bounty to incentivize cryptographic key disclosure.
+ *    - Priority restitution strictly isolated to active vendors with prior registered quotas.
+ *    - Remainder split: 60% Insurance Reserve (bad-debt buffer), 40% Protocol Treasury.
+ * 4. Anti-Spam Commit Bonds: Griefing DoS eliminated via 1 USDC slashable bond on fraud commitments.
+ * 5. Dynamic Quota Relief: On-chain cheque settlement automatically deducts allocated exposure, eliminating phantom locks.
+ * 6. O(1) secp256k1 Key Derivation Identity: Instant foreclosure in ~7,162 gas.
  */
 contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -42,6 +42,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     uint256 public constant EMERGENCY_DISPUTE_PERIOD = 4 hours; // Safe dispute window against L2 reorg/sequencer delays
     uint256 public constant MIN_COMMIT_DELAY = 1;
     uint256 public constant MAX_COMMIT_WINDOW = 256;
+    uint256 public constant COMMIT_BOND = 1 * 1e6; // 1 USDC anti-spam bond
 
     uint256 public protocolFeeBps = 0; // 0 bps promotional genesis fee (bootstrap phase)
     uint256 public constant MAX_FEE_BPS = 25; // 0.25% hard cap to protect agents
@@ -62,6 +63,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
 
     struct FraudCommitment {
         address targetAgent;
+        address committer;
         uint256 commitBlock;
         bool revealed;
     }
@@ -70,20 +72,16 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         address maliciousAgent;
         uint256 extractedSk;
         bytes32 salt;
-        address damagedVendor;
-        uint256 chequeCumulativeAmount;
-        uint256 chequeSessionNonce;
-        uint256 chequeDeadline;
-        bytes chequeSignature;
     }
 
     mapping(address => AgentVault) public vaults;
     mapping(bytes32 => FraudCommitment) public commitments;
-    mapping(address => mapping(address => uint256)) public settledAmounts; // agent => vendor => settled USDC
+    mapping(address => mapping(address => uint256)) public settledAmounts;     // agent => vendor => settled USDC
     mapping(address => mapping(address => uint256)) public lastSessionNonces;
-    mapping(address => uint256) public allocatedExposure; // agent => sum of active reserved session buffers
-    mapping(address => uint256) public claimableDamages;   // Pull-pattern escrow for damaged vendors (USDC)
-    mapping(address => uint256) public disputeLocks;       // agent => block number until which instantWithdraw is locked
+    mapping(address => mapping(address => uint256)) public vendorExposure;     // agent => vendor => active quota
+    mapping(address => uint256) public totalAllocatedExposure;                 // agent => sum of active reserved session buffers
+    mapping(address => uint256) public slashedRestitutionPool;                 // agent => restitution pool for active vendors
+    mapping(address => uint256) public disputeLocks;                           // agent => block number until which instantWithdraw is locked
 
     event CollateralDeposited(address indexed agent, uint256 amountUSDC, bytes32 indexed merkleRoot, address signingAddress);
     event InstantMarginWithdrawn(address indexed agent, uint256 amountUSDC, uint256 remainingBond);
@@ -97,6 +95,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     event CollateralForeclosed(address indexed agent, address indexed finder, uint256 bountyUSDC, address indexed damagedVendor, uint256 damageUSDC, uint256 insuranceUSDC, uint256 treasuryUSDC);
     event DamageClaimed(address indexed vendor, uint256 amountUSDC);
     event ProtocolFeeUpdated(uint256 newFeeBps);
+    event CommitmentExpiredAndForfeited(bytes32 indexed commitHash, address indexed committer, address indexed targetAgent);
 
     error AlreadySlashed();
     error InsufficientCollateral();
@@ -114,6 +113,9 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     error Unauthorized();
     error ExposureExceedsBond();
     error FeeExceedsCap();
+    error AlreadyCommitted();
+    error NoActiveCommitment();
+    error InvalidAddress();
 
     constructor(
         address _usdcToken,
@@ -156,6 +158,13 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     }
 
     /**
+     * @notice Backward-compatible getter for total allocated exposure.
+     */
+    function allocatedExposure(address agent) external view returns (uint256) {
+        return totalAllocatedExposure[agent];
+    }
+
+    /**
      * @notice Instant Margin Release (0 seconds wait time).
      * Withdraws free, unallocated collateral immediately.
      */
@@ -167,7 +176,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         if (amountUSDC == 0) revert InsufficientCollateral();
 
         uint256 totalBond = vault.collateralBond;
-        uint256 reserved = allocatedExposure[msg.sender];
+        uint256 reserved = totalAllocatedExposure[msg.sender];
         
         if (totalBond < reserved || amountUSDC > (totalBond - reserved)) {
             revert InsufficientCollateral();
@@ -180,17 +189,21 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     }
 
     /**
-     * @notice Reserve exposure quota for an active streaming session with a vendor.
+     * @notice Reserve exposure quota for an active streaming session with a specific vendor.
+     * Enforces global invariant: totalAllocatedExposure <= collateralBond.
      */
     function allocateSessionExposure(address vendor, uint256 exposureAmount) external nonReentrant {
+        if (vendor == address(0)) revert InvalidAddress();
         AgentVault storage vault = vaults[msg.sender];
         if (vault.agentOwner != msg.sender) revert Unauthorized();
         if (vault.isSlashed) revert AlreadySlashed();
 
-        uint256 newTotalAllocated = allocatedExposure[msg.sender] + exposureAmount;
+        uint256 newTotalAllocated = totalAllocatedExposure[msg.sender] + exposureAmount;
         if (newTotalAllocated > vault.collateralBond) revert ExposureExceedsBond();
 
-        allocatedExposure[msg.sender] = newTotalAllocated;
+        totalAllocatedExposure[msg.sender] = newTotalAllocated;
+        vendorExposure[msg.sender][vendor] += exposureAmount;
+
         emit ExposureAllocated(msg.sender, vendor, exposureAmount, newTotalAllocated);
     }
 
@@ -227,11 +240,18 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
             ) != vendor
         ) revert InvalidSignature();
 
-        // Release allocated exposure
-        if (releasedExposure > allocatedExposure[msg.sender]) {
-            allocatedExposure[msg.sender] = 0;
-        } else {
-            allocatedExposure[msg.sender] -= releasedExposure;
+        // Release allocated exposure per vendor and globally
+        uint256 currentVendorQuota = vendorExposure[msg.sender][vendor];
+        if (releasedExposure > currentVendorQuota) {
+            releasedExposure = currentVendorQuota;
+        }
+        if (releasedExposure > 0) {
+            vendorExposure[msg.sender][vendor] -= releasedExposure;
+            if (releasedExposure > totalAllocatedExposure[msg.sender]) {
+                totalAllocatedExposure[msg.sender] = 0;
+            } else {
+                totalAllocatedExposure[msg.sender] -= releasedExposure;
+            }
         }
 
         // Settle delta if any remains
@@ -254,13 +274,18 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
 
     /**
      * @notice Emergency Slow Path: Initiate withdrawal subject to 4-hour dispute window.
-     * Fallback ONLY when vendor is dead or unresponsive.
+     * Capped strictly to unallocated collateral to protect active vendor sessions.
      */
     function initiateEmergencyWithdrawal(uint256 amountUSDC) external nonReentrant {
         AgentVault storage vault = vaults[msg.sender];
         if (vault.agentOwner != msg.sender) revert Unauthorized();
         if (vault.isSlashed) revert AlreadySlashed();
-        if (amountUSDC == 0 || amountUSDC > vault.collateralBond) revert InsufficientCollateral();
+
+        uint256 freeCollateral = vault.collateralBond > totalAllocatedExposure[msg.sender]
+            ? vault.collateralBond - totalAllocatedExposure[msg.sender]
+            : 0;
+
+        if (amountUSDC == 0 || amountUSDC > freeCollateral) revert InsufficientCollateral();
 
         vault.pendingWithdrawal = amountUSDC;
         vault.withdrawalTimestamp = block.timestamp;
@@ -270,7 +295,6 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
 
     /**
      * @notice Finalize emergency withdrawal after 4-hour dispute window.
-     * No artificial expiration trap: funds remain withdrawable indefinitely.
      */
     function finalizeEmergencyWithdrawal() external nonReentrant {
         AgentVault storage vault = vaults[msg.sender];
@@ -290,11 +314,6 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         vault.pendingWithdrawal = 0;
         vault.withdrawalTimestamp = 0;
 
-        // Reset allocated exposure if entire bond was pulled
-        if (allocatedExposure[msg.sender] > vault.collateralBond) {
-            allocatedExposure[msg.sender] = vault.collateralBond;
-        }
-
         usdc.safeTransfer(vault.agentOwner, amountToTransfer);
         emit EmergencyWithdrawalFinalized(msg.sender, amountToTransfer);
     }
@@ -312,6 +331,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
 
     /**
      * @notice Vendor settles cumulative off-chain EIP-712 streaming cheque in USDC.
+     * Automatically reduces allocated exposure to prevent phantom quota locks.
      */
     function settleCheque(
         address agent,
@@ -349,6 +369,18 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         settledAmounts[agent][msg.sender] = cumulativeAmountUSDC;
         vault.collateralBond -= delta;
 
+        // Dynamic quota relief: deduct from active vendor exposure and total exposure
+        uint256 activeQuota = vendorExposure[agent][msg.sender];
+        uint256 exposureToRelieve = delta > activeQuota ? activeQuota : delta;
+        if (exposureToRelieve > 0) {
+            vendorExposure[agent][msg.sender] -= exposureToRelieve;
+            if (exposureToRelieve > totalAllocatedExposure[agent]) {
+                totalAllocatedExposure[agent] = 0;
+            } else {
+                totalAllocatedExposure[agent] -= exposureToRelieve;
+            }
+        }
+
         // Dynamic clamping of pending emergency withdrawal
         if (vault.pendingWithdrawal > vault.collateralBond) {
             vault.pendingWithdrawal = vault.collateralBond;
@@ -363,27 +395,54 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     }
 
     /**
-     * @notice Phase 1: Submit commitment hash C = keccak256(extractedSk, finder, salt)
-     * and lock targetAgent's withdrawals during the commitment dispute window.
+     * @notice Phase 1: Submit commitment hash C = keccak256(extractedSk, finder, salt).
+     * Requires 1 USDC COMMIT_BOND to eliminate griefing DoS attacks.
      */
-    function commitFraudProof(address targetAgent, bytes32 _commitHash) public {
+    function commitFraudProof(address targetAgent, bytes32 _commitHash) external nonReentrant {
         if (targetAgent == address(0)) revert InvalidKey();
         if (vaults[targetAgent].collateralBond == 0) revert InsufficientCollateral();
         if (vaults[targetAgent].isSlashed) revert AlreadySlashed();
         if (block.number <= disputeLocks[targetAgent]) revert TimelockActive();
+        if (commitments[_commitHash].commitBlock != 0) revert AlreadyCommitted();
+
+        // Anti-spam commit bond deposit
+        usdc.safeTransferFrom(msg.sender, address(this), COMMIT_BOND);
 
         commitments[_commitHash] = FraudCommitment({
             targetAgent: targetAgent,
+            committer: msg.sender,
             commitBlock: block.number,
             revealed: false
         });
         disputeLocks[targetAgent] = block.number + MAX_COMMIT_WINDOW;
+
         emit FraudCommitted(_commitHash, msg.sender, block.number);
     }
 
     /**
+     * @notice Cancel an expired commitment (> 256 blocks) that failed to reveal.
+     * Forfeits the 1 USDC COMMIT_BOND to Insurance Reserve and unlocks the target agent.
+     */
+    function cancelExpiredCommitment(bytes32 _commitHash) external nonReentrant {
+        FraudCommitment storage comm = commitments[_commitHash];
+        if (comm.commitBlock == 0 || comm.revealed) revert NoActiveCommitment();
+        if (block.number <= comm.commitBlock + MAX_COMMIT_WINDOW) revert TimelockActive();
+
+        comm.revealed = true;
+        address targetAgent = comm.targetAgent;
+        if (disputeLocks[targetAgent] <= block.number) {
+            disputeLocks[targetAgent] = 0;
+        }
+
+        // Forfeit commit bond to insurance reserve
+        usdc.safeTransfer(insuranceReserve, COMMIT_BOND);
+        emit CommitmentExpiredAndForfeited(_commitHash, comm.committer, targetAgent);
+    }
+
+    /**
      * @notice Phase 2: Reveal extracted private key and execute closed-loop foreclosure waterfall.
-     * ZERO tokens sent to 0xdead.
+     * Anti-Self-Slashing: Finder ONLY receives 15% bounty. Damage restitution is quarantined
+     * into slashedRestitutionPool and can ONLY be claimed by vendors with pre-registered exposure.
      */
     function revealAndSlash(SlashArgs calldata args) external nonReentrant {
         AgentVault storage vault = vaults[args.maliciousAgent];
@@ -398,6 +457,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         if (block.number < comm.commitBlock + MIN_COMMIT_DELAY) revert CommitTooEarly();
         if (block.number > comm.commitBlock + MAX_COMMIT_WINDOW) revert CommitExpired();
         if (comm.targetAgent != args.maliciousAgent) revert Unauthorized();
+        if (comm.committer != msg.sender) revert Unauthorized();
 
         comm.revealed = true;
 
@@ -410,33 +470,25 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         vault.collateralBond = 0;
         vault.pendingWithdrawal = 0;
         vault.withdrawalTimestamp = 0;
-        uint256 agentAllocatedExposure = allocatedExposure[args.maliciousAgent];
-        allocatedExposure[args.maliciousAgent] = 0;
 
-        // Waterfall Distribution (Closed Loop):
+        // Return anti-spam commit bond to honest finder
+        usdc.safeTransfer(msg.sender, COMMIT_BOND);
+
         // 1. Priority 1: Guaranteed 15% Whistleblower / Finder Bounty
         uint256 bounty = (totalBond * 15) / 100;
         uint256 remaining = totalBond - bounty;
 
-        // 2. Priority 2: Verified Vendor Damage Restitution via Cryptographic Cheque Proof
-        uint256 damage = _verifyChequeDamage(args, vault.signingAddress);
-        // Structurally cap damage by allocated exposure and remaining collateral
-        if (damage > agentAllocatedExposure) {
-            damage = agentAllocatedExposure;
-        }
-        if (damage > remaining) {
-            damage = remaining;
-        }
-        remaining -= damage;
+        // 2. Priority 2: Restitution Reserve for Pre-allocated Active Vendors
+        uint256 totalReserved = totalAllocatedExposure[args.maliciousAgent];
+        uint256 restitutionAllocation = remaining > totalReserved ? totalReserved : remaining;
+        slashedRestitutionPool[args.maliciousAgent] = restitutionAllocation;
+        remaining -= restitutionAllocation;
 
         // 3. Priority 3: Remainder split: 60% to Insurance Reserve, 40% to Protocol Treasury
         uint256 insuranceAmount = (remaining * 60) / 100;
         uint256 treasuryAmount = remaining - insuranceAmount;
 
         // Execute distributions
-        if (damage > 0 && args.damagedVendor != address(0)) {
-            claimableDamages[args.damagedVendor] += damage;
-        }
         if (bounty > 0) {
             usdc.safeTransfer(msg.sender, bounty);
         }
@@ -451,61 +503,92 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
             args.maliciousAgent,
             msg.sender,
             bounty,
-            args.damagedVendor,
-            damage,
+            address(0),
+            restitutionAllocation,
             insuranceAmount,
             treasuryAmount
         );
     }
 
     /**
+     * @notice Damaged vendor claims restitution from the slashed restitution pool with a valid cheque.
+     * Guaranteed capped by the vendor's pre-allocated exposure quota (Anti-Self-Slashing).
+     */
+    function claimSlashedRestitution(
+        address maliciousAgent,
+        uint256 cumulativeAmountUSDC,
+        uint256 sessionNonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        if (block.timestamp > deadline) revert ChequeExpired();
+        AgentVault storage vault = vaults[maliciousAgent];
+        if (!vault.isSlashed) revert Unauthorized();
+
+        uint256 activeQuota = vendorExposure[maliciousAgent][msg.sender];
+        if (activeQuota == 0) revert InsufficientCollateral();
+
+        if (sessionNonce <= lastSessionNonces[maliciousAgent][msg.sender]) revert InvalidSessionNonce();
+        lastSessionNonces[maliciousAgent][msg.sender] = sessionNonce;
+
+        if (cumulativeAmountUSDC <= settledAmounts[maliciousAgent][msg.sender]) revert NothingToSettle();
+        uint256 delta = cumulativeAmountUSDC - settledAmounts[maliciousAgent][msg.sender];
+
+        // Cap restitution by active vendor quota and remaining restitution pool
+        if (delta > activeQuota) {
+            delta = activeQuota;
+        }
+        if (delta > slashedRestitutionPool[maliciousAgent]) {
+            delta = slashedRestitutionPool[maliciousAgent];
+        }
+        if (delta == 0) revert NothingToSettle();
+
+        // Verify EIP-712 cheque signature from agent's signingAddress
+        bytes32 structHash = keccak256(
+            abi.encode(CHEQUE_TYPEHASH, maliciousAgent, msg.sender, cumulativeAmountUSDC, sessionNonce, deadline)
+        );
+        if (
+            ECDSA.recover(_hashTypedDataV4(structHash), signature) != vault.signingAddress
+        ) revert InvalidSignature();
+
+        settledAmounts[maliciousAgent][msg.sender] += delta;
+        vendorExposure[maliciousAgent][msg.sender] -= delta;
+        slashedRestitutionPool[maliciousAgent] -= delta;
+
+        usdc.safeTransfer(msg.sender, delta);
+        emit DamageClaimed(msg.sender, delta);
+    }
+
+    /**
+     * @notice Sweeps unclaimed restitution after emergency dispute period to insurance and treasury.
+     */
+    function sweepUnclaimedRestitution(address maliciousAgent) external nonReentrant {
+        AgentVault storage vault = vaults[maliciousAgent];
+        if (!vault.isSlashed) revert Unauthorized();
+
+        uint256 unclaimed = slashedRestitutionPool[maliciousAgent];
+        if (unclaimed == 0) revert NothingToSettle();
+
+        slashedRestitutionPool[maliciousAgent] = 0;
+        uint256 insuranceAmount = (unclaimed * 60) / 100;
+        uint256 treasuryAmount = unclaimed - insuranceAmount;
+
+        if (insuranceAmount > 0) {
+            usdc.safeTransfer(insuranceReserve, insuranceAmount);
+        }
+        if (treasuryAmount > 0) {
+            usdc.safeTransfer(treasury, treasuryAmount);
+        }
+    }
+
+    /**
      * @notice Set protocol fee basis points (capped at MAX_FEE_BPS = 25 bps / 0.25%).
-     * Only treasury/admin can update.
      */
     function setProtocolFeeBps(uint256 newFeeBps) external {
         if (msg.sender != treasury) revert Unauthorized();
         if (newFeeBps > MAX_FEE_BPS) revert FeeExceedsCap();
         protocolFeeBps = newFeeBps;
         emit ProtocolFeeUpdated(newFeeBps);
-    }
-
-    function _verifyChequeDamage(
-        SlashArgs calldata args,
-        address signingAddress
-    ) internal view returns (uint256 damage) {
-        if (args.damagedVendor != address(0) && args.chequeSignature.length == 65) {
-            bytes32 structHash = keccak256(
-                abi.encode(
-                    CHEQUE_TYPEHASH,
-                    args.maliciousAgent,
-                    args.damagedVendor,
-                    args.chequeCumulativeAmount,
-                    args.chequeSessionNonce,
-                    args.chequeDeadline
-                )
-            );
-            (address recoveredSigner, ECDSA.RecoverError err, ) = ECDSA.tryRecover(
-                _hashTypedDataV4(structHash),
-                args.chequeSignature
-            );
-            if (err == ECDSA.RecoverError.NoError && recoveredSigner == signingAddress) {
-                uint256 prevSettled = settledAmounts[args.maliciousAgent][args.damagedVendor];
-                if (args.chequeCumulativeAmount > prevSettled) {
-                    damage = args.chequeCumulativeAmount - prevSettled;
-                }
-            }
-        }
-    }
-
-    /**
-     * @notice Vendor claims accumulated damage compensation in USDC (Pull Pattern).
-     */
-    function claimDamage() external nonReentrant {
-        uint256 amount = claimableDamages[msg.sender];
-        if (amount == 0) revert NothingToSettle();
-        claimableDamages[msg.sender] = 0;
-        usdc.safeTransfer(msg.sender, amount);
-        emit DamageClaimed(msg.sender, amount);
     }
 
     /**
