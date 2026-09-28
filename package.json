@@ -1,0 +1,25 @@
+{
+  "name": "causal-slash-protocol",
+  "version": "1.0.0",
+  "description": "Causal-Slash Protocol: Sub-microsecond P2P equivocation-slashed micropayments for Base & CDP AgentKit",
+  "main": "scripts/run_full_system_e2e_test.js",
+  "scripts": {
+    "test:e2e": "node scripts/run_full_system_e2e_test.js",
+    "deploy:sepolia": "node scripts/deploy_base_sepolia.js"
+  },
+  "keywords": [
+    "base",
+    "agentkit",
+    "micropayments",
+    "schnorr",
+    "eots",
+    "slashing",
+    "ai-agents"
+  ],
+  "author": "Causal-Slash Protocol Contributors",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.2"
+  }
+}

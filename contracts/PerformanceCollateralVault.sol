@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -21,7 +21,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  *    - 60% of remainder to Insurance Reserve (bad-debt buffer for L2 outages).
  *    - 40% of remainder to Protocol Treasury (operating revenue).
  * 4. O(1) secp256k1 Key Derivation Identity: Instant foreclosure in ~7,162 gas.
- * 5. Emergency Slow Path: Reduced to 30 minutes without the 24h expiration trap.
+ * 5. Emergency Slow Path: 4-hour dispute window protecting against L2 reorg/sequencer delays.
  */
 contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -39,9 +39,12 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         "MutualClose(address agent,address vendor,uint256 finalSettledAmount,uint256 releasedExposure,uint256 sessionNonce,uint256 deadline)"
     );
 
-    uint256 public constant EMERGENCY_DISPUTE_PERIOD = 30 minutes; // Fallback only if vendor is dead
+    uint256 public constant EMERGENCY_DISPUTE_PERIOD = 4 hours; // Safe dispute window against L2 reorg/sequencer delays
     uint256 public constant MIN_COMMIT_DELAY = 1;
     uint256 public constant MAX_COMMIT_WINDOW = 256;
+
+    uint256 public protocolFeeBps = 0; // 0 bps promotional genesis fee (bootstrap phase)
+    uint256 public constant MAX_FEE_BPS = 25; // 0.25% hard cap to protect agents
 
     IERC20 public immutable usdc;
     address public immutable treasury;
@@ -58,6 +61,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     }
 
     struct FraudCommitment {
+        address targetAgent;
         uint256 commitBlock;
         bool revealed;
     }
@@ -79,6 +83,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     mapping(address => mapping(address => uint256)) public lastSessionNonces;
     mapping(address => uint256) public allocatedExposure; // agent => sum of active reserved session buffers
     mapping(address => uint256) public claimableDamages;   // Pull-pattern escrow for damaged vendors (USDC)
+    mapping(address => uint256) public disputeLocks;       // agent => block number until which instantWithdraw is locked
 
     event CollateralDeposited(address indexed agent, uint256 amountUSDC, bytes32 indexed merkleRoot, address signingAddress);
     event InstantMarginWithdrawn(address indexed agent, uint256 amountUSDC, uint256 remainingBond);
@@ -91,6 +96,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     event FraudCommitted(bytes32 indexed commitHash, address indexed finder, uint256 blockNumber);
     event CollateralForeclosed(address indexed agent, address indexed finder, uint256 bountyUSDC, address indexed damagedVendor, uint256 damageUSDC, uint256 insuranceUSDC, uint256 treasuryUSDC);
     event DamageClaimed(address indexed vendor, uint256 amountUSDC);
+    event ProtocolFeeUpdated(uint256 newFeeBps);
 
     error AlreadySlashed();
     error InsufficientCollateral();
@@ -107,6 +113,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     error NoPendingWithdrawal();
     error Unauthorized();
     error ExposureExceedsBond();
+    error FeeExceedsCap();
 
     constructor(
         address _usdcToken,
@@ -134,6 +141,9 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
 
         AgentVault storage vault = vaults[msg.sender];
         if (vault.isSlashed) revert AlreadySlashed();
+        if (vault.signingAddress != address(0) && vault.signingAddress != _signingAddress) {
+            revert Unauthorized();
+        }
 
         usdc.safeTransferFrom(msg.sender, address(this), amountUSDC);
 
@@ -153,6 +163,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         AgentVault storage vault = vaults[msg.sender];
         if (vault.agentOwner != msg.sender) revert Unauthorized();
         if (vault.isSlashed) revert AlreadySlashed();
+        if (block.number <= disputeLocks[msg.sender]) revert TimelockActive();
         if (amountUSDC == 0) revert InsufficientCollateral();
 
         uint256 totalBond = vault.collateralBond;
@@ -199,17 +210,22 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         AgentVault storage vault = vaults[msg.sender];
         if (vault.agentOwner != msg.sender) revert Unauthorized();
         if (vault.isSlashed) revert AlreadySlashed();
+        if (block.number <= disputeLocks[msg.sender]) revert TimelockActive();
 
         if (sessionNonce <= lastSessionNonces[msg.sender][vendor]) revert InvalidSessionNonce();
         lastSessionNonces[msg.sender][vendor] = sessionNonce;
 
         // Verify Vendor's EIP-712 Mutual Close signature
-        bytes32 structHash = keccak256(
-            abi.encode(MUTUAL_CLOSE_TYPEHASH, msg.sender, vendor, finalSettledAmount, releasedExposure, sessionNonce, deadline)
-        );
-        bytes32 digest = _hashTypedDataV4(structHash);
-        address recoveredSigner = ECDSA.recover(digest, vendorSignature);
-        if (recoveredSigner != vendor) revert InvalidSignature();
+        if (
+            ECDSA.recover(
+                _hashTypedDataV4(
+                    keccak256(
+                        abi.encode(MUTUAL_CLOSE_TYPEHASH, msg.sender, vendor, finalSettledAmount, releasedExposure, sessionNonce, deadline)
+                    )
+                ),
+                vendorSignature
+            ) != vendor
+        ) revert InvalidSignature();
 
         // Release allocated exposure
         if (releasedExposure > allocatedExposure[msg.sender]) {
@@ -219,13 +235,17 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         }
 
         // Settle delta if any remains
-        uint256 previousSettled = settledAmounts[msg.sender][vendor];
-        if (finalSettledAmount > previousSettled) {
-            uint256 delta = finalSettledAmount - previousSettled;
+        if (finalSettledAmount > settledAmounts[msg.sender][vendor]) {
+            uint256 delta = finalSettledAmount - settledAmounts[msg.sender][vendor];
             if (delta > vault.collateralBond) revert InsufficientCollateral();
             settledAmounts[msg.sender][vendor] = finalSettledAmount;
             vault.collateralBond -= delta;
-            usdc.safeTransfer(vendor, delta);
+
+            uint256 fee = (delta * protocolFeeBps) / 10000;
+            usdc.safeTransfer(vendor, delta - fee);
+            if (fee > 0) {
+                usdc.safeTransfer(treasury, fee);
+            }
             emit ChequeSettled(msg.sender, vendor, delta, finalSettledAmount);
         }
 
@@ -233,7 +253,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     }
 
     /**
-     * @notice Emergency Slow Path: Initiate withdrawal subject to 30-minute dispute window.
+     * @notice Emergency Slow Path: Initiate withdrawal subject to 4-hour dispute window.
      * Fallback ONLY when vendor is dead or unresponsive.
      */
     function initiateEmergencyWithdrawal(uint256 amountUSDC) external nonReentrant {
@@ -249,7 +269,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     }
 
     /**
-     * @notice Finalize emergency withdrawal after 30-minute dispute window.
+     * @notice Finalize emergency withdrawal after 4-hour dispute window.
      * No artificial expiration trap: funds remain withdrawable indefinitely.
      */
     function finalizeEmergencyWithdrawal() external nonReentrant {
@@ -308,19 +328,22 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         if (sessionNonce <= lastSessionNonces[agent][msg.sender]) revert InvalidSessionNonce();
         lastSessionNonces[agent][msg.sender] = sessionNonce;
 
-        uint256 previousSettled = settledAmounts[agent][msg.sender];
-        if (cumulativeAmountUSDC <= previousSettled) revert NothingToSettle();
-        uint256 delta = cumulativeAmountUSDC - previousSettled;
+        if (cumulativeAmountUSDC <= settledAmounts[agent][msg.sender]) revert NothingToSettle();
+        uint256 delta = cumulativeAmountUSDC - settledAmounts[agent][msg.sender];
 
         if (delta > vault.collateralBond) revert InsufficientCollateral();
 
         // Verify EIP-712 signature
-        bytes32 structHash = keccak256(
-            abi.encode(CHEQUE_TYPEHASH, agent, msg.sender, cumulativeAmountUSDC, sessionNonce, deadline)
-        );
-        bytes32 digest = _hashTypedDataV4(structHash);
-        address recoveredSigner = ECDSA.recover(digest, signature);
-        if (recoveredSigner != vault.signingAddress) revert InvalidSignature();
+        if (
+            ECDSA.recover(
+                _hashTypedDataV4(
+                    keccak256(
+                        abi.encode(CHEQUE_TYPEHASH, agent, msg.sender, cumulativeAmountUSDC, sessionNonce, deadline)
+                    )
+                ),
+                signature
+            ) != vault.signingAddress
+        ) revert InvalidSignature();
 
         // State update (CEI)
         settledAmounts[agent][msg.sender] = cumulativeAmountUSDC;
@@ -331,18 +354,30 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
             vault.pendingWithdrawal = vault.collateralBond;
         }
 
-        usdc.safeTransfer(msg.sender, delta);
+        uint256 fee = (delta * protocolFeeBps) / 10000;
+        usdc.safeTransfer(msg.sender, delta - fee);
+        if (fee > 0) {
+            usdc.safeTransfer(treasury, fee);
+        }
         emit ChequeSettled(agent, msg.sender, delta, cumulativeAmountUSDC);
     }
 
     /**
      * @notice Phase 1: Submit commitment hash C = keccak256(extractedSk, finder, salt)
+     * and lock targetAgent's withdrawals during the commitment dispute window.
      */
-    function commitFraudProof(bytes32 _commitHash) external {
+    function commitFraudProof(address targetAgent, bytes32 _commitHash) public {
+        if (targetAgent == address(0)) revert InvalidKey();
+        if (vaults[targetAgent].collateralBond == 0) revert InsufficientCollateral();
+        if (vaults[targetAgent].isSlashed) revert AlreadySlashed();
+        if (block.number <= disputeLocks[targetAgent]) revert TimelockActive();
+
         commitments[_commitHash] = FraudCommitment({
+            targetAgent: targetAgent,
             commitBlock: block.number,
             revealed: false
         });
+        disputeLocks[targetAgent] = block.number + MAX_COMMIT_WINDOW;
         emit FraudCommitted(_commitHash, msg.sender, block.number);
     }
 
@@ -362,6 +397,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         if (comm.revealed) revert AlreadySlashed();
         if (block.number < comm.commitBlock + MIN_COMMIT_DELAY) revert CommitTooEarly();
         if (block.number > comm.commitBlock + MAX_COMMIT_WINDOW) revert CommitExpired();
+        if (comm.targetAgent != args.maliciousAgent) revert Unauthorized();
 
         comm.revealed = true;
 
@@ -378,41 +414,20 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         allocatedExposure[args.maliciousAgent] = 0;
 
         // Waterfall Distribution (Closed Loop):
-        // 1. Priority 1: Verified Vendor Damage Restitution via Cryptographic Cheque Proof
-        uint256 damage = 0;
-        if (args.damagedVendor != address(0) && args.chequeSignature.length == 65) {
-            bytes32 structHash = keccak256(
-                abi.encode(
-                    CHEQUE_TYPEHASH,
-                    args.maliciousAgent,
-                    args.damagedVendor,
-                    args.chequeCumulativeAmount,
-                    args.chequeSessionNonce,
-                    args.chequeDeadline
-                )
-            );
-            bytes32 digest = _hashTypedDataV4(structHash);
-            (address recoveredSigner, ECDSA.RecoverError err, ) = ECDSA.tryRecover(digest, args.chequeSignature);
-            if (err == ECDSA.RecoverError.NoError && recoveredSigner == vault.signingAddress) {
-                uint256 prevSettled = settledAmounts[args.maliciousAgent][args.damagedVendor];
-                if (args.chequeCumulativeAmount > prevSettled) {
-                    damage = args.chequeCumulativeAmount - prevSettled;
-                }
-            }
-        }
-        // Structurally cap damage by allocated exposure and total collateral bond
-        if (agentAllocatedExposure > 0 && damage > agentAllocatedExposure) {
+        // 1. Priority 1: Guaranteed 15% Whistleblower / Finder Bounty
+        uint256 bounty = (totalBond * 15) / 100;
+        uint256 remaining = totalBond - bounty;
+
+        // 2. Priority 2: Verified Vendor Damage Restitution via Cryptographic Cheque Proof
+        uint256 damage = _verifyChequeDamage(args, vault.signingAddress);
+        // Structurally cap damage by allocated exposure and remaining collateral
+        if (damage > agentAllocatedExposure) {
             damage = agentAllocatedExposure;
         }
-        if (damage > totalBond) {
-            damage = totalBond;
+        if (damage > remaining) {
+            damage = remaining;
         }
-        uint256 remaining = totalBond - damage;
-
-        // 2. Priority 2: 15% Whistleblower / Finder Bounty
-        uint256 targetBounty = (totalBond * 15) / 100;
-        uint256 bounty = remaining > targetBounty ? targetBounty : remaining;
-        remaining -= bounty;
+        remaining -= damage;
 
         // 3. Priority 3: Remainder split: 60% to Insurance Reserve, 40% to Protocol Treasury
         uint256 insuranceAmount = (remaining * 60) / 100;
@@ -441,6 +456,45 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
             insuranceAmount,
             treasuryAmount
         );
+    }
+
+    /**
+     * @notice Set protocol fee basis points (capped at MAX_FEE_BPS = 25 bps / 0.25%).
+     * Only treasury/admin can update.
+     */
+    function setProtocolFeeBps(uint256 newFeeBps) external {
+        if (msg.sender != treasury) revert Unauthorized();
+        if (newFeeBps > MAX_FEE_BPS) revert FeeExceedsCap();
+        protocolFeeBps = newFeeBps;
+        emit ProtocolFeeUpdated(newFeeBps);
+    }
+
+    function _verifyChequeDamage(
+        SlashArgs calldata args,
+        address signingAddress
+    ) internal view returns (uint256 damage) {
+        if (args.damagedVendor != address(0) && args.chequeSignature.length == 65) {
+            bytes32 structHash = keccak256(
+                abi.encode(
+                    CHEQUE_TYPEHASH,
+                    args.maliciousAgent,
+                    args.damagedVendor,
+                    args.chequeCumulativeAmount,
+                    args.chequeSessionNonce,
+                    args.chequeDeadline
+                )
+            );
+            (address recoveredSigner, ECDSA.RecoverError err, ) = ECDSA.tryRecover(
+                _hashTypedDataV4(structHash),
+                args.chequeSignature
+            );
+            if (err == ECDSA.RecoverError.NoError && recoveredSigner == signingAddress) {
+                uint256 prevSettled = settledAmounts[args.maliciousAgent][args.damagedVendor];
+                if (args.chequeCumulativeAmount > prevSettled) {
+                    damage = args.chequeCumulativeAmount - prevSettled;
+                }
+            }
+        }
     }
 
     /**

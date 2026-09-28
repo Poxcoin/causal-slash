@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
@@ -160,7 +160,7 @@ contract PerformanceCollateralVaultTest is Test {
         bytes32 commitHash = keccak256(abi.encodePacked(rogueSk, finder, salt));
 
         vm.prank(finder);
-        vault.commitFraudProof(commitHash);
+        vault.commitFraudProof(rogueOwner, commitHash);
 
         // Advance 2 blocks for MIN_COMMIT_DELAY
         vm.roll(block.number + 2);
@@ -223,7 +223,7 @@ contract PerformanceCollateralVaultTest is Test {
         bytes32 commitHash = keccak256(abi.encodePacked(rogueSk, finder, salt));
 
         vm.prank(finder);
-        vault.commitFraudProof(commitHash);
+        vault.commitFraudProof(rogueOwner, commitHash);
         vm.roll(block.number + 2);
 
         // ATTACK: Finder attempts to pass himself as "damagedVendor" and claim 10 USDC without valid cheque signature!
@@ -288,10 +288,9 @@ contract PerformanceCollateralVaultTest is Test {
 
         bytes32 salt = keccak256("salt_fuzz");
         vm.prank(finder);
-        vault.commitFraudProof(keccak256(abi.encodePacked(rogueSk, finder, salt)));
+        vault.commitFraudProof(rogueOwner, keccak256(abi.encodePacked(rogueSk, finder, salt)));
         vm.roll(block.number + 2);
 
-        uint256 vaultBalBefore = usdc.balanceOf(address(vault));
         uint256 finderBefore = usdc.balanceOf(finder);
         uint256 insBefore = usdc.balanceOf(insuranceReserve);
         uint256 trsBefore = usdc.balanceOf(treasury);
@@ -315,5 +314,272 @@ contract PerformanceCollateralVaultTest is Test {
 
         // Conservation of Value Invariant: Sum of distributed parts == total deposited collateral
         assertEq(vendorDmg + finderGain + insGain + trsGain, deposit, "Zero loss, exact conservation of USDC");
+    }
+
+    function test_PreventKeyOverwrite() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root1"), agentSigner);
+
+        // Depositing with a different signing address must revert
+        address fakeSigner = address(0xDEADBEEF);
+        vm.expectRevert(PerformanceCollateralVault.Unauthorized.selector);
+        vault.depositCollateral(1 * 1e6, keccak256("root2"), fakeSigner);
+
+        // Depositing with same signing address succeeds and accumulates bond
+        vault.depositCollateral(5 * 1e6, keccak256("root3"), agentSigner);
+        (uint256 bond,, address signer,,,,) = vault.vaults(agentOwner);
+        assertEq(bond, 15 * 1e6);
+        assertEq(signer, agentSigner);
+        vm.stopPrank();
+    }
+
+    function test_InstantWithdrawBlockedDuringDispute() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        vm.stopPrank();
+
+        // Finder commits fraud proof naming agentOwner as targetAgent
+        bytes32 salt = keccak256("dispute_salt");
+        bytes32 commitHash = keccak256(abi.encodePacked(agentSigningPk, finder, salt));
+
+        vm.prank(finder);
+        vault.commitFraudProof(agentOwner, commitHash);
+
+        // Agent tries to frontrun slash by withdrawing free collateral
+        vm.startPrank(agentOwner);
+        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
+        vault.instantWithdraw(5 * 1e6);
+        vm.stopPrank();
+
+        // After dispute lock window (256 blocks), instantWithdraw is unblocked if not revealed
+        vm.roll(block.number + 257);
+        vm.prank(agentOwner);
+        vault.instantWithdraw(5 * 1e6);
+        (uint256 remainingBond,,,,,,) = vault.vaults(agentOwner);
+        assertEq(remainingBond, 5 * 1e6);
+    }
+
+    function test_ProtocolFeeGenesisZeroAndConfigurable() public {
+        // 1. Verify genesis fee is 0 bps
+        assertEq(vault.protocolFeeBps(), 0);
+
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(20 * 1e6, keccak256("root"), agentSigner);
+        vm.stopPrank();
+
+        // Sign cheque for 2 USDC
+        bytes32 chequeHash = keccak256(
+            abi.encode(CHEQUE_TYPEHASH, agentOwner, vendor, 2 * 1e6, 1, block.timestamp + 1000)
+        );
+        bytes32 digest = vault.hashTypedDataV4(chequeHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(agentSigningPk, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        // Settle cheque at 0 bps fee: vendor receives 100% of delta (2 USDC)
+        uint256 vendorBefore = usdc.balanceOf(vendor);
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+
+        vm.prank(vendor);
+        vault.settleCheque(agentOwner, 2 * 1e6, 1, block.timestamp + 1000, sig);
+
+        assertEq(usdc.balanceOf(vendor) - vendorBefore, 2 * 1e6, "Vendor receives 100% of delta at 0 fee");
+        assertEq(usdc.balanceOf(treasury) - treasuryBefore, 0, "Treasury receives 0 fee at genesis");
+
+        // 2. Non-treasury cannot configure fee
+        vm.prank(agentOwner);
+        vm.expectRevert(PerformanceCollateralVault.Unauthorized.selector);
+        vault.setProtocolFeeBps(5);
+
+        // 3. Treasury cannot exceed MAX_FEE_BPS (25 bps)
+        vm.startPrank(treasury);
+        vm.expectRevert(PerformanceCollateralVault.FeeExceedsCap.selector);
+        vault.setProtocolFeeBps(26);
+
+        // 4. Treasury configures 5 bps promotional/standard fee
+        vault.setProtocolFeeBps(5); // 5 bps = 0.05%
+        assertEq(vault.protocolFeeBps(), 5);
+        vm.stopPrank();
+
+        // Sign next cheque for 12 USDC (delta = 10 USDC)
+        chequeHash = keccak256(
+            abi.encode(CHEQUE_TYPEHASH, agentOwner, vendor, 12 * 1e6, 2, block.timestamp + 1000)
+        );
+        digest = vault.hashTypedDataV4(chequeHash);
+        (v, r, s) = vm.sign(agentSigningPk, digest);
+        sig = abi.encodePacked(r, s, v);
+
+        vendorBefore = usdc.balanceOf(vendor);
+        treasuryBefore = usdc.balanceOf(treasury);
+
+        vm.prank(vendor);
+        vault.settleCheque(agentOwner, 12 * 1e6, 2, block.timestamp + 1000, sig);
+
+        // Delta = 10 USDC (10,000,000 micro-USDC)
+        // Fee = 10,000,000 * 5 / 10,000 = 5,000 micro-USDC ($0.005)
+        // Vendor gets 9,995,000 micro-USDC ($9.995)
+        assertEq(usdc.balanceOf(treasury) - treasuryBefore, 5000, "Treasury receives exact 5 bps fee");
+        assertEq(usdc.balanceOf(vendor) - vendorBefore, 9995000, "Vendor receives delta minus fee");
+    }
+
+    function test_SlashingWaterfallGuaranteedFinderBounty() public {
+        uint256 rogueSk = 0x777888999;
+        address rogueSigner = vm.addr(rogueSk);
+        address rogueOwner = address(0x333);
+
+        vm.startPrank(deployer);
+        usdc.mint(rogueOwner, 10 * 1e6);
+        vm.stopPrank();
+
+        vm.startPrank(rogueOwner);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), rogueSigner);
+        vault.allocateSessionExposure(vendor, 10 * 1e6);
+        vm.stopPrank();
+
+        // Attacker produces a 10 USDC cheque to their vendor trying to self-slash 100% of collateral
+        bytes32 chequeHash = keccak256(
+            abi.encode(CHEQUE_TYPEHASH, rogueOwner, vendor, 10 * 1e6, 1, block.timestamp + 1000)
+        );
+        bytes32 digest = vault.hashTypedDataV4(chequeHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(rogueSk, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        bytes32 salt = keccak256("bounty_priority_salt");
+        vm.prank(finder);
+        vault.commitFraudProof(rogueOwner, keccak256(abi.encodePacked(rogueSk, finder, salt)));
+        vm.roll(block.number + 2);
+
+        uint256 finderBefore = usdc.balanceOf(finder);
+
+        vm.prank(finder);
+        vault.revealAndSlash(PerformanceCollateralVault.SlashArgs({
+            maliciousAgent: rogueOwner,
+            extractedSk: rogueSk,
+            salt: salt,
+            damagedVendor: vendor,
+            chequeCumulativeAmount: 10 * 1e6,
+            chequeSessionNonce: 1,
+            chequeDeadline: block.timestamp + 1000,
+            chequeSignature: sig
+        }));
+
+        // 1. Finder bounty is guaranteed 15% ($1.50) FIRST
+        assertEq(usdc.balanceOf(finder) - finderBefore, 1500000, "Finder receives guaranteed 15% bounty");
+
+        // 2. Vendor damage is capped by remaining funds ($8.50)
+        assertEq(vault.claimableDamages(vendor), 8500000, "Vendor damage capped at remaining $8.50");
+    }
+
+    function test_SlashingWaterfall_ExtractedSkCannotDrainZeroExposure() public {
+        uint256 rogueSk = 0xABC999111;
+        address rogueSigner = vm.addr(rogueSk);
+        address rogueOwner = address(0x444);
+
+        vm.startPrank(deployer);
+        usdc.mint(rogueOwner, 10 * 1e6);
+        vm.stopPrank();
+
+        vm.startPrank(rogueOwner);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), rogueSigner);
+        // NOTE: allocatedExposure is ZERO (agent did NOT allocate exposure to vendor)!
+        assertEq(vault.allocatedExposure(rogueOwner), 0);
+        vm.stopPrank();
+
+        // Attacker creates a 100% cryptographically valid cheque for 10 USDC to their fake vendor
+        bytes32 chequeHash = keccak256(
+            abi.encode(CHEQUE_TYPEHASH, rogueOwner, vendor, 10 * 1e6, 1, block.timestamp + 1000)
+        );
+        bytes32 digest = vault.hashTypedDataV4(chequeHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(rogueSk, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        bytes32 salt = keccak256("zero_exposure_salt");
+        vm.prank(finder);
+        vault.commitFraudProof(rogueOwner, keccak256(abi.encodePacked(rogueSk, finder, salt)));
+        vm.roll(block.number + 2);
+
+        uint256 finderBefore = usdc.balanceOf(finder);
+        uint256 insBefore = usdc.balanceOf(insuranceReserve);
+        uint256 trsBefore = usdc.balanceOf(treasury);
+
+        vm.prank(finder);
+        vault.revealAndSlash(PerformanceCollateralVault.SlashArgs({
+            maliciousAgent: rogueOwner,
+            extractedSk: rogueSk,
+            salt: salt,
+            damagedVendor: vendor,
+            chequeCumulativeAmount: 10 * 1e6,
+            chequeSessionNonce: 1,
+            chequeDeadline: block.timestamp + 1000,
+            chequeSignature: sig
+        }));
+
+        // INVARIANT VERIFIED:
+        // 1. Damage awarded to fake vendor is STRICTLY 0 because allocatedExposure == 0!
+        assertEq(vault.claimableDamages(vendor), 0, "Vendor damage strictly 0 for zero exposure");
+        // 2. Finder receives 15% bounty ($1.50)
+        assertEq(usdc.balanceOf(finder) - finderBefore, 1500000, "Finder receives 15% bounty");
+        // 3. Remainder ($8.50) split 60% Insurance ($5.10) and 40% Treasury ($3.40)
+        assertEq(usdc.balanceOf(insuranceReserve) - insBefore, 5100000, "Insurance gets 60% of remainder");
+        assertEq(usdc.balanceOf(treasury) - trsBefore, 3400000, "Treasury gets 40% of remainder");
+    }
+
+    function test_CooperativeCloseBlockedDuringDispute() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        vault.allocateSessionExposure(vendor, 2 * 1e6);
+        vm.stopPrank();
+
+        // Dispute committed against agentOwner
+        bytes32 salt = keccak256("coop_dispute_salt");
+        bytes32 commitHash = keccak256(abi.encodePacked(agentSigningPk, finder, salt));
+
+        vm.prank(finder);
+        vault.commitFraudProof(agentOwner, commitHash);
+
+        // Vendor signs mutual close
+        bytes32 structHash = keccak256(
+            abi.encode(MUTUAL_CLOSE_TYPEHASH, agentOwner, vendor, 0, 2 * 1e6, 1, block.timestamp + 100)
+        );
+        bytes32 digest = vault.hashTypedDataV4(structHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(vendorPk, digest);
+        bytes memory vendorSig = abi.encodePacked(r, s, v);
+
+        // Attempting cooperativeCloseSession during dispute must revert TimelockActive!
+        vm.prank(agentOwner);
+        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
+        vault.cooperativeCloseSession(vendor, 0, 2 * 1e6, 1, block.timestamp + 100, vendorSig);
+    }
+
+    function test_CooperativeCloseSession_WithProtocolFee() public {
+        // Configure 5 bps fee
+        vm.prank(treasury);
+        vault.setProtocolFeeBps(5);
+
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        vault.allocateSessionExposure(vendor, 5 * 1e6);
+        vm.stopPrank();
+
+        // Vendor signs mutual close with 4 USDC settled amount (delta = 4 USDC)
+        bytes32 structHash = keccak256(
+            abi.encode(MUTUAL_CLOSE_TYPEHASH, agentOwner, vendor, 4 * 1e6, 5 * 1e6, 1, block.timestamp + 100)
+        );
+        bytes32 digest = vault.hashTypedDataV4(structHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(vendorPk, digest);
+        bytes memory vendorSig = abi.encodePacked(r, s, v);
+
+        uint256 vendorBefore = usdc.balanceOf(vendor);
+        uint256 trsBefore = usdc.balanceOf(treasury);
+
+        vm.prank(agentOwner);
+        vault.cooperativeCloseSession(vendor, 4 * 1e6, 5 * 1e6, 1, block.timestamp + 100, vendorSig);
+
+        // Delta = 4 USDC (4,000,000 micro-USDC)
+        // Fee = 4,000,000 * 5 / 10,000 = 2,000 micro-USDC ($0.002)
+        // Vendor gets 3,998,000 micro-USDC ($3.998)
+        assertEq(usdc.balanceOf(treasury) - trsBefore, 2000, "Treasury receives 5 bps fee on close");
+        assertEq(usdc.balanceOf(vendor) - vendorBefore, 3998000, "Vendor receives delta minus fee on close");
     }
 }
