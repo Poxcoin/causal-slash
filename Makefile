@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Causal-Slash Protocol Developers
 
 CC ?= gcc
@@ -13,11 +13,14 @@ causal_daemon: $(SRCS)
 	$(CC) $(CFLAGS) src/causal_daemon.c $(LDFLAGS) -o causal_daemon
 
 libcausal_slash.so: $(SRCS)
-	$(CC) $(CFLAGS) -shared src/causal_daemon.c $(LDFLAGS) -o libcausal_slash.so
+	$(CC) $(CFLAGS) -shared src/causal_daemon.c $(LDFLAGS) -o sdk/libcausal_slash.so
 
 test: causal_daemon
 	./causal_daemon --all
 	rm -f causal_daemon
+
+demo: libcausal_slash.so
+	python3 examples/quickstart_agent.py
 
 test-asan:
 	$(CC) -O3 -fsanitize=address,undefined -g -Wall -Wextra -pthread -Isrc src/causal_daemon.c $(LDFLAGS) -o causal_daemon_asan
@@ -35,4 +38,4 @@ test-bloat:
 	rm -f test_state_bloat
 
 clean:
-	rm -f causal_daemon libcausal_slash.so causal_daemon_asan test_concurrency test_state_bloat *.o
+	rm -f causal_daemon sdk/libcausal_slash.so libcausal_slash.so causal_daemon_asan test_concurrency test_state_bloat *.o

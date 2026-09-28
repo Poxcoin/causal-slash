@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Causal-Slash Protocol Developers
 """
 Causal-Slash Protocol: Python High-Performance Native SDK
@@ -31,15 +31,15 @@ CSLS_ERR_FORGED_HASH = -23
 _SDK_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_SDK_DIR)
 _SO_PATHS = [
-    os.path.join(_PROJECT_ROOT, "libcausal_slash.so"),
-    os.path.join(_SDK_DIR, "libcausal_slash.so")
+    os.path.join(_SDK_DIR, "libcausal_slash.so"),
+    os.path.join(_PROJECT_ROOT, "libcausal_slash.so")
 ]
 
 def _load_c_lib() -> ctypes.CDLL:
     for path in _SO_PATHS:
         if os.path.exists(path):
             return ctypes.CDLL(path)
-    # Auto-compile in project root if missing
+    # Auto-compile in sdk directory if missing
     cmd = ["make", "-C", _PROJECT_ROOT, "libcausal_slash.so"]
     subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return ctypes.CDLL(_SO_PATHS[0])
@@ -295,8 +295,12 @@ class CausalVendorNode:
 
     def process_cheque(self, cheque: Union[Cheque, bytes]) -> ProcessResult:
         """
-        Verifies an incoming cheque in < 15 microseconds.
-        Detects equivocation and algebraically extracts private key if double-spend occurs.
+        Processes an incoming streaming micro-cheque using Optimistic P2P Credit Streaming bounded by delta_v.
+
+        Validates protocol framing, monotonic height progression, challenge digest (e mod q),
+        and enforces local credit exposure buffer (delta_v USDC).
+        If equivocation (conflicting cheques on identical height) is detected, algebraically extracts
+        the offender's private key via O(1) modular arithmetic for automated Base L2 foreclosure.
         """
         if isinstance(cheque, Cheque):
             raw = cheque.raw_packet
@@ -367,7 +371,7 @@ class CausalVendorNode:
 if __name__ == "__main__":
     import time
     print("=" * 70)
-    print("🚀 CAUSAL-SLASH PYTHON SDK: LIVE BENCHMARK & TEST SUITE")
+    print("CAUSAL-SLASH PYTHON SDK: BENCHMARK & VERIFICATION SUITE")
     print("=" * 70)
 
     # 1. Initialize
@@ -391,10 +395,10 @@ if __name__ == "__main__":
     ops_per_sec = n / total_time
     us_per_op = (total_time / n) * 1e6
 
-    print(f"  ✅ Completed {n:,} cheques in {total_time:.4f} seconds")
-    print(f"  ⚡ Latency: {us_per_op:.2f} microseconds per full cycle (Sign + Verify)")
-    print(f"  🚀 Throughput: {ops_per_sec:,.0f} operations/second in Python!")
-    print(f"  💰 Settled Volume: ${vendor.accumulated_usdc:.4f} USDC")
+    print(f"  [OK] Completed {n:,} cheques in {total_time:.4f} seconds")
+    print(f"  Latency: {us_per_op:.2f} microseconds per full cycle (Sign + Verify)")
+    print(f"  Throughput: {ops_per_sec:,.0f} operations/second in Python!")
+    print(f"  Settled Volume: ${vendor.accumulated_usdc:.4f} USDC")
 
     # 3. Equivocation Detection & Key Extraction Test
     print("\n[2] Testing Equivocation Trap from Python...")
@@ -414,10 +418,10 @@ if __name__ == "__main__":
     assert not r2.accepted
     assert r2.fraud_proof is not None
     assert r2.fraud_proof.extracted_secret_key == bytes(attacker_agent._ctx.sk)
-    print("  🔥 EQUIVOCATION DETECTED & PRIVATE KEY EXTRACTED 100%!")
+    print("  [ALERT] Equivocation detected and private key extracted successfully")
     print(f"  Offender PK:  {r2.fraud_proof.offender_pk.hex()[:18]}...")
     print(f"  Extracted SK: {r2.fraud_proof.extracted_secret_key.hex()[:18]}...")
     print(f"  True SK:      {bytes(attacker_agent._ctx.sk).hex()[:18]}...")
-    print("  ✅ Math Invariant Verified: Extracted Key Matches 100%!")
+    print("  [PASS] Mathematical Invariant Verified: Extracted key matches agent secret key")
     print("=" * 70)
-    print("ALL PYTHON SDK VERIFICATIONS PASSED WITH ZERO ERRORS!")
+    print("ALL PYTHON SDK VERIFICATIONS COMPLETED SUCCESSFULLY!")

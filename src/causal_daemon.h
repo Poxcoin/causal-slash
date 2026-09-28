@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 Causal-Slash Protocol Developers
 //
-// Causal-Slash Protocol: Sovereign High-Frequency M2M Micro-Payment Engine
-// Sub-microsecond P2P Cheque Verification and Algebraic EOTS Slashing Daemon
+// Causal-Slash Protocol: High-Frequency M2M Micro-Payment Engine
+// Optimistic P2P Credit Streaming Bounded by delta_v with O(1) Algebraic Equivocation Slashing
 // Denominated strictly in USD / USDC (6 decimal places: 1,000,000 micro_usdc = $1.00)
 
 #ifndef CAUSAL_DAEMON_H

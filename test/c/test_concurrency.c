@@ -63,7 +63,7 @@ int main() {
     printf("Total Operations: %ld\n", (long)global_height);
     printf("Duplicate Nonce Collisions: %ld\n", (long)collision_counter);
     assert(collision_counter == 0);
-    printf("RESULT: ZERO collisions! Hardware atomic fetch-and-add completely neutralizes accidental suicide.\n");
+    printf("RESULT: Zero collisions verified. Atomic fetch-and-add enforces strict monotonic height serialization.\n");
 
     free(height_bitmap);
     return 0;

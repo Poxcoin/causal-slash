@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 """
 Causal-Slash Protocol: Minimalist Autonomous Agent Integration
 Shows how a LangGraph, CrewAI, AutoGen, or ElizaOS agent streams micro-payments
@@ -16,7 +16,7 @@ from causal_slash import CausalAgentWallet, CausalVendorNode
 
 def run_agent_workflow():
     print("=" * 70)
-    print("🤖 AI AGENT STREAMING MICROPAYMENT DEMO (Causal-Slash)")
+    print("AI AGENT STREAMING MICROPAYMENT DEMO (Causal-Slash)")
     print("=" * 70)
 
     # 1. Initialize Autonomous Agent Wallet & Inference Vendor
@@ -45,7 +45,7 @@ def run_agent_workflow():
         if batch_idx % 10 == 0:
             print(f"  • Batch {batch_idx:02d}/50: 10 tokens served | Cheque h={cheque.height} accepted | Total: ${vendor.accumulated_usdc:.4f} USDC")
 
-    print("\n✅ STREAM COMPLETED SUCCESSFULLY:")
+    print("\n[OK] STREAM COMPLETED SUCCESSFULLY:")
     print(f"   • Total Tokens Served: 500 tokens")
     print(f"   • Total Amount Paid:   ${total_cost_usdc:.4f} USDC")
     print(f"   • Blockchain Gas Used: $0.000000 (100% off-chain P2P)")
@@ -67,9 +67,9 @@ def run_agent_workflow():
     
     fraud_res = v2.process_cheque(c2)
     assert not fraud_res.accepted
-    print(f"   🔥 Equivocation Detected on Height h=1!")
-    print(f"   🔑 Offender Private Key Extracted: 0x{fraud_res.fraud_proof.extracted_secret_key.hex()[:18]}...")
-    print(f"   ⚖️ Fraud proof ready for on-chain Base L2 slashing!")
+    print(f"   [ALERT] Equivocation Detected on Height h=1")
+    print(f"   Offender Private Key Extracted:        0x{fraud_res.fraud_proof.extracted_secret_key.hex()[:18]}...")
+    print(f"   Fraud proof ready for on-chain Base L2 slashing")
     print("=" * 70)
 
 if __name__ == "__main__":
