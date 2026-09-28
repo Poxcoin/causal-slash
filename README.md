@@ -181,7 +181,6 @@ Expected: ALL 10 ON-CHAIN INTEGRATION TESTS PASSED
 ## 7. Contact & Coordination
 
 * **Security & Research Contact:** `HoldGuard@proton.me`
-* **Repository:** [https://github.com/Poxcoin/causal-slash](https://github.com/Poxcoin/causal-slash)
 
 ## 8. License
 
