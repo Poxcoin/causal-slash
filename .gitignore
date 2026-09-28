@@ -25,8 +25,19 @@ cache/
 CAUSAL_SLASH_IP_EVIDENCE_BUNDLE.*
 *.ots
 
+# Node & Package Managers
+node_modules/
+package-lock.json
+
+# Environment & Wallet secrets
+.env
+*.env
+.deployer_wallet.json
+deployment_receipt.json
+
 # OS and Editor artifacts
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+

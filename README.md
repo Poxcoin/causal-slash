@@ -1,76 +1,77 @@
 # Causal-Slash Protocol
 
-[![License](https://img.shields.io/badge/License-BUSL_1.1-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Specification%20%26%20Reference%20Implementation-green.svg)]()
-[![Bitcoin-Timestamp](https://img.shields.io/badge/Bitcoin%20OTS-Anchored-orange.svg)](USPTO_PROVISIONAL_PATENT_APPLICATION.md.ots)
+[![Base Sepolia](https://img.shields.io/badge/Base_Sepolia-Contract_Verified-success?logo=ethereum)](https://sepolia.basescan.org/address/0xdC68e06331aF5aC885E5A7Cb875d364dedcD1D34#code)
 
-> **High-frequency, sub-millisecond, zero-gas peer-to-peer streaming micro-settlement architecture with deterministic key-exposure equivocation traps and pipelined exposure bounds for autonomous computational agents.**
-
----
+> Streaming micropayment protocol for AI agents on Base L2.
 
 ## 1. Overview
 
-Autonomous software agents (executing on LangGraph, AutoGen, CrewAI, or decentralized clusters) require granular, per-call micro-transactions ($0.0001 – $0.05) to purchase LLM inference tokens, vector queries, and GPU compute. 
+### What is Causal-Slash?
+**Causal-Slash** is an open-source settlement protocol on Base L2 designed for autonomous AI agents and machine-to-machine commerce. It enables software agents to stream payments for compute, inference, and APIs continuously (per token or per call) without pre-funding individual accounts at every vendor.
 
-Traditional rails impose fatal bottlenecks:
-* **Web2 Rails (Stripe/Card Interchange):** $0.30 + 2.9% baseline fee makes $0.001 micro-calls impossible (30,000% overhead).
-* **Layer-1 / Layer-2 Blockchains (Ethereum, Base, Solana):** 400ms – 12s block latency and gas overhead ($0.001 – $0.05 per TX) congest mempools during continuous token streaming.
-* **Bilateral State Channels (Lightning Network):** Requires fragmented, locked bidirectional capital along every hop, suffering >30% routing failure rates for dynamic multi-vendor graphs.
+### Who is this for?
+* **Autonomous Agent Builders (Coinbase AgentKit, ElizaOS, CrewAI):** Agents executing multi-step workflows that need to access dozens of external APIs, DePIN compute nodes, or sub-agents without human intervention or credit cards.
+* **Compute & API Providers (DePIN GPU clusters, LLM routers, specialized data):** Infrastructure providers who want to monetize services for anonymous bots at wire speed with cryptographic settlement guarantees.
 
-**Causal-Slash** eliminates distributed ledgers from intermediate micro-transactions. Agents stream cryptographically signed cheques directly over existing transport connections (HTTP/WebSocket/QUIC). If an agent attempts equivocation or double-spending, any observer algebraically extracts the agent's private key via localized modular arithmetic ($\approx 20\ \mu\text{s}$) and triggers collateral foreclosure for liquidated damages on-chain.
+### The Core Problem: Fragmented Capital & Custody
+If an autonomous agent calls 50 different micro-services, it must pre-fund each service individually:
+* **$10 deposit × 50 vendors = $500 in locked idle capital** — just to consume $0.50 worth of compute.
+* Funds sit in custody on 50 third-party platforms with zero recovery upon vendor failure.
+* Direct L2 transactions are too slow and expensive ($0.005–$0.02 gas per micro-call), while state channels (Lightning/L402) lock up capital per payment channel and suffer from multi-hop routing failures.
 
----
+### The Solution: One Shared Bond on Base
+With Causal-Slash, the agent locks **one USDC bond on Base** that covers all vendors simultaneously:
+* **Zero Gas, Wire Speed:** The agent streams signed micro-cheques peer-to-peer over direct sockets at ~3.43 µs latency.
+* **Economic Security (Game-Theoretic Deterrence):** We do not rely on centralized trust or claim fraud is "impossible". An attacker can attempt a double-spend, but the cryptographic construction ensures that signing two conflicting cheques at the same sequence height algebraically leaks the agent's private key in $O(1)$. Anyone can submit this proof to Base to foreclose the bond, making the attack strictly negative-EV ($\mathbb{E}[\text{Payoff}] < 0$, $\text{ROI} \le -95\%$).
+
+### Live Deployment & Verified Contracts (Base Sepolia)
+* **Network:** Base Sepolia (Chain ID `84532`)
+* **Smart Contract:** `PerformanceCollateralVault`
+* **Explorer & Source Code:** [`0xdC68e06331aF5aC885E5A7Cb875d364dedcD1D34`](https://sepolia.basescan.org/address/0xdC68e06331aF5aC885E5A7Cb875d364dedcD1D34#code) (Verified Exact Match)
+* **Settlement Currency:** Base Sepolia USDC (`0x036CbD53842c5426634e7929541eC2318f3dCF7e`)
+* **Security & Invariants:** 14/14 Passing Foundry Fuzz & Invariant Tests (`forge test`)
 
 ## 2. Cryptographic Mechanism
 
-```
-FIG. 1: PROTOCOL TOPOLOGY & EQUIVOCATION KEY EXTRACTION
+```mermaid
+flowchart TD
+    subgraph Base["Base L2"]
+        Vault["PerformanceCollateralVault (Collateral Bond)"]
+        Slash["Slashing Engine (Commit-Reveal Foreclosure)"]
+    end
+    Agent["Autonomous Agent Runtime (Secret Key, Monotonic Counter)"]
+    Vendors["Resource Providers (LLM Inference, Vector DB, GPU)"]
 
-+-----------------------------------------------------------------------------+
-|                           BASE LEDGER (Base / L2)                           |
-|  +------------------------+           +----------------------------------+  |
-|  | Isolated Surety Vault  |<----------| L1 Slash Contract                |  |
-|  | (Collateral Bond = B)  |           | (Commit-Reveal Slashing Engine)  |  |
-|  +-----------+------------+           +-----------------+----------------+  |
-+--------------|------------------------------------------^-------------------+
-               | Anchors Bond                             |
-               |                                          | Fraud Proof / Key
-               v                                          | (O(1) Extraction)
-+-------------------------------+                         |
-|   AUTONOMOUS AGENT RUNTIME    |                         |
-|   - Secret Key (sk)           |                         |
-|   - Hardware Monotonic (h)    |                         |
-|   - Merkle Nonce Root (Root_R)|                         |
-+---------------+---------------+                         |
-                |                                         |
-                | P2P Streaming Cheques (s = k + e*sk)    |
-                | (0 ms Network RTT, <15 us CPU Verify)   |
-                v                                         |
-+---------------------------------------------------------+-------------------+
-|                     DECENTRALIZED RESOURCE PROVIDERS                        |
-|   [Vendor 1: LLM Inference]    [Vendor 2: Vector DB]    [Vendor 3: GPU]     |
-|   (Un-settled Buffer <= $1)    (Buffer <= $1)           (Buffer <= $1)      |
-+-----------------------------------------------------------------------------+
+    Vault -->|Anchors Collateral Bond| Agent
+    Agent -->|P2P Streaming Micro-Cheques| Vendors
+    Vendors -->|Key Extraction on Dispute| Slash
+    Slash -->|Foreclose Collateral Bond| Vault
 ```
 
-### 2.1 Deterministic Nonce Tree
-Let $\mathbb{G}$ be an elliptic curve group of prime order $q$ with base point generator $G$ (secp256k1). An agent deposits a collateral bond $B$ into an on-chain surety contract and registers public key $PK = sk \cdot G$. For operational heights $h \in \{0, \dots, N-1\}$:
+### 2.1 Monotonic Nonces and Challenge Derivation
+Let $\mathbb{G}$ be an elliptic curve group of prime order $q$ with base generator $G$ (secp256k1). An agent deposits a performance collateral bond $B$ into `PerformanceCollateralVault.sol` on Base L2 and registers its signing identity $PK = sk \cdot G$.
+
+For sequential operational heights $h \in \mathbb{N}$:
 $$k_h = \text{HMAC-SHA256}(sk, h) \pmod q$$
-$$R_h = k_h \cdot G$$
-Public points $R_h$ form leaves of a Merkle tree $\mathcal{T}$, whose root $\text{Root}_R$ is anchored on-chain.
 
-### 2.2 Algebraic Private Key Extraction
-To issue a payment for task message $M_h$:
-$$e_h = H(R_h \parallel PK \parallel M_h) \pmod q$$
+To stream micro-payment for task message payload $M_h$ (binding agent, vendor, height, and cumulative micro-USDC amount):
+$$e_h = \text{SHA256}(PK_{\text{agent}} \parallel PK_{\text{vendor}} \parallel h \parallel \text{cumAmount}) \pmod q$$
 $$s_h = (k_h + e_h \cdot sk) \pmod q$$
 
-If an attacker signs two distinct messages $M_1 \neq M_2$ at the identical height $h$:
+### 2.2 Optimistic Bounded Credit Streaming ($\delta_v$) & Algebraic Key Extraction
+To sustain high throughput without blocking on computationally heavy elliptic curve operations per $0.0001 micro-transaction:
+1. **Hotpath Processing:** The vendor verifies transport framing, monotonic height progression, and challenge digest $e_h$, accepting incremental credit within a local unconfirmed buffer $\delta_v$ ($\le \$1.00$).
+2. **Equivocation Trap:** If an attacker signs two distinct cheques $M_1 \neq M_2$ at the identical height $h$:
 $$s_1 = k_h + e_1 \cdot sk \pmod q$$
 $$s_2 = k_h + e_2 \cdot sk \pmod q$$
 $$s_1 - s_2 = (e_1 - e_2) \cdot sk \pmod q$$
 
-Because $e_1 \neq e_2$, the scalar $(e_1 - e_2)$ has a unique modular inverse in $\mathbb{Z}_q$. The secret key is solved algebraically:
+Since $M_1 \neq M_2 \implies e_1 \neq e_2$, the scalar $(e_1 - e_2)$ has a unique modular inverse in $\mathbb{Z}_q$. The private key is solved algebraically in $O(1)$:
 $$sk = (s_1 - s_2) \cdot (e_1 - e_2)^{-1} \pmod q$$
+
+The observing vendor verifies $sk \cdot G \stackrel{?}{=} PK_{\text{agent}}$ and submits the extracted private key to `revealAndSlash()` on Base L2, triggering liquidated damages and foreclosing the agent's collateral bond $B$.
 
 ### 2.3 Pipelined Streaming Micro-Exposure Invariant
 To prevent multi-vendor overdraft draining without global state synchronization:
@@ -81,23 +82,45 @@ To prevent multi-vendor overdraft draining without global state synchronization:
 $$\mathbb{E}[\text{Payoff}] = \sum_{v=1}^{N_v} \delta_v - B < 0$$
 Attack ROI is strictly negative ($\le -95\%$).
 
----
-
 ## 3. Verified Empirical Benchmarks
 
 Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 
-| Metric | Causal-Slash | Base / Arbitrum L2 | Stripe Interchange | Lightning (L402) |
+| Metric | Causal-Slash (Shared Bond) | Direct Base L2 Tx | Prepaid SaaS Balances | Bilateral Channels (L402) |
 |---|---|---|---|---|
-| **Settlement Latency** | **< 25 microseconds** | 400 – 2,000 ms | 1,500 – 3,000 ms | 200 – 1,200 ms |
-| **Intermediate Gas Fee** | **$0.000000** | $0.001 – $0.05 | $0.30 + 2.9% | $0.0002 – $0.001 |
-| **Key Extraction Time** | **20.01 microseconds** | N/A (Consensus vote) | N/A (Chargeback) | N/A (HTLC expiry) |
-| **Capital Efficiency** | **1x Shared Bond** | 1x Balance | Pre-funded deposit | Nx Locked hops |
-| **Multi-hop Routing Failure** | **0.0% (Direct P2P)** | 0.0% (Single sequencer) | 0.0% (Centralized) | 12% – 34% (Liquidity depletion) |
+| **CPU Cryptographic Overhead** | **3.3 – 3.6 µs (Sign + Verify)** | ~1,200 µs (Node ECDSA) | None (API key hash) | ~500 µs (HTLC verify) |
+| **Consensus / Block Wait** | **0 ms (Off-chain P2P Stream)** | 400 – 2,000 ms (Sequencer) | 0 ms (Centralized DB) | 0 ms (Active Channel) |
+| **Network Wire Transport** | **Direct Wire (TCP/QUIC RTT)** | RPC roundtrip to Sequencer | HTTPS REST / SSE | Multi-Hop Onion Routing |
+| **Intermediate Gas Fee** | **$0.000000 (Zero gas stream)** | $0.001 – $0.05 per TX | $0.00 (Custodial SaaS) | $0.0002 – $0.001 routing fee |
+| **Capital Efficiency** | **1x Shared Bond (Base L2)** | 1x Balance | Nx Fragmented Deposits | Nx Locked Hop Liquidity |
+| **Counterparty Custodial Risk** | **0.0% (Non-custodial Base Vault)** | 0.0% (Direct transfer) | 100.0% (Vendor holds funds) | Variable (Channel counterparty) |
+| **Dispute / Exit Latency** | **0 Seconds (Instant Margin)** | Immediate | Manual Support Ticket | 24 Hours – 7 Days |
+| **Liquidity & Route Failures** | **0.0% (Direct P2P Stream)** | 0.0% (Single Sequencer) | API Rate Limits / Depletion | 12% – 34% (Liquidity Depletion) |
 
----
+## 4. Protocol Economics & Market Alignment
 
-## 4. Repository Structure
+### 4.1 Sustainable Revenue Model vs. Slashing Deterrence
+* **Slashing is a Game-Theoretic Deterrent, Not the Business Model:** Slashing exists solely to make equivocation mathematically unprofitable ($\mathbb{E}[\text{Payoff}] < 0$, $\le -95\%$ attack ROI). A well-designed protocol experiences near-zero slashings during normal operation.
+* **On-Chain Settlement Protocol Fee:** In `PerformanceCollateralVault.sol`, cooperative settlements (`cooperativeCloseSession`) support an on-chain protocol fee (`protocolFeeBps`):
+  * **Genesis Fee:** `0 bps` (0.0%) during ecosystem bootstrap.
+  * **Configurable Hard Cap:** Maximum `25 bps` (0.25%).
+  * **At Scale Economics:** At $100M GMV annualized agent micro-payment volume, a 25 bps settlement fee generates $250,000 USDC in automated, non-custodial protocol revenue directly to the DAO Treasury.
+* **Gas-Drag Elimination via Batching:** Vendors aggregate micro-cheques off-chain and trigger on-chain settlement (`settleCheque`) only when cumulative session balance reaches an economic threshold ($\ge \$1.00$). On Base L2 (~$0.000012 settlement gas), the gas drag is less than **0.0012%** of volume.
+
+### 4.2 Closed-Loop Slashing Waterfall (Invariants)
+When a dispute occurs, collateral in `PerformanceCollateralVault.sol` is foreclosed using a priority waterfall:
+1. **Guaranteed 15% Finder Bounty:** Distributed first to the whistleblower/watcher to incentivize independent fraud reporting and eliminate malicious collusion between agents and fake vendors.
+2. **100% Verified Restitution:** Damaged vendor is fully indemnified up to their actively allocated session exposure from remaining collateral.
+3. **60/40 Residual Allocation:** Any remaining collateral is split:
+   * **60% to Insurance Reserve:** Internal bad-debt buffer to guarantee system solvency during rare sequencer reorganizations.
+   * **40% to Protocol Treasury:** Long-term protocol reserve. Zero capital is burned to `0xdead`.
+
+### 4.3 Target Integrations
+* **Decentralized inference (Akash, Bittensor, io.net):** Providers receive streaming micro-cheques per compute token instead of waiting for batch settlement. No platform account required.
+* **Coinbase AgentKit wallets:** Agent's CDP wallet signs the bond deposit tx. All vendor payments run off-chain. Single `stream_payment()` call in the action provider.
+* **Multi-agent pipelines (CrewAI, AutoGen, ElizaOS):** Orchestrator agent holds the bond; worker sub-agents are listed as authorized vendors. Payments flow without any human wallet interaction.
+
+## 5. Repository Structure
 
 ```
 ├── contracts/                                # Solidity Smart Contracts (Base L2)
@@ -107,7 +130,7 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 │   ├── causal_daemon.c                       # Wire Protocol, Ring Buffer, Equivocation Trap
 │   └── causal_daemon.h                       # Binary Framing & C-FFI Header
 ├── sdk/                                      # Autonomous Agent Native SDK
-│   └── causal_slash.py                       # Python High-Performance C-FFI Interface (80k+ ops/sec)
+│   └── causal_slash.py                       # Python C-FFI wrapper (ctypes → libcausal_slash.so)
 ├── test/                                     # Verification & Stress Tests
 │   ├── PerformanceCollateralVault.t.sol      # Foundry Fuzzing & Invariant Suite (100% Pass)
 │   └── c/                                    # C Concurrency & Memory Bloat Audits
@@ -116,121 +139,33 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 ├── examples/                                 # Runnable Agent Quickstarts & Demos
 │   ├── quickstart_agent.py                   # High-frequency agent streaming payment client
 │   └── full_system_demo.py                   # End-to-end benchmark & key extraction demo
-├── docs/                                     # Technical Documentation & Assets
-│   ├── assets/                               # Architecture blueprints & UI dashboards
-│   │   ├── architecture_blueprint.jpg        # High-res technical modular stack schematic
-│   │   └── dashboard_mockup.jpg              # Network Explorer & Developer CLI interface
-│   └── patent/                               # US Provisional Patent Application
-│       ├── USPTO_PROVISIONAL_PATENT_APPLICATION.pdf
-│       ├── USPTO_PROVISIONAL_PATENT_APPLICATION.md
-│       └── USPTO_PROVISIONAL_PATENT_APPLICATION.md.ots
+├── scripts/                                  # Deployment & On-Chain Integration Scripts
+│   ├── deploy_base_sepolia.js                # Base Sepolia contract deployment engine
+│   └── run_full_system_e2e_test.js           # 10-phase end-to-end integration test
 ├── .github/workflows/ci.yml                  # GitHub Actions Automated CI Pipeline
 ├── foundry.toml                              # Foundry EVM Build & Fuzzing Configuration
-├── Makefile                                  # Build system (make test / make test-asan)
-├── LICENSE                                   # BUSL-1.1 Business Source License
+├── package.json                              # Node.js project & e2e test configuration
+├── Makefile                                  # Build system (make test / make demo)
+├── LICENSE                                   # Apache-2.0 Open-Source License
 └── README.md                                 # Architecture & benchmark summary
 ```
 
----
+## 6. Quickstart & Verification
 
-## 5. Quickstart & Verification
-
-### 5.1 Run the Foundry EVM Test Suite & Fuzzing (Solidity)
+### 6.1 Run the Foundry EVM Test Suite & Fuzzing (Solidity)
 ```bash
 forge test -vvv
 ```
+Expected: 14/14 tests pass, including fuzz invariants on the slashing waterfall.
 
-### 5.2 Run the Full System Benchmark (Python)
-Simulates 1,000 sequential micro-payments, introduces a concurrent equivocation attack, and extracts the attacker's private key:
-
-```bash
-python3 examples/full_system_demo.py
-```
-
-*Expected output:*
-```text
-[OK] Cheques 0..999 verified successfully.
-[!] Equivocation detected at height h=500!
-[CRITICAL] Algebraic Private Key Extraction triggered:
-    Extracted sk: 0x937f9e83...
-    True sk:      0x937f9e83...
-    MATCH VERIFIED: True
-    Key Extraction Latency: 20.01 microseconds
-[ECONOMICS] Cumulative fee savings vs L2 gas: 99.4%
-```
-
-### 5.3 Build & Run the C11 P2P Daemon (Requires: gcc, libcrypto)
-Compiles and runs the sovereign high-frequency engine benchmark, equivocation key-extraction test, and real TCP socket streaming test:
+### 6.2 Run the Full On-Chain Integration Test (Node.js + Anvil)
+Deploys `PerformanceCollateralVault.sol` on a local EVM, executes 10 on-chain phases: deposit, margin release, cheque settlement, cooperative close, and full equivocation foreclosure waterfall:
 
 ```bash
-make test
+node scripts/run_full_system_e2e_test.js
 ```
-
-*Expected output:*
-```text
-⚡ CAUSAL-SLASH: C11 HIGH-FREQUENCY ENGINE BENCHMARK
-  ✅ Processed: 50000 cheques
-  ⚡ Latency per End-to-End Cheque (Sign + Verify): 3.30 microseconds
-  🚀 Throughput: 302844 operations/second
-
-🛡️ CAUSAL-SLASH: EQUIVOCATION & EOTS KEY EXTRACTION TEST
-  [3] Vendor Detection Result: Code -20 (EQUIVOCATION DETECTED)
-  🔑 Secret Key Match: 100% IDENTICAL (PROVEN)
-  🔥 FRAUD PROOF READY FOR ON-CHAIN SLASHING
-
-🌐 CAUSAL-SLASH: P2P TCP SOCKET LOOPBACK BENCHMARK
-  ⚡ Real Socket RTT: 15.49 microseconds
-  🚀 Network Throughput: 64557 cheques/second over loopback TCP!
-```
-
-Run with AddressSanitizer + UndefinedBehaviorSanitizer (zero memory errors guaranteed):
-```bash
-make test-asan
-```
-
-### 5.4 Run Multi-Threaded Concurrency Test (C)
-Verifies that hardware-atomic monotonic height counters prevent race conditions:
-
-```bash
-gcc -O3 -pthread test_concurrency.c -o concurrency_test
-./concurrency_test
-```
-
-### 5.5 Python Native SDK (3 Lines of Code)
-Autonomous agents (LangGraph, CrewAI, AutoGen, ElizaOS) can stream payments directly from Python at native C hardware speeds (~12 microseconds latency, 80,000+ cheques/sec):
-
-```python
-from causal_slash import CausalAgentWallet, CausalVendorNode
-
-# 1. Initialize agent & vendor
-agent = CausalAgentWallet()
-vendor = CausalVendorNode(delta_v_usdc=1.0) # $1.00 local exposure cap
-
-# 2. Stream off-chain micro-payment (0 ms consensus RTT, $0.00 gas)
-cheque = agent.sign_cheque(vendor.public_key, amount_usdc=0.001) # $0.001
-
-# 3. Vendor verifies in 12 microseconds
-result = vendor.process_cheque(cheque)
-assert result.accepted
-```
-
-Run Python SDK live benchmark & equivocation tests:
-```bash
-python3 causal_slash.py
-```
-
----
-
-## 6. Patent & Prior Art Notice
-
-* **Filing Document:** [USPTO_PROVISIONAL_PATENT_APPLICATION.pdf](USPTO_PROVISIONAL_PATENT_APPLICATION.pdf)
-* **Title:** *System and Method for Reducing Network Latency and Eliminating Distributed Consensus Bottlenecks in Asynchronous Machine-to-Machine Streaming Settlements and Collateral Foreclosure*
-* **SHA-256 Digest:** `3b97fb8ff87807f9e90ad5b7b249c26f200c7399ea40bb793f08fa509375905a`
-* **Bitcoin Timestamp:** Anchored on Bitcoin via OpenTimestamps (`USPTO_PROVISIONAL_PATENT_APPLICATION.md.ots`).
-* **Statutory Grace Period:** Under 35 U.S.C. § 102(b), global prior art is established, preserving 1-year priority rights.
-
----
+Expected: ALL 10 ON-CHAIN INTEGRATION TESTS PASSED
 
 ## 7. License
 
-Licensed under the [Business Source License 1.1 (BUSL-1.1)](LICENSE). Free for research, evaluation, and non-commercial testing. Production commercial deployment requires a commercial agreement. Conveys to Apache-2.0 on 2030-01-01.
+Licensed under the [Apache License, Version 2.0](LICENSE). Open-source public good for autonomous AI agents, machine-to-machine commerce, and Base/EVM ecosystem development.
