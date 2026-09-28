@@ -3,8 +3,9 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Specification%20%26%20Reference%20Implementation-green.svg)]()
 [![Base Sepolia](https://img.shields.io/badge/Base_Sepolia-Contract_Verified-success?logo=ethereum)](https://sepolia.basescan.org/address/0xdC68e06331aF5aC885E5A7Cb875d364dedcD1D34#code)
+[![Pitch Deck](https://img.shields.io/badge/Pitch_Deck-8_Slides_PDF-blueviolet)](docs/causal_slash_pitch_deck.pdf)
 
-> Streaming micropayment protocol for AI agents on Base L2.
+> Streaming micropayment protocol for AI agents on Base L2. Single shared bond, zero gas, sub-microsecond settlement.
 
 ## 1. Overview
 
@@ -19,7 +20,7 @@
 If an autonomous agent calls 50 different micro-services, it must pre-fund each service individually:
 * **$10 deposit × 50 vendors = $500 in locked idle capital** — just to consume $0.50 worth of compute.
 * Funds sit in custody on 50 third-party platforms with zero recovery upon vendor failure.
-* Direct L2 transactions are too slow and expensive ($0.005–$0.02 gas per micro-call), while state channels (Lightning/L402) lock up capital per payment channel and suffer from multi-hop routing failures.
+* Direct L2 transactions are too slow and expensive ($0.005–$0.02 gas per micro-call), while bilateral state channels require dedicated collateral locked per counterparty and suffer from multi-hop routing failures.
 
 ### The Solution: One Shared Bond on Base
 With Causal-Slash, the agent locks **one USDC bond on Base** that covers all vendors simultaneously:
@@ -86,7 +87,7 @@ Attack ROI is strictly negative ($\le -95\%$).
 
 Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 
-| Metric | Causal-Slash (Shared Bond) | Direct Base L2 Tx | Prepaid SaaS Balances | Bilateral Channels (L402) |
+| Metric | Causal-Slash (Shared Bond) | Direct Base L2 Tx | Prepaid API Balances | Bilateral State Channels |
 |---|---|---|---|---|
 | **CPU Cryptographic Overhead** | **3.3 – 3.6 µs (Sign + Verify)** | ~1,200 µs (Node ECDSA) | None (API key hash) | ~500 µs (HTLC verify) |
 | **Consensus / Block Wait** | **0 ms (Off-chain P2P Stream)** | 400 – 2,000 ms (Sequencer) | 0 ms (Centralized DB) | 0 ms (Active Channel) |
