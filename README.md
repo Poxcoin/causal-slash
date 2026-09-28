@@ -28,10 +28,16 @@ With Causal-Slash, the agent locks **one USDC bond on Base** that covers all ven
 * **Zero Gas, Wire Speed:** The agent streams signed micro-cheques peer-to-peer over direct sockets at ~3.43 µs latency.
 * **Economic Security (Game-Theoretic Deterrence):** We do not rely on centralized trust or claim fraud is "impossible". An attacker can attempt a double-spend, but the cryptographic construction ensures that signing two conflicting cheques at the same sequence height algebraically leaks the agent's private key in $O(1)$. Anyone can submit this proof to Base to foreclose the bond, making the attack strictly negative-EV ($\mathbb{E}[\text{Payoff}] < 0$, $\text{ROI} \le -95\%$).
 
+### L4 Transport Streaming vs. L7 Request-Response
+Causal-Slash operates at the **L4 transport layer** (direct TCP/QUIC sockets) with 151-byte binary cheques, sub-millisecond local verification, and zero intermediate gas. It is strictly complementary to **L7 protocols (such as x402)**:
+* **x402 (L7 Application Layer):** Optimized for discrete HTTP REST API calls with per-request or batch settlement.
+* **Causal-Slash (L4 Transport Layer):** Built for continuous, token-by-token streaming inference (LLMs, audio, agent meshes) where HTTP header overhead and request latencies are prohibitive.
+
 ### Live Deployment & Verified Contracts (Base Sepolia)
 * **Network:** Base Sepolia (Chain ID `84532`)
-* **Smart Contract:** `PerformanceCollateralVault`
+* **Smart Contract:** `PerformanceCollateralVault` (V2)
 * **Explorer & Source Code:** [`0x33BD2908a372cf6A533B75e79D3cAa754da8775c`](https://sepolia.basescan.org/address/0x33BD2908a372cf6A533B75e79D3cAa754da8775c#code) (Verified Exact Match)
+* **Contract Architecture:** EIP-712 typed cheques, SafeERC20, ReentrancyGuard, $O(1)$ `ecrecover` key recovery identity (~7,162 gas foreclosure).
 * **Settlement Currency:** Base Sepolia USDC (`0x036CbD53842c5426634e7929541eC2318f3dCF7e`)
 * **Security & Invariants:** 17/17 Passing Foundry Fuzz & Invariant Tests (`forge test`)
 
@@ -111,15 +117,19 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 
 ### 4.2 Closed-Loop Slashing Waterfall (Invariants)
 When a dispute occurs, collateral in `PerformanceCollateralVault.sol` is foreclosed using a priority waterfall:
-1. **Guaranteed 15% Finder Bounty:** Distributed first to the whistleblower/watcher to incentivize independent fraud reporting and eliminate malicious collusion between agents and fake vendors.
-2. **100% Verified Restitution:** Damaged vendor is fully indemnified up to their actively allocated session exposure from remaining collateral.
+1. **Guaranteed 15% Finder Bounty:** Distributed first to the whistleblower/watcher to incentivize independent cryptographic fraud reporting.
+2. **Verified Restitution Pool:** Slashed collateral (85%) is quarantined strictly for vendors with pre-allocated session exposure (self-slashing mitigated against unallocated addresses). Pro-rata multi-vendor restitution and dynamic quota-locks are prioritized for formal mathematical verification under Milestone 3 security audit.
 3. **60/40 Residual Allocation:** Any remaining collateral is split:
    * **60% to Insurance Reserve:** Internal bad-debt buffer to guarantee system solvency during rare sequencer reorganizations.
    * **40% to Protocol Treasury:** Long-term protocol reserve. Zero capital is burned to `0xdead`.
 
-### 4.3 Target Integrations
+### 4.3 Security Status & Threat Modeling
+* **Current Verification:** Rigorous internal review & threat modeling with 17/17 Foundry invariant and fuzzing tests.
+* **Attack Surface Analysis:** Self-slashing is isolated against unallocated addresses. Multi-vendor concurrency under malicious key leaks (FCFS vs. pro-rata liquidation) is prioritized for an external independent security audit under Milestone 3.
+
+### 4.4 Target Integrations
 * **Decentralized inference (Akash, Bittensor, io.net):** Providers receive streaming micro-cheques per compute token instead of waiting for batch settlement. No platform account required.
-* **Coinbase AgentKit wallets:** Agent's CDP wallet signs the bond deposit tx. All vendor payments run off-chain. Single `stream_payment()` call in the action provider.
+* **Coinbase AgentKit wallets:** Agent's CDP wallet signs the bond deposit tx. All vendor payments run off-chain via the `@coinbase/agentkit-causal-slash` provider.
 * **Multi-agent pipelines (CrewAI, AutoGen, ElizaOS):** Orchestrator agent holds the bond; worker sub-agents are listed as authorized vendors. Payments flow without any human wallet interaction.
 
 ## 5. Repository Structure
@@ -158,7 +168,7 @@ When a dispute occurs, collateral in `PerformanceCollateralVault.sol` is foreclo
 ```bash
 forge test -vvv
 ```
-Expected: 14/14 tests pass, including fuzz invariants on the slashing waterfall.
+Expected: 17/17 tests pass, including fuzz invariants on the slashing waterfall.
 
 ### 6.2 Run the Full On-Chain Integration Test (Node.js + Anvil)
 Deploys `PerformanceCollateralVault.sol` on a local EVM, executes 10 on-chain phases: deposit, margin release, cheque settlement, cooperative close, and full equivocation foreclosure waterfall:
@@ -168,6 +178,11 @@ node scripts/run_full_system_e2e_test.js
 ```
 Expected: ALL 10 ON-CHAIN INTEGRATION TESTS PASSED
 
-## 7. License
+## 7. Contact & Coordination
+
+* **Security & Research Contact:** `HoldGuard@proton.me`
+* **Repository:** [https://github.com/Poxcoin/causal-slash](https://github.com/Poxcoin/causal-slash)
+
+## 8. License
 
 Licensed under the [Apache License, Version 2.0](LICENSE). Open-source public good for autonomous AI agents, machine-to-machine commerce, and Base/EVM ecosystem development.
