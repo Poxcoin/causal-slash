@@ -263,6 +263,10 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
             settledAmounts[msg.sender][vendor] = finalSettledAmount;
             vault.collateralBond -= delta;
 
+            if (vault.pendingWithdrawal > vault.collateralBond) {
+                vault.pendingWithdrawal = vault.collateralBond;
+            }
+
             uint256 fee = (delta * protocolFeeBps) / 10000;
             usdc.safeTransfer(vendor, delta - fee);
             if (fee > 0) {

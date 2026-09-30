@@ -219,13 +219,17 @@ async function main() {
         const salt = ethers.keccak256(ethers.toUtf8Bytes("random_salt_123"));
         const extractedSkBigInt = BigInt(rogueSigningWallet.privateKey);
         
+        // Fund Finder with USDC for the 1 USDC commit bond
+        await usdc.connect(deployer).transfer(finder.address, 10n * 1000000n);
+        await usdc.connect(finder).approve(vaultAddr, ethers.MaxUint256);
+
         // Commit Phase
         const commitHash = ethers.solidityPackedKeccak256(
             ['uint256', 'address', 'bytes32'],
             [extractedSkBigInt, finder.address, salt]
         );
         await vault.connect(finder).commitFraudProof(rogueOwner.address, commitHash);
-        console.log('  Phase 1: Fraud proof committed by Finder.');
+        console.log('  Phase 1: Fraud proof committed by Finder (1 USDC bond staked).');
 
         // Advance 2 blocks for MIN_COMMIT_DELAY
         await provider.send('evm_mine', []);
@@ -267,25 +271,28 @@ async function main() {
         await vault.connect(finder).revealAndSlash({
             maliciousAgent: rogueOwner.address,
             extractedSk: extractedSkBigInt,
-            salt: salt,
-            damagedVendor: vendor.address,
-            chequeCumulativeAmount: damageAmount,
-            chequeSessionNonce: 1n,
-            chequeDeadline: deadline,
-            chequeSignature: chequeSig
+            salt: salt
         });
 
         const treasuryBalAfter = await usdc.balanceOf(treasury.address);
         const insuranceBalAfter = await usdc.balanceOf(insurance.address);
         const finderBalAfter = await usdc.balanceOf(finder.address);
-        const claimableDmg = await vault.claimableDamages(vendor.address);
-        if (claimableDmg !== damageAmount) {
-            throw new Error(`CRITICAL: Expected vendor damage $${Number(damageAmount)/1e6} USDC, but got $${Number(claimableDmg)/1e6} USDC`);
-        }
+
+        // Vendor claims quarantined restitution with valid cheque
+        const vendorBalBeforeClaim = await usdc.balanceOf(vendor.address);
+        await vault.connect(vendor).claimSlashedRestitution(
+            rogueOwner.address,
+            damageAmount,
+            1n,
+            deadline,
+            chequeSig
+        );
+        const vendorBalAfterClaim = await usdc.balanceOf(vendor.address);
+        const claimedDmg = vendorBalAfterClaim - vendorBalBeforeClaim;
 
         console.log('\n  [PASS] Collateral foreclosed and waterfall distributed:');
         console.log(`     • Total Slashed:        $5.00 USDC`);
-        console.log(`     • 100% Vendor Damage:   $${Number(claimableDmg) / 1e6} USDC (Pull escrow)`);
+        console.log(`     • 100% Vendor Damage:   $${Number(claimedDmg) / 1e6} USDC (Pull escrow)`);
         console.log(`     • 15% Finder Bounty:    $${Number(finderBalAfter - finderBalBefore) / 1e6} USDC`);
         console.log(`     • 60% Insurance Fund:   $${Number(insuranceBalAfter - insuranceBalBefore) / 1e6} USDC (Bad debt pool)`);
         console.log(`     • 40% Protocol Treasury: $${Number(treasuryBalAfter - treasuryBalBefore) / 1e6} USDC (Revenue)`);

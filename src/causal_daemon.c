@@ -562,6 +562,13 @@ static void *vendor_tcp_worker(void *arg) {
         return NULL;
     }
 
+    // Set 5-second read/write timeouts to neutralize Slowloris DoS attacks
+    struct timeval sock_tv;
+    sock_tv.tv_sec = 5;
+    sock_tv.tv_usec = 0;
+    setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&sock_tv, sizeof(sock_tv));
+    setsockopt(client_sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&sock_tv, sizeof(sock_tv));
+
     uint8_t vendor_sk[32];
     memset(vendor_sk, 0x44, 32);
     csls_vendor_ctx_t vendor;
