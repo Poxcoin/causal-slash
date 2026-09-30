@@ -666,4 +666,110 @@ contract PerformanceCollateralVaultTest is Test {
         (uint256 remainingBond,,,,,,) = vault.vaults(agentOwner);
         assertEq(remainingBond, 2 * 1e6);
     }
+
+    function test_SettleChequeBlockedDuringDispute() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        vault.allocateSessionExposure(vendor, 5 * 1e6);
+        vm.stopPrank();
+
+        // Sign a valid 4 USDC cheque
+        bytes32 chequeHash = keccak256(
+            abi.encode(CHEQUE_TYPEHASH, agentOwner, vendor, 4 * 1e6, 1, block.timestamp + 1000)
+        );
+        bytes32 digest = vault.hashTypedDataV4(chequeHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(agentSigningPk, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        // Commit fraud proof against agent
+        bytes32 commitHash = keccak256("fraud_commit_hash");
+        vm.prank(finder);
+        vault.commitFraudProof(agentOwner, commitHash);
+
+        // Attempt to drain collateral via settleCheque during dispute window
+        vm.prank(vendor);
+        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
+        vault.settleCheque(agentOwner, 4 * 1e6, 1, block.timestamp + 1000, sig);
+    }
+
+    function test_SweepUnclaimedRestitution_RequiresEmergencyDisputePeriod() public {
+        uint256 rogueSk = 0xC0FFEE;
+        address rogueSigner = vault.deriveAddress(rogueSk);
+        address rogueOwner = address(0x999);
+
+        vm.startPrank(deployer);
+        usdc.mint(rogueOwner, 100 * 1e6);
+        vm.stopPrank();
+
+        vm.startPrank(rogueOwner);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), rogueSigner);
+        vault.allocateSessionExposure(vendor, 5 * 1e6);
+        vm.stopPrank();
+
+        // Whistleblower commits fraud proof
+        bytes32 salt = keccak256("salt_sweep_test");
+        bytes32 commitHash = keccak256(abi.encodePacked(rogueSk, finder, salt));
+        vm.prank(finder);
+        vault.commitFraudProof(rogueOwner, commitHash);
+
+        vm.roll(block.number + 2);
+
+        // Foreclose via revealAndSlash
+        vm.prank(finder);
+        vault.revealAndSlash(PerformanceCollateralVault.SlashArgs({
+            maliciousAgent: rogueOwner,
+            extractedSk: rogueSk,
+            salt: salt
+        }));
+
+        // Invariant: restitution pool contains 5 USDC allocated exposure
+        assertEq(vault.slashedRestitutionPool(rogueOwner), 5 * 1e6);
+
+        // MEV bot or frontrunner immediately tries to sweep unclaimed restitution
+        address mevBot = address(0xDEADBEEF);
+        vm.prank(mevBot);
+        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
+        vault.sweepUnclaimedRestitution(rogueOwner);
+
+        // Fast forward 3 hours 59 minutes (still in dispute period)
+        vm.warp(block.timestamp + 4 hours - 1);
+        vm.prank(mevBot);
+        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
+        vault.sweepUnclaimedRestitution(rogueOwner);
+
+        // Fast forward past the 4-hour emergency dispute period
+        vm.warp(block.timestamp + 1);
+        uint256 insBefore = usdc.balanceOf(insuranceReserve);
+        uint256 tresBefore = usdc.balanceOf(treasury);
+
+        vm.prank(mevBot);
+        vault.sweepUnclaimedRestitution(rogueOwner);
+
+        // Pool is now empty
+        assertEq(vault.slashedRestitutionPool(rogueOwner), 0);
+        // 60% of 5 USDC = 3 USDC to insurance, 40% = 2 USDC to treasury
+        assertEq(usdc.balanceOf(insuranceReserve) - insBefore, 3 * 1e6);
+        assertEq(usdc.balanceOf(treasury) - tresBefore, 2 * 1e6);
+    }
+
+    function test_EmergencyWithdrawalBlockedDuringDispute() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        // Initiate emergency withdrawal of 5 USDC
+        vault.initiateEmergencyWithdrawal(5 * 1e6);
+        vm.stopPrank();
+
+        // 3 hours later, fraud is committed against the agent
+        vm.warp(block.timestamp + 3 hours);
+        bytes32 commitHash = keccak256("commit_during_emergency");
+        vm.prank(finder);
+        vault.commitFraudProof(agentOwner, commitHash);
+
+        // 4 hours have passed since initiateEmergencyWithdrawal, but disputeLock is active
+        vm.warp(block.timestamp + 2 hours);
+        vm.prank(agentOwner);
+        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
+        vault.finalizeEmergencyWithdrawal();
+    }
 }

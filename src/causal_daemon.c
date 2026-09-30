@@ -117,6 +117,7 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
     atomic_init(&agent->height, 1);
     agent->cumulative_sent = 0;
     agent->wal_fd = -1;
+    pthread_mutex_init(&agent->lock, NULL);
 
     if (wal_path && strlen(wal_path) > 0) {
         strncpy(agent->wal_path, wal_path, sizeof(agent->wal_path) - 1);
@@ -132,9 +133,12 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
 }
 
 void csls_agent_destroy(csls_agent_ctx_t *agent) {
-    if (agent && agent->wal_fd >= 0) {
-        close(agent->wal_fd);
-        agent->wal_fd = -1;
+    if (agent) {
+        if (agent->wal_fd >= 0) {
+            close(agent->wal_fd);
+            agent->wal_fd = -1;
+        }
+        pthread_mutex_destroy(&agent->lock);
     }
 }
 
@@ -142,13 +146,17 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
                             uint64_t delta_micro_usdc, csls_cheque_pkt_t *out_pkt) {
     if (!agent || !vendor_pk || !out_pkt) return -1;
 
+    pthread_mutex_lock(&agent->lock);
+
     // Strict integer overflow check on cumulative amount
     if (agent->cumulative_sent + delta_micro_usdc < agent->cumulative_sent) {
+        pthread_mutex_unlock(&agent->lock);
         return -2; // OVERFLOW_ERROR
     }
 
     uint64_t h = atomic_fetch_add(&agent->height, 1);
     agent->cumulative_sent += delta_micro_usdc;
+    uint64_t cum_amt = agent->cumulative_sent;
 
     // Optional Write-Ahead-Log sync for power-loss fault tolerance
     if (agent->wal_fd >= 0) {
@@ -156,12 +164,14 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
         (void)pw_res;
     }
 
+    pthread_mutex_unlock(&agent->lock);
+
     out_pkt->magic = CSLS_MAGIC;
     out_pkt->type = CSLS_PKT_CHEQUE;
     memcpy(out_pkt->agent_pk, agent->pk, 33);
     memcpy(out_pkt->vendor_pk, vendor_pk, 33);
     out_pkt->height = h;
-    out_pkt->cumulative_amt = agent->cumulative_sent;
+    out_pkt->cumulative_amt = cum_amt;
 
     // 1. Deterministic Nonce Derivation: k = HMAC-SHA256(sk, height) mod q
     uint8_t h_be[8];
@@ -666,6 +676,7 @@ int csls_run_network_test(uint16_t port, uint32_t count) {
 // MAIN ENTRY POINT
 // -----------------------------------------------------------------------------
 
+#ifndef CSLS_NO_MAIN
 int main(int argc, char *argv[]) {
     if (csls_crypto_global_init() != 0) {
         fprintf(stderr, "Fatal: OpenSSL secp256k1 initialization failed.\n");
@@ -691,3 +702,4 @@ int main(int argc, char *argv[]) {
     csls_crypto_global_cleanup();
     return 0;
 }
+#endif

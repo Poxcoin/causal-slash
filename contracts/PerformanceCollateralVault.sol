@@ -82,6 +82,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     mapping(address => uint256) public totalAllocatedExposure;                 // agent => sum of active reserved session buffers
     mapping(address => uint256) public slashedRestitutionPool;                 // agent => restitution pool for active vendors
     mapping(address => uint256) public disputeLocks;                           // agent => block number until which instantWithdraw is locked
+    mapping(address => uint256) public slashTimestamps;                        // agent => timestamp when slashed
 
     event CollateralDeposited(address indexed agent, uint256 amountUSDC, bytes32 indexed merkleRoot, address signingAddress);
     event InstantMarginWithdrawn(address indexed agent, uint256 amountUSDC, uint256 remainingBond);
@@ -197,6 +198,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         AgentVault storage vault = vaults[msg.sender];
         if (vault.agentOwner != msg.sender) revert Unauthorized();
         if (vault.isSlashed) revert AlreadySlashed();
+        if (block.number <= disputeLocks[msg.sender]) revert TimelockActive();
 
         uint256 newTotalAllocated = totalAllocatedExposure[msg.sender] + exposureAmount;
         if (newTotalAllocated > vault.collateralBond) revert ExposureExceedsBond();
@@ -280,6 +282,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         AgentVault storage vault = vaults[msg.sender];
         if (vault.agentOwner != msg.sender) revert Unauthorized();
         if (vault.isSlashed) revert AlreadySlashed();
+        if (block.number <= disputeLocks[msg.sender]) revert TimelockActive();
 
         uint256 freeCollateral = vault.collateralBond > totalAllocatedExposure[msg.sender]
             ? vault.collateralBond - totalAllocatedExposure[msg.sender]
@@ -300,6 +303,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         AgentVault storage vault = vaults[msg.sender];
         if (vault.agentOwner != msg.sender) revert Unauthorized();
         if (vault.isSlashed) revert AlreadySlashed();
+        if (block.number <= disputeLocks[msg.sender]) revert TimelockActive();
         if (vault.pendingWithdrawal == 0) revert NoPendingWithdrawal();
 
         uint256 unlockTime = vault.withdrawalTimestamp + EMERGENCY_DISPUTE_PERIOD;
@@ -344,6 +348,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         AgentVault storage vault = vaults[agent];
         if (vault.signingAddress == address(0)) revert InvalidKey();
         if (vault.isSlashed) revert AlreadySlashed();
+        if (block.number <= disputeLocks[agent]) revert TimelockActive();
 
         if (sessionNonce <= lastSessionNonces[agent][msg.sender]) revert InvalidSessionNonce();
         lastSessionNonces[agent][msg.sender] = sessionNonce;
@@ -470,6 +475,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         vault.collateralBond = 0;
         vault.pendingWithdrawal = 0;
         vault.withdrawalTimestamp = 0;
+        slashTimestamps[args.maliciousAgent] = block.timestamp;
 
         // Return anti-spam commit bond to honest finder
         usdc.safeTransfer(msg.sender, COMMIT_BOND);
@@ -565,6 +571,9 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     function sweepUnclaimedRestitution(address maliciousAgent) external nonReentrant {
         AgentVault storage vault = vaults[maliciousAgent];
         if (!vault.isSlashed) revert Unauthorized();
+        if (block.timestamp < slashTimestamps[maliciousAgent] + EMERGENCY_DISPUTE_PERIOD) {
+            revert TimelockActive();
+        }
 
         uint256 unclaimed = slashedRestitutionPool[maliciousAgent];
         if (unclaimed == 0) revert NothingToSettle();

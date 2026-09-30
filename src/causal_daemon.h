@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+#include <pthread.h>
 #include <openssl/bn.h>
 #include <openssl/ec.h>
 
@@ -81,6 +82,7 @@ typedef struct {
     uint64_t cumulative_sent;
     char wal_path[256];
     int wal_fd;
+    pthread_mutex_t lock;
 } csls_agent_ctx_t;
 
 // Vendor Context

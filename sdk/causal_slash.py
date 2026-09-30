@@ -80,6 +80,8 @@ class _CslsAgentCtx(ctypes.Structure):
         ("cumulative_sent", ctypes.c_uint64),
         ("wal_path", ctypes.c_char * 256),
         ("wal_fd", ctypes.c_int),
+        ("__padding", ctypes.c_int),
+        ("lock", ctypes.c_byte * 40),
     ]
 
 class _CslsHistoryEntry(ctypes.Structure):

@@ -32,6 +32,11 @@ test-concurrency:
 	./test_concurrency
 	rm -f test_concurrency
 
+test-agent-concurrency:
+	$(CC) $(CFLAGS) -DCSLS_NO_MAIN test/c/test_agent_concurrency.c src/causal_daemon.c $(LDFLAGS) -o test_agent_concurrency
+	./test_agent_concurrency
+	rm -f test_agent_concurrency
+
 test-bloat:
 	$(CC) $(CFLAGS) test/c/test_state_bloat.c $(LDFLAGS) -o test_state_bloat
 	./test_state_bloat
