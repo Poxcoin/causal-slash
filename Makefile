@@ -42,5 +42,10 @@ test-bloat:
 	./test_state_bloat
 	rm -f test_state_bloat
 
+test-redteam:
+	$(CC) -fsanitize=address,undefined -g -Wall -Wextra -pthread -DCSLS_NO_MAIN -Isrc test/c/test_redteam_exploit.c src/causal_daemon.c $(LDFLAGS) -o test_redteam_exploit
+	./test_redteam_exploit
+	rm -f test_redteam_exploit
+
 clean:
 	rm -f causal_daemon sdk/libcausal_slash.so libcausal_slash.so causal_daemon_asan test_concurrency test_state_bloat *.o
