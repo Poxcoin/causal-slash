@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -22,6 +23,8 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  * 4. Anti-Spam Commit Bonds: Griefing DoS eliminated via 1 USDC slashable bond on fraud commitments.
  * 5. Dynamic Quota Relief: On-chain cheque settlement automatically deducts allocated exposure, eliminating phantom locks.
  * 6. O(1) secp256k1 Key Derivation Identity: Instant foreclosure in ~7,162 gas.
+ * 7. Yield Streaming Collateral: Idle USDC is routed into ERC-4626 lending vaults (Morpho / Aave)
+ *    with a 20% liquid cash buffer and synchronous on-demand redemptions.
  */
 contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -50,6 +53,15 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     IERC20 public immutable usdc;
     address public immutable treasury;
     address public immutable insuranceReserve;
+
+    // Yield Streaming Strategy Integration (Morpho Blue / Aave v3 ERC-4626)
+    IERC4626 public yieldVault;
+    uint256 public cashReserveBps = 2000; // 20% liquid cash buffer (2000 / 10000)
+    uint256 public principalInYield;
+    uint256 public totalYieldHarvested;
+
+    event YieldVaultConfigured(address indexed yieldVault, uint256 cashReserveBps);
+    event YieldHarvested(uint256 totalYield, uint256 insuranceAmount, uint256 treasuryAmount);
 
     struct AgentVault {
         uint256 collateralBond;      // Total deposited USDC (6 decimals)
@@ -117,6 +129,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     error AlreadyCommitted();
     error NoActiveCommitment();
     error InvalidAddress();
+    error InvalidAmount();
 
     constructor(
         address _usdcToken,
@@ -155,6 +168,8 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         vault.signingAddress = _signingAddress;
         vault.agentOwner = msg.sender;
 
+        _rebalanceToYieldVault();
+
         emit CollateralDeposited(msg.sender, vault.collateralBond, _merkleRoot, _signingAddress);
     }
 
@@ -177,12 +192,13 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         if (amountUSDC == 0) revert InsufficientCollateral();
 
         uint256 totalBond = vault.collateralBond;
-        uint256 reserved = totalAllocatedExposure[msg.sender];
+        uint256 reserved = totalAllocatedExposure[msg.sender] + vault.pendingWithdrawal;
         
         if (totalBond < reserved || amountUSDC > (totalBond - reserved)) {
             revert InsufficientCollateral();
         }
 
+        _ensureLiquidCash(amountUSDC);
         vault.collateralBond -= amountUSDC;
         usdc.safeTransfer(msg.sender, amountUSDC);
 
@@ -191,7 +207,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
 
     /**
      * @notice Reserve exposure quota for an active streaming session with a specific vendor.
-     * Enforces global invariant: totalAllocatedExposure <= collateralBond.
+     * Enforces global invariant: totalAllocatedExposure + pendingWithdrawal <= collateralBond.
      */
     function allocateSessionExposure(address vendor, uint256 exposureAmount) external nonReentrant {
         if (vendor == address(0)) revert InvalidAddress();
@@ -201,7 +217,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         if (block.number <= disputeLocks[msg.sender]) revert TimelockActive();
 
         uint256 newTotalAllocated = totalAllocatedExposure[msg.sender] + exposureAmount;
-        if (newTotalAllocated > vault.collateralBond) revert ExposureExceedsBond();
+        if (newTotalAllocated + vault.pendingWithdrawal > vault.collateralBond) revert ExposureExceedsBond();
 
         totalAllocatedExposure[msg.sender] = newTotalAllocated;
         vendorExposure[msg.sender][vendor] += exposureAmount;
@@ -263,11 +279,15 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
             settledAmounts[msg.sender][vendor] = finalSettledAmount;
             vault.collateralBond -= delta;
 
-            if (vault.pendingWithdrawal > vault.collateralBond) {
-                vault.pendingWithdrawal = vault.collateralBond;
+            uint256 freeMargin = vault.collateralBond > totalAllocatedExposure[msg.sender]
+                ? vault.collateralBond - totalAllocatedExposure[msg.sender]
+                : 0;
+            if (vault.pendingWithdrawal > freeMargin) {
+                vault.pendingWithdrawal = freeMargin;
             }
 
             uint256 fee = (delta * protocolFeeBps) / 10000;
+            _ensureLiquidCash(delta);
             usdc.safeTransfer(vendor, delta - fee);
             if (fee > 0) {
                 usdc.safeTransfer(treasury, fee);
@@ -318,6 +338,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
             amountToTransfer = vault.collateralBond;
         }
 
+        _ensureLiquidCash(amountToTransfer);
         vault.collateralBond -= amountToTransfer;
         vault.pendingWithdrawal = 0;
         vault.withdrawalTimestamp = 0;
@@ -390,12 +411,16 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
             }
         }
 
-        // Dynamic clamping of pending emergency withdrawal
-        if (vault.pendingWithdrawal > vault.collateralBond) {
-            vault.pendingWithdrawal = vault.collateralBond;
+        // Dynamic clamping of pending emergency withdrawal to free collateral
+        uint256 freeMargin = vault.collateralBond > totalAllocatedExposure[agent]
+            ? vault.collateralBond - totalAllocatedExposure[agent]
+            : 0;
+        if (vault.pendingWithdrawal > freeMargin) {
+            vault.pendingWithdrawal = freeMargin;
         }
 
         uint256 fee = (delta * protocolFeeBps) / 10000;
+        _ensureLiquidCash(delta);
         usdc.safeTransfer(msg.sender, delta - fee);
         if (fee > 0) {
             usdc.safeTransfer(treasury, fee);
@@ -481,6 +506,8 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         vault.withdrawalTimestamp = 0;
         slashTimestamps[args.maliciousAgent] = block.timestamp;
 
+        _ensureLiquidCash(totalBond + COMMIT_BOND);
+
         // Return anti-spam commit bond to honest finder
         usdc.safeTransfer(msg.sender, COMMIT_BOND);
 
@@ -565,6 +592,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         vendorExposure[maliciousAgent][msg.sender] -= delta;
         slashedRestitutionPool[maliciousAgent] -= delta;
 
+        _ensureLiquidCash(delta);
         usdc.safeTransfer(msg.sender, delta);
         emit DamageClaimed(msg.sender, delta);
     }
@@ -586,11 +614,100 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         uint256 insuranceAmount = (unclaimed * 60) / 100;
         uint256 treasuryAmount = unclaimed - insuranceAmount;
 
+        _ensureLiquidCash(unclaimed);
         if (insuranceAmount > 0) {
             usdc.safeTransfer(insuranceReserve, insuranceAmount);
         }
         if (treasuryAmount > 0) {
             usdc.safeTransfer(treasury, treasuryAmount);
+        }
+    }
+
+    /**
+     * @notice Configure external ERC-4626 yield strategy (Morpho Blue / Aave v3 on Base L2).
+     */
+    function setYieldVault(address _yieldVault, uint256 _cashReserveBps) external {
+        if (msg.sender != treasury) revert Unauthorized();
+        if (_cashReserveBps > 10000) revert InvalidAmount();
+
+        if (address(yieldVault) != address(0) && address(yieldVault) != _yieldVault) {
+            uint256 currentShares = yieldVault.balanceOf(address(this));
+            if (currentShares > 0) {
+                yieldVault.redeem(currentShares, address(this), address(this));
+            }
+            principalInYield = 0;
+        }
+
+        yieldVault = IERC4626(_yieldVault);
+        cashReserveBps = _cashReserveBps;
+        if (_yieldVault != address(0)) {
+            usdc.forceApprove(_yieldVault, type(uint256).max);
+            _rebalanceToYieldVault();
+        }
+        emit YieldVaultConfigured(_yieldVault, _cashReserveBps);
+    }
+
+    /**
+     * @notice Internal balance rebalancer: routes idle cash above liquid reserve to yield strategy.
+     */
+    function _rebalanceToYieldVault() internal {
+        if (address(yieldVault) == address(0)) return;
+        uint256 currentCash = usdc.balanceOf(address(this));
+        uint256 totalShares = yieldVault.balanceOf(address(this));
+        uint256 totalInYield = totalShares > 0 ? yieldVault.previewRedeem(totalShares) : 0;
+        uint256 totalManaged = currentCash + totalInYield;
+        uint256 targetCash = (totalManaged * cashReserveBps) / 10000;
+        if (currentCash > targetCash) {
+            uint256 excess = currentCash - targetCash;
+            if (excess >= 1e6) { // Minimum $1.00 deposit
+                yieldVault.deposit(excess, address(this));
+                principalInYield += excess;
+            }
+        }
+    }
+
+    /**
+     * @notice Internal liquidity guarantee: synchronously redeems from yield vault if pure cash is deficient.
+     */
+    function _ensureLiquidCash(uint256 neededCash) internal {
+        uint256 currentCash = usdc.balanceOf(address(this));
+        if (currentCash < neededCash && address(yieldVault) != address(0)) {
+            uint256 deficit = neededCash - currentCash;
+            uint256 totalShares = yieldVault.balanceOf(address(this));
+            uint256 maxRedeemable = totalShares > 0 ? yieldVault.previewRedeem(totalShares) : 0;
+            uint256 toWithdraw = deficit > maxRedeemable ? maxRedeemable : deficit;
+            if (toWithdraw > 0) {
+                yieldVault.withdraw(toWithdraw, address(this), address(this));
+                if (toWithdraw > principalInYield) {
+                    principalInYield = 0;
+                } else {
+                    principalInYield -= toWithdraw;
+                }
+            }
+        }
+    }
+
+    /**
+     * @notice Harvest accrued lending yield and distribute to insurance reserve and treasury.
+     */
+    function harvestYield() external nonReentrant returns (uint256 yieldAmount) {
+        if (address(yieldVault) == address(0)) return 0;
+        uint256 totalShares = yieldVault.balanceOf(address(this));
+        if (totalShares == 0) return 0;
+        uint256 totalValue = yieldVault.previewRedeem(totalShares);
+        if (totalValue > principalInYield) {
+            yieldAmount = totalValue - principalInYield;
+            if (yieldAmount >= 1e6) {
+                yieldVault.withdraw(yieldAmount, address(this), address(this));
+                totalYieldHarvested += yieldAmount;
+
+                uint256 insAmt = (yieldAmount * 60) / 100;
+                uint256 trsAmt = yieldAmount - insAmt;
+                if (insAmt > 0) usdc.safeTransfer(insuranceReserve, insAmt);
+                if (trsAmt > 0) usdc.safeTransfer(treasury, trsAmt);
+
+                emit YieldHarvested(yieldAmount, insAmt, trsAmt);
+            }
         }
     }
 

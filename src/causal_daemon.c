@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
+#include <signal.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -30,6 +31,13 @@ static BIGNUM   *g_curve_order_q   = NULL;
 static const EC_POINT *g_generator = NULL;
 static pthread_mutex_t g_crypto_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static const uint8_t SECP256K1_Q_BE[32] = {
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFE,
+    0xBA,0xAE,0xDC,0xE6,0xAF,0x48,0xA0,0x3B,
+    0xBF,0xD2,0x5E,0x8C,0xD0,0x36,0x41,0x41
+};
+
 static inline uint64_t csls_time_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -37,6 +45,9 @@ static inline uint64_t csls_time_ns(void) {
 }
 
 int csls_crypto_global_init(void) {
+    // Neutralize SIGPIPE crashes when writing to severed TCP sockets
+    signal(SIGPIPE, SIG_IGN);
+
     pthread_mutex_lock(&g_crypto_lock);
     if (g_secp256k1_group != NULL) {
         pthread_mutex_unlock(&g_crypto_lock);
@@ -107,6 +118,23 @@ static int csls_derive_pk(const uint8_t *sk_bytes, uint8_t *out_pk_compressed) {
     return (len == 33) ? 0 : -1;
 }
 
+csls_agent_ctx_t *csls_agent_new(const uint8_t *sk_bytes, const char *wal_path) {
+    csls_agent_ctx_t *agent = (csls_agent_ctx_t *)calloc(1, sizeof(csls_agent_ctx_t));
+    if (!agent) return NULL;
+    if (csls_agent_init(agent, sk_bytes, wal_path) != 0) {
+        free(agent);
+        return NULL;
+    }
+    return agent;
+}
+
+void csls_agent_free(csls_agent_ctx_t *agent) {
+    if (agent) {
+        csls_agent_destroy(agent);
+        free(agent);
+    }
+}
+
 int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char *wal_path) {
     if (!agent || !sk_bytes) return -1;
     memset(agent, 0, sizeof(csls_agent_ctx_t));
@@ -119,13 +147,40 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
     agent->wal_fd = -1;
     pthread_mutex_init(&agent->lock, NULL);
 
+    // Pre-allocate BIGNUM execution context to eliminate hot-loop heap allocation
+    BN_CTX *ctx = BN_CTX_new();
+    BIGNUM *bn_sk = BN_new();
+    BIGNUM *bn_k = BN_new();
+    BIGNUM *bn_e = BN_new();
+    BIGNUM *bn_s = BN_new();
+    BIGNUM *bn_tmp = BN_new();
+
+    if (!ctx || !bn_sk || !bn_k || !bn_e || !bn_s || !bn_tmp) {
+        if (ctx) BN_CTX_free(ctx);
+        if (bn_sk) BN_free(bn_sk);
+        if (bn_k) BN_free(bn_k);
+        if (bn_e) BN_free(bn_e);
+        if (bn_s) BN_free(bn_s);
+        if (bn_tmp) BN_free(bn_tmp);
+        return -1;
+    }
+
+    BN_bin2bn(agent->sk, 32, bn_sk);
+    agent->bn_ctx = ctx;
+    agent->bn_sk = bn_sk;
+    agent->bn_k = bn_k;
+    agent->bn_e = bn_e;
+    agent->bn_s = bn_s;
+    agent->bn_tmp = bn_tmp;
+
     if (wal_path && strlen(wal_path) > 0) {
         strncpy(agent->wal_path, wal_path, sizeof(agent->wal_path) - 1);
         agent->wal_fd = open(agent->wal_path, O_RDWR | O_CREAT, 0600);
         if (agent->wal_fd >= 0) {
-            uint64_t saved_h = 0;
-            if (read(agent->wal_fd, &saved_h, sizeof(uint64_t)) == sizeof(uint64_t) && saved_h > 0) {
-                atomic_store(&agent->height, saved_h + 1);
+            csls_wal_record_t rec = {0, 0};
+            if (read(agent->wal_fd, &rec, sizeof(csls_wal_record_t)) == sizeof(csls_wal_record_t) && rec.height > 0) {
+                atomic_store(&agent->height, rec.height + 1);
+                agent->cumulative_sent = rec.cumulative_sent;
             }
         }
     }
@@ -139,6 +194,16 @@ void csls_agent_destroy(csls_agent_ctx_t *agent) {
             agent->wal_fd = -1;
         }
         pthread_mutex_destroy(&agent->lock);
+
+        if (agent->bn_ctx) {
+            BN_free((BIGNUM *)agent->bn_sk);
+            BN_free((BIGNUM *)agent->bn_k);
+            BN_free((BIGNUM *)agent->bn_e);
+            BN_free((BIGNUM *)agent->bn_s);
+            BN_free((BIGNUM *)agent->bn_tmp);
+            BN_CTX_free((BN_CTX *)agent->bn_ctx);
+            agent->bn_ctx = NULL;
+        }
     }
 }
 
@@ -158,13 +223,12 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     agent->cumulative_sent += delta_micro_usdc;
     uint64_t cum_amt = agent->cumulative_sent;
 
-    // Optional Write-Ahead-Log sync for power-loss fault tolerance
+    // Atomic Write-Ahead-Log sync for power-loss fault tolerance
     if (agent->wal_fd >= 0) {
-        ssize_t pw_res = pwrite(agent->wal_fd, &h, sizeof(uint64_t), 0);
+        csls_wal_record_t rec = { .height = h, .cumulative_sent = cum_amt };
+        ssize_t pw_res = pwrite(agent->wal_fd, &rec, sizeof(csls_wal_record_t), 0);
         (void)pw_res;
     }
-
-    pthread_mutex_unlock(&agent->lock);
 
     out_pkt->magic = CSLS_MAGIC;
     out_pkt->type = CSLS_PKT_CHEQUE;
@@ -181,10 +245,17 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     unsigned int k_len = 32;
     HMAC(EVP_sha256(), agent->sk, 32, h_be, 8, k_hash, &k_len);
 
-    BN_CTX *ctx = BN_CTX_new();
-    BIGNUM *k = BN_new();
+    BN_CTX *ctx = (BN_CTX *)agent->bn_ctx;
+    BIGNUM *k = (BIGNUM *)agent->bn_k;
+    BIGNUM *e = (BIGNUM *)agent->bn_e;
+    BIGNUM *sk = (BIGNUM *)agent->bn_sk;
+    BIGNUM *s = (BIGNUM *)agent->bn_s;
+    BIGNUM *tmp = (BIGNUM *)agent->bn_tmp;
+
     BN_bin2bn(k_hash, 32, k);
-    BN_nnmod(k, k, g_curve_order_q, ctx);
+    if (memcmp(k_hash, SECP256K1_Q_BE, 32) >= 0) {
+        BN_nnmod(k, k, g_curve_order_q, ctx);
+    }
 
     // 2. Challenge Hash: e = SHA256(agent_pk || vendor_pk || height || cumulative_amt) mod q
     uint8_t preimage[33 + 33 + 8 + 8];
@@ -198,30 +269,40 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     uint8_t e_digest[32];
     SHA256(preimage, sizeof(preimage), e_digest);
 
-    BIGNUM *e = BN_new();
-    BN_bin2bn(e_digest, 32, e);
-    BN_nnmod(e, e, g_curve_order_q, ctx);
-    BN_bn2binpad(e, out_pkt->challenge_e, 32);
+    // Fast path: if 256-bit hash < secp256k1 order q, hash mod q == hash
+    if (memcmp(e_digest, SECP256K1_Q_BE, 32) < 0) {
+        memcpy(out_pkt->challenge_e, e_digest, 32);
+        BN_bin2bn(e_digest, 32, e);
+    } else {
+        BN_bin2bn(e_digest, 32, e);
+        BN_nnmod(e, e, g_curve_order_q, ctx);
+        BN_bn2binpad(e, out_pkt->challenge_e, 32);
+    }
 
-    // 3. EOTS Schnorr Signature Scalar: s = (k + e * sk) mod q
-    BIGNUM *sk = BN_new();
-    BN_bin2bn(agent->sk, 32, sk);
-
-    BIGNUM *s = BN_new();
-    BIGNUM *tmp = BN_new();
+    // 3. Zero-Heap EOTS Schnorr Signature Scalar: s = (k + e * sk) mod q
     BN_mod_mul(tmp, e, sk, g_curve_order_q, ctx);
     BN_mod_add(s, k, tmp, g_curve_order_q, ctx);
     BN_bn2binpad(s, out_pkt->sig_s, 32);
 
-    // Cleanup BIGNUMs
-    BN_free(k);
-    BN_free(e);
-    BN_free(sk);
-    BN_free(s);
-    BN_free(tmp);
-    BN_CTX_free(ctx);
-
+    pthread_mutex_unlock(&agent->lock);
     return 0;
+}
+
+csls_vendor_ctx_t *csls_vendor_new(const uint8_t *sk_bytes, uint64_t delta_v) {
+    csls_vendor_ctx_t *vendor = (csls_vendor_ctx_t *)calloc(1, sizeof(csls_vendor_ctx_t));
+    if (!vendor) return NULL;
+    if (csls_vendor_init(vendor, sk_bytes, delta_v) != 0) {
+        free(vendor);
+        return NULL;
+    }
+    return vendor;
+}
+
+void csls_vendor_free(csls_vendor_ctx_t *vendor) {
+    if (vendor) {
+        csls_vendor_destroy(vendor);
+        free(vendor);
+    }
 }
 
 int csls_vendor_init(csls_vendor_ctx_t *vendor, const uint8_t *sk_bytes, uint64_t delta_v) {
@@ -235,12 +316,14 @@ int csls_vendor_init(csls_vendor_ctx_t *vendor, const uint8_t *sk_bytes, uint64_
     vendor->cleared_amount = 0;
     vendor->accumulated_amount = 0;
     vendor->max_exposure_delta_v = (delta_v > 0) ? delta_v : CSLS_DEFAULT_DELTA_V;
+    pthread_mutex_init(&vendor->lock, NULL);
 
     return 0;
 }
 
 void csls_vendor_destroy(csls_vendor_ctx_t *vendor) {
     if (vendor) {
+        pthread_mutex_destroy(&vendor->lock);
         memset(vendor, 0, sizeof(csls_vendor_ctx_t));
     }
 }
@@ -250,6 +333,7 @@ int csls_extract_private_key(const csls_cheque_pkt_t *c1, const csls_cheque_pkt_
                               uint8_t *out_sk) {
     if (!c1 || !c2 || !out_sk) return -1;
     if (c1->height != c2->height) return -2; // Must be identical height
+    if (memcmp(c1->agent_pk, c2->agent_pk, 33) != 0) return -6; // Must be same agent
     if (memcmp(c1->challenge_e, c2->challenge_e, 32) == 0) return -3; // No equivocation
 
     BN_CTX *ctx = BN_CTX_new();
@@ -315,6 +399,7 @@ int csls_extract_private_key(const csls_cheque_pkt_t *c1, const csls_cheque_pkt_
  * 4. NEGATIVE ROI: Because B >> sum(delta_v), any attempt to cheat yields at most delta_v
  *    while forfeiting collateral bond B (Expected Payoff E[W] < 0, ROI <= -95%).
  */
+
 int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_t *pkt, 
                                 csls_fraud_pkt_t *out_fraud) {
     if (!vendor || !pkt) return -1;
@@ -324,12 +409,16 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
         return -10; // INVALID_PACKET
     }
 
+    pthread_mutex_lock(&vendor->lock);
+
     // 2. Exposure Buffer Invariant: unconfirmed delta <= delta_v
     if (pkt->cumulative_amt < vendor->accumulated_amount) {
+        pthread_mutex_unlock(&vendor->lock);
         return -11; // DECREASING_AMOUNT_ATTACK
     }
     uint64_t unconfirmed_exposure = pkt->cumulative_amt - vendor->cleared_amount;
     if (unconfirmed_exposure > vendor->max_exposure_delta_v) {
+        pthread_mutex_unlock(&vendor->lock);
         return -12; // EXPOSURE_BUFFER_EXCEEDED (Halt streaming)
     }
 
@@ -337,39 +426,46 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
     uint32_t slot = (uint32_t)(pkt->height & CSLS_HISTORY_MASK);
     csls_history_entry_t *entry = &vendor->history[slot];
 
-    if (entry->occupied && entry->height == pkt->height) {
-        // Height collision detected! Check challenge scalar
+    if (entry->occupied && entry->height == pkt->height && memcmp(entry->agent_pk, pkt->agent_pk, 33) == 0) {
+        // Height collision detected for this specific agent! Check challenge scalar
         if (memcmp(entry->challenge_e, pkt->challenge_e, 32) != 0) {
-            // CRITICAL: EQUIVOCATION (DOUBLE-SPEND) DETECTED!
+            // CRITICAL: Potential EQUIVOCATION (DOUBLE-SPEND) DETECTED!
+            // Reconstruct previous cheque from history
+            csls_cheque_pkt_t c1;
+            c1.magic = CSLS_MAGIC;
+            c1.type = CSLS_PKT_CHEQUE;
+            memcpy(c1.agent_pk, entry->agent_pk, 33);
+            memcpy(c1.vendor_pk, vendor->pk, 33);
+            c1.height = entry->height;
+            c1.cumulative_amt = entry->amount;
+            memcpy(c1.challenge_e, entry->challenge_e, 32);
+            memcpy(c1.sig_s, entry->sig_s, 32);
+
+            uint8_t extracted_sk[32];
+            int ext_rc = csls_extract_private_key(&c1, pkt, extracted_sk);
+            if (ext_rc != 0) {
+                pthread_mutex_unlock(&vendor->lock);
+                return -23; // FORGED_CHALLENGE_HASH
+            }
+
             if (out_fraud) {
                 out_fraud->magic = CSLS_MAGIC;
                 out_fraud->type = CSLS_PKT_FRAUD;
                 memcpy(out_fraud->offender_pk, pkt->agent_pk, 33);
                 out_fraud->collision_h = pkt->height;
-
-                // Reconstruct previous cheque from history
-                csls_cheque_pkt_t c1;
-                c1.magic = CSLS_MAGIC;
-                c1.type = CSLS_PKT_CHEQUE;
-                memcpy(c1.agent_pk, pkt->agent_pk, 33);
-                memcpy(c1.vendor_pk, vendor->pk, 33);
-                c1.height = entry->height;
-                c1.cumulative_amt = entry->amount;
-                memcpy(c1.challenge_e, entry->challenge_e, 32);
-                memcpy(c1.sig_s, entry->sig_s, 32);
-
                 out_fraud->cheque1 = c1;
                 out_fraud->cheque2 = *pkt;
-
-                // Algebraic Key Extraction (~15 us scalar solve; ~300 us curve verification)
-                csls_extract_private_key(&c1, pkt, out_fraud->extracted_sk);
+                memcpy(out_fraud->extracted_sk, extracted_sk, 32);
             }
+            pthread_mutex_unlock(&vendor->lock);
             return -20; // FRAUD_EQUIVOCATION_DETECTED
         }
+        pthread_mutex_unlock(&vendor->lock);
         return -21; // REPLAY_PACKET_IGNORED
     }
 
     if (pkt->height <= vendor->last_height) {
+        pthread_mutex_unlock(&vendor->lock);
         return -22; // OUT_OF_ORDER_OR_OLD_REPLAY
     }
 
@@ -386,20 +482,27 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
     uint8_t e_digest[32];
     SHA256(preimage, sizeof(preimage), e_digest);
 
-    BN_CTX *ctx = BN_CTX_new();
-    BIGNUM *e_calc = BN_new();
-    BN_bin2bn(e_digest, 32, e_calc);
-    BN_nnmod(e_calc, e_calc, g_curve_order_q, ctx);
     uint8_t expected_e[32];
-    BN_bn2binpad(e_calc, expected_e, 32);
-    BN_free(e_calc);
-    BN_CTX_free(ctx);
+    // Fast path: if 256-bit hash < secp256k1 order q, hash mod q == hash (occurs with probability 1 - 1.45e-38)
+    if (memcmp(e_digest, SECP256K1_Q_BE, 32) < 0) {
+        memcpy(expected_e, e_digest, 32);
+    } else {
+        BN_CTX *ctx = BN_CTX_new();
+        BIGNUM *e_calc = BN_new();
+        BN_bin2bn(e_digest, 32, e_calc);
+        BN_nnmod(e_calc, e_calc, g_curve_order_q, ctx);
+        BN_bn2binpad(e_calc, expected_e, 32);
+        BN_free(e_calc);
+        BN_CTX_free(ctx);
+    }
 
     if (memcmp(expected_e, pkt->challenge_e, 32) != 0) {
+        pthread_mutex_unlock(&vendor->lock);
         return -23; // FORGED_CHALLENGE_HASH
     }
 
     // 5. Record new valid state
+    memcpy(entry->agent_pk, pkt->agent_pk, 33);
     entry->height = pkt->height;
     entry->amount = pkt->cumulative_amt;
     memcpy(entry->challenge_e, pkt->challenge_e, 32);
@@ -409,6 +512,7 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
     vendor->last_height = pkt->height;
     vendor->accumulated_amount = pkt->cumulative_amt;
 
+    pthread_mutex_unlock(&vendor->lock);
     return 0; // ACCEPTED_OK
 }
 
@@ -426,11 +530,11 @@ int csls_run_benchmark(uint32_t num_cheques) {
     memset(vendor_sk, 0x22, 32);
 
     csls_agent_ctx_t agent;
-    csls_vendor_ctx_t vendor;
+    csls_vendor_ctx_t *vendor = csls_vendor_new(vendor_sk, 1000000000ULL);
 
-    if (csls_agent_init(&agent, agent_sk, NULL) != 0 ||
-        csls_vendor_init(&vendor, vendor_sk, 1000000000ULL) != 0) { // Large buffer for benchmark
+    if (csls_agent_init(&agent, agent_sk, NULL) != 0 || !vendor) {
         printf("Initialization failed!\n");
+        if (vendor) csls_vendor_free(vendor);
         return -1;
     }
 
@@ -441,14 +545,14 @@ int csls_run_benchmark(uint32_t num_cheques) {
 
     for (uint32_t i = 0; i < num_cheques; i++) {
         // Sign micro-cheque for $0.01 (10,000 micro-USDC)
-        csls_agent_sign_cheque(&agent, vendor.pk, 10000, &pkt);
+        csls_agent_sign_cheque(&agent, vendor->pk, 10000, &pkt);
 
         // Vendor verification
-        int res = csls_vendor_process_cheque(&vendor, &pkt, NULL);
+        int res = csls_vendor_process_cheque(vendor, &pkt, NULL);
         if (res != 0) {
             printf("Verification failed at %u: code %d\n", i, res);
             csls_agent_destroy(&agent);
-            csls_vendor_destroy(&vendor);
+            csls_vendor_free(vendor);
             return -1;
         }
     }
@@ -462,10 +566,10 @@ int csls_run_benchmark(uint32_t num_cheques) {
     printf("  Total Time: %.4f seconds\n", total_sec);
     printf("  Latency per End-to-End Cheque (Sign + Verify): %.2f microseconds\n", us_per_op);
     printf("  Throughput: %.0f operations/second\n", ops_per_sec);
-    printf("  Total Settled Volume: $%.2f USDC\n", (double)vendor.accumulated_amount / 1e6);
+    printf("  Total Settled Volume: $%.2f USDC\n", (double)vendor->accumulated_amount / 1e6);
 
     csls_agent_destroy(&agent);
-    csls_vendor_destroy(&vendor);
+    csls_vendor_free(vendor);
     return 0;
 }
 
@@ -479,17 +583,16 @@ int csls_run_equivocation_test(void) {
     memset(vendor_sk, 0x88, 32);
 
     csls_agent_ctx_t agent;
-    csls_vendor_ctx_t vendor;
+    csls_vendor_ctx_t *vendor = csls_vendor_new(vendor_sk, CSLS_DEFAULT_DELTA_V);
 
     csls_agent_init(&agent, agent_sk, NULL);
-    csls_vendor_init(&vendor, vendor_sk, CSLS_DEFAULT_DELTA_V);
 
     // 1. Legitimate Cheque at height h = 1001
     atomic_store(&agent.height, 1001);
     csls_cheque_pkt_t cheque1;
-    csls_agent_sign_cheque(&agent, vendor.pk, 50000, &cheque1); // $0.05 at h=1001
+    csls_agent_sign_cheque(&agent, vendor->pk, 50000, &cheque1); // $0.05 at h=1001
 
-    int r1 = csls_vendor_process_cheque(&vendor, &cheque1, NULL);
+    int r1 = csls_vendor_process_cheque(vendor, &cheque1, NULL);
     printf("  [1] Legitimate Cheque at h=1001 accepted: %s\n", (r1 == 0) ? "YES" : "NO");
 
     // 2. Forking/Double-Spending Attack: Sign a conflicting cheque at SAME height h = 1001
@@ -506,7 +609,7 @@ int csls_run_equivocation_test(void) {
     memset(&fraud, 0, sizeof(fraud));
 
     uint64_t t0 = csls_time_ns();
-    int r2 = csls_vendor_process_cheque(&vendor, &cheque2, &fraud);
+    int r2 = csls_vendor_process_cheque(vendor, &cheque2, &fraud);
     uint64_t t1 = csls_time_ns();
 
     double extraction_us = (double)(t1 - t0) / 1000.0;
@@ -531,7 +634,7 @@ int csls_run_equivocation_test(void) {
     }
 
     csls_agent_destroy(&agent);
-    csls_vendor_destroy(&vendor);
+    csls_vendor_free(vendor);
     return 0;
 }
 
@@ -562,6 +665,13 @@ static void *vendor_tcp_worker(void *arg) {
         return NULL;
     }
 
+    // Set TCP_NODELAY and TCP_QUICKACK to eradicate delayed ACK latency spikes
+    int flag = 1;
+    setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+#ifdef TCP_QUICKACK
+    setsockopt(client_sock, IPPROTO_TCP, TCP_QUICKACK, &flag, sizeof(flag));
+#endif
+
     // Set 5-second read/write timeouts to neutralize Slowloris DoS attacks
     struct timeval sock_tv;
     sock_tv.tv_sec = 5;
@@ -571,8 +681,7 @@ static void *vendor_tcp_worker(void *arg) {
 
     uint8_t vendor_sk[32];
     memset(vendor_sk, 0x44, 32);
-    csls_vendor_ctx_t vendor;
-    csls_vendor_init(&vendor, vendor_sk, 50000000ULL); // $50 buffer
+    csls_vendor_ctx_t *vendor = csls_vendor_new(vendor_sk, 50000000ULL); // $50 buffer
 
     csls_cheque_pkt_t pkt;
     csls_ack_pkt_t ack;
@@ -590,13 +699,13 @@ static void *vendor_tcp_worker(void *arg) {
         }
 
         csls_fraud_pkt_t fraud;
-        int res = csls_vendor_process_cheque(&vendor, &pkt, &fraud);
+        int res = csls_vendor_process_cheque(vendor, &pkt, &fraud);
 
         ack.acknowledged_h = pkt.height;
-        ack.cumulative_amt = vendor.accumulated_amount;
+        ack.cumulative_amt = vendor->accumulated_amount;
         ack.status_code = (res == 0) ? 0 : ((res == -20) ? 3 : 1);
 
-        if (write(client_sock, &ack, sizeof(ack)) != sizeof(ack)) {
+        if (send(client_sock, &ack, sizeof(ack), MSG_NOSIGNAL) != (ssize_t)sizeof(ack)) {
             goto cleanup;
         }
         if (res == -20) {
@@ -608,7 +717,7 @@ static void *vendor_tcp_worker(void *arg) {
 cleanup:
     close(client_sock);
     close(server_fd);
-    csls_vendor_destroy(&vendor);
+    csls_vendor_free(vendor);
     return NULL;
 }
 
@@ -652,7 +761,7 @@ int csls_run_network_test(uint16_t port, uint32_t count) {
 
     for (uint32_t i = 1; i <= count; i++) {
         csls_agent_sign_cheque(&agent, vendor_pk, 1000, &pkt); // $0.001 per cheque
-        if (write(sock, &pkt, sizeof(pkt)) != sizeof(pkt)) break;
+        if (send(sock, &pkt, sizeof(pkt), MSG_NOSIGNAL) != (ssize_t)sizeof(pkt)) break;
 
         size_t total_ack = 0;
         char *ack_ptr = (char *)&ack;

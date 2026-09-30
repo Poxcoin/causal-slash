@@ -65,8 +65,15 @@ typedef struct {
 
 #pragma pack(pop)
 
+// Write-Ahead Log entry for atomic crash recovery
+typedef struct {
+    uint64_t height;
+    uint64_t cumulative_sent;
+} csls_wal_record_t;
+
 // History entry for equivocation detection
 typedef struct {
+    uint8_t  agent_pk[33];
     uint64_t height;
     uint64_t amount;
     uint8_t  challenge_e[32];
@@ -83,6 +90,12 @@ typedef struct {
     char wal_path[256];
     int wal_fd;
     pthread_mutex_t lock;
+    void *bn_ctx;
+    void *bn_sk;
+    void *bn_k;
+    void *bn_e;
+    void *bn_s;
+    void *bn_tmp;
 } csls_agent_ctx_t;
 
 // Vendor Context
@@ -93,12 +106,19 @@ typedef struct {
     uint64_t cleared_amount;
     uint64_t accumulated_amount;
     uint64_t max_exposure_delta_v;
+    pthread_mutex_t lock;
     csls_history_entry_t history[CSLS_HISTORY_SIZE];
 } csls_vendor_ctx_t;
 
 // Core Protocol Functions
 int  csls_crypto_global_init(void);
 void csls_crypto_global_cleanup(void);
+
+// Dynamic Memory Allocation Helpers (for cross-language FFI bindings)
+csls_agent_ctx_t  *csls_agent_new(const uint8_t *sk_bytes, const char *wal_path);
+void               csls_agent_free(csls_agent_ctx_t *agent);
+csls_vendor_ctx_t *csls_vendor_new(const uint8_t *sk_bytes, uint64_t delta_v);
+void               csls_vendor_free(csls_vendor_ctx_t *vendor);
 
 // Agent API
 int  csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char *wal_path);
@@ -119,7 +139,6 @@ int  csls_extract_private_key(const csls_cheque_pkt_t *c1, const csls_cheque_pkt
 // Verification and Diagnostics
 int  csls_run_benchmark(uint32_t num_cheques);
 int  csls_run_equivocation_test(void);
-int  csls_start_vendor_daemon(uint16_t port, uint64_t delta_v);
-int  csls_run_agent_client(const char *host, uint16_t port, uint32_t count, uint64_t delta_micro_usdc);
+int  csls_run_network_test(uint16_t port, uint32_t count);
 
 #endif // CAUSAL_DAEMON_H

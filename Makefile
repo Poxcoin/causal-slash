@@ -47,5 +47,21 @@ test-redteam:
 	./test_redteam_exploit
 	rm -f test_redteam_exploit
 
+test-competitor:
+	$(CC) -fsanitize=address,undefined -g -Wall -Wextra -pthread -DCSLS_NO_MAIN -Isrc test/c/test_competitor_griefing.c src/causal_daemon.c $(LDFLAGS) -o test_competitor_griefing
+	./test_competitor_griefing
+	rm -f test_competitor_griefing
+
+test-audit:
+	$(CC) -fsanitize=address,undefined -g -Wall -Wextra -pthread -DCSLS_NO_MAIN -Isrc test/c/test_reliability_audit.c src/causal_daemon.c $(LDFLAGS) -o test_reliability_audit
+	./test_reliability_audit
+	rm -f test_reliability_audit
+
+test-bloodhound:
+	$(CC) -fsanitize=address,undefined -g -Wall -Wextra -pthread -DCSLS_NO_MAIN -Isrc test/c/test_schnorr_bloodhound.c src/schnorr_bloodhound.c src/causal_daemon.c $(LDFLAGS) -o test_schnorr_bloodhound
+	./test_schnorr_bloodhound
+	rm -f test_schnorr_bloodhound
+
 clean:
-	rm -f causal_daemon sdk/libcausal_slash.so libcausal_slash.so causal_daemon_asan test_concurrency test_state_bloat *.o
+	rm -f causal_daemon sdk/libcausal_slash.so libcausal_slash.so causal_daemon_asan test_concurrency test_state_bloat test_competitor_griefing test_redteam_exploit test_reliability_audit test_schnorr_bloodhound *.o
+

@@ -82,10 +82,17 @@ class _CslsAgentCtx(ctypes.Structure):
         ("wal_fd", ctypes.c_int),
         ("__padding", ctypes.c_int),
         ("lock", ctypes.c_byte * 40),
+        ("bn_ctx", ctypes.c_void_p),
+        ("bn_sk", ctypes.c_void_p),
+        ("bn_k", ctypes.c_void_p),
+        ("bn_e", ctypes.c_void_p),
+        ("bn_s", ctypes.c_void_p),
+        ("bn_tmp", ctypes.c_void_p),
     ]
 
 class _CslsHistoryEntry(ctypes.Structure):
     _fields_ = [
+        ("agent_pk", ctypes.c_uint8 * 33),
         ("height", ctypes.c_uint64),
         ("amount", ctypes.c_uint64),
         ("challenge_e", ctypes.c_uint8 * 32),
@@ -101,6 +108,7 @@ class _CslsVendorCtx(ctypes.Structure):
         ("cleared_amount", ctypes.c_uint64),
         ("accumulated_amount", ctypes.c_uint64),
         ("max_exposure_delta_v", ctypes.c_uint64),
+        ("lock", ctypes.c_byte * 40),
         ("history", _CslsHistoryEntry * 65536),
     ]
 
