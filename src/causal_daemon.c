@@ -364,6 +364,10 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     if (memcmp(k_hash, SECP256K1_Q_BE, 32) >= 0) {
         BN_nnmod(k, k, g_curve_order_q, ctx);
     }
+    if (BN_is_zero(k)) {
+        // Degenerate zero nonce must NEVER be used (would leak sk via s = e * sk)
+        BN_one(k);
+    }
 
     // 2. Challenge Hash: e = SHA256(agent_pk || vendor_pk || height || cumulative_amt) mod q
     uint8_t preimage[33 + 33 + 8 + 8];

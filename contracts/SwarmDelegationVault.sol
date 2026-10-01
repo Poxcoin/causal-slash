@@ -587,7 +587,13 @@ contract SwarmDelegationVault is PerformanceCollateralVault {
         uint256 finderBounty = (penalty * 15) / 100;
         uint256 remaining = penalty - finderBounty;
 
-        // Priority 2: Residual surplus split: 60% Insurance Reserve, 40% Protocol Treasury
+        // Priority 2: Restitution Reserve for Pre-allocated Active Vendors (Victim Protection)
+        uint256 totalReserved = totalAllocatedExposure[args.masterAgent];
+        uint256 restitutionAllocation = remaining > totalReserved ? totalReserved : remaining;
+        slashedRestitutionPool[args.masterAgent] += restitutionAllocation;
+        remaining -= restitutionAllocation;
+
+        // Priority 3: Residual surplus split: 60% Insurance Reserve, 40% Protocol Treasury
         uint256 insuranceAmount = (remaining * 60) / 100;
         uint256 treasuryAmount = remaining - insuranceAmount;
 
