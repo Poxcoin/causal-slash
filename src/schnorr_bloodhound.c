@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <openssl/rand.h>
 #include "schnorr_bloodhound.h"
 
 // -----------------------------------------------------------------------------
@@ -130,6 +132,36 @@ void bloodhound_init(bloodhound_ctx_t *ctx, const uint8_t *hunter_addr_20) {
     if (hunter_addr_20) {
         memcpy(ctx->hunter_address, hunter_addr_20, 20);
     }
+    // CSPRNG slot entropy; a wire attacker must not be able to compute the
+    // index of its own evidence slot. Fallback mixes high-resolution clocks
+    // and ASLR stack layout if the OS entropy source is unavailable.
+    if (RAND_bytes((unsigned char *)&ctx->slot_seed, sizeof(ctx->slot_seed)) != 1) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t t = (uint64_t)ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 32);
+        uint64_t aslr = (uint64_t)(uintptr_t)&ts;
+        ctx->slot_seed = t ^ (aslr << 17) ^ (aslr >> 7);
+    }
+}
+
+void bloodhound_init_seeded(bloodhound_ctx_t *ctx, const uint8_t *hunter_addr_20,
+                            uint64_t seed) {
+    bloodhound_init(ctx, hunter_addr_20);
+    if (ctx) {
+        ctx->slot_seed = seed;
+    }
+}
+
+// splitmix64 finalizer: avalanche slot index inputs so a wire attacker without
+// slot_seed cannot precompute collisions against the evidence table.
+static inline uint32_t bh_slot_mix(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return (uint32_t)(x & BLOODHOUND_LRU_MASK);
 }
 
 int bloodhound_inspect_packet(bloodhound_ctx_t *ctx, const csls_cheque_pkt_t *pkt, 
@@ -142,7 +174,7 @@ int bloodhound_inspect_packet(bloodhound_ctx_t *ctx, const csls_cheque_pkt_t *pk
     // Compute fast slot index from height and agent public key prefix
     uint32_t agent_hash = 0;
     memcpy(&agent_hash, pkt->agent_pk + 1, 4);
-    uint32_t slot = (uint32_t)((pkt->height ^ agent_hash) & BLOODHOUND_LRU_MASK);
+    uint32_t slot = bh_slot_mix(pkt->height ^ (uint64_t)agent_hash ^ ctx->slot_seed);
     bloodhound_slot_t *entry = &ctx->table[slot];
 
     // Check for height collision from same agent
