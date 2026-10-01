@@ -154,12 +154,18 @@ int  csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const cha
 void csls_agent_destroy(csls_agent_ctx_t *agent);
 int  csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk, 
                             uint64_t delta_micro_usdc, csls_cheque_pkt_t *out_pkt);
+int  csls_agent_get_channel_state(csls_agent_ctx_t *agent, const uint8_t *vendor_pk, 
+                                  uint64_t *out_height, uint64_t *out_cumulative);
 
 // Vendor API
 int  csls_vendor_init(csls_vendor_ctx_t *vendor, const uint8_t *sk_bytes, uint64_t delta_v);
 void csls_vendor_destroy(csls_vendor_ctx_t *vendor);
 int  csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_t *pkt, 
                                 csls_fraud_pkt_t *out_fraud);
+int  csls_vendor_advance_cleared(csls_vendor_ctx_t *vendor, const uint8_t *agent_pk, 
+                                uint64_t cleared_amount);
+int  csls_vendor_get_channel_state(csls_vendor_ctx_t *vendor, const uint8_t *agent_pk,
+                                  uint64_t *out_height, uint64_t *out_accumulated, uint64_t *out_cleared);
 
 // Mathematical EOTS Slashing Engine
 int  csls_extract_private_key(const csls_cheque_pkt_t *c1, const csls_cheque_pkt_t *c2, 

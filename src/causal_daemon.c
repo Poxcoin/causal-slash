@@ -529,7 +529,7 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
         pthread_mutex_unlock(&vendor->lock);
         return -11; // DECREASING_AMOUNT_ATTACK
     }
-    uint64_t unconfirmed_exposure = pkt->cumulative_amt - cleared;
+    uint64_t unconfirmed_exposure = (pkt->cumulative_amt >= cleared) ? (pkt->cumulative_amt - cleared) : 0;
     if (unconfirmed_exposure > vendor->max_exposure_delta_v) {
         pthread_mutex_unlock(&vendor->lock);
         return -12; // EXPOSURE_BUFFER_EXCEEDED (Halt streaming)
@@ -630,6 +630,58 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
 
     pthread_mutex_unlock(&vendor->lock);
     return 0; // ACCEPTED_OK
+}
+
+int csls_vendor_advance_cleared(csls_vendor_ctx_t *vendor, const uint8_t *agent_pk, uint64_t cleared_amount) {
+    if (!vendor) return -1;
+    pthread_mutex_lock(&vendor->lock);
+
+    if (agent_pk) {
+        csls_channel_t *chan = csls_channel_get_or_create(&vendor->channels, agent_pk);
+        if (chan) {
+            uint64_t cur = atomic_load(&chan->cleared_amount);
+            if (cleared_amount > cur) {
+                atomic_store(&chan->cleared_amount, cleared_amount);
+            }
+        }
+    }
+    if (cleared_amount > vendor->cleared_amount) {
+        vendor->cleared_amount = cleared_amount;
+    }
+
+    pthread_mutex_unlock(&vendor->lock);
+    return 0;
+}
+
+int csls_vendor_get_channel_state(csls_vendor_ctx_t *vendor, const uint8_t *agent_pk,
+                                  uint64_t *out_height, uint64_t *out_accumulated, uint64_t *out_cleared) {
+    if (!vendor || !agent_pk) return -1;
+    pthread_mutex_lock(&vendor->lock);
+    csls_channel_t *chan = csls_channel_get_or_create(&vendor->channels, agent_pk);
+    if (!chan) {
+        pthread_mutex_unlock(&vendor->lock);
+        return -14;
+    }
+    if (out_height) *out_height = atomic_load(&chan->height);
+    if (out_accumulated) *out_accumulated = atomic_load(&chan->accumulated_amount);
+    if (out_cleared) *out_cleared = atomic_load(&chan->cleared_amount);
+    pthread_mutex_unlock(&vendor->lock);
+    return 0;
+}
+
+int csls_agent_get_channel_state(csls_agent_ctx_t *agent, const uint8_t *vendor_pk, 
+                                  uint64_t *out_height, uint64_t *out_cumulative) {
+    if (!agent || !vendor_pk) return -1;
+    pthread_mutex_lock(&agent->lock);
+    csls_channel_t *chan = csls_channel_get_or_create(&agent->channels, vendor_pk);
+    if (!chan) {
+        pthread_mutex_unlock(&agent->lock);
+        return -14;
+    }
+    if (out_height) *out_height = atomic_load(&chan->height);
+    if (out_cumulative) *out_cumulative = atomic_load(&chan->cumulative_sent);
+    pthread_mutex_unlock(&agent->lock);
+    return 0;
 }
 
 // -----------------------------------------------------------------------------
