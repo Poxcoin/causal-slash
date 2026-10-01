@@ -8,6 +8,8 @@ All internal settlement is denominated strictly in USD / USDC (6 decimal places:
 
 from __future__ import annotations
 import ctypes
+import logging
+import math
 import os
 import sys
 import subprocess
@@ -421,9 +423,18 @@ class CausalAgentWallet:
         Tracks per-vendor sequence numbers and cumulative amounts via csls_channel_table_t.
         Execution takes ~3-5 microseconds in native C.
         """
+        if not isinstance(amount_usdc, (int, float)):
+            raise TypeError(f"amount_usdc must be numeric, got {type(amount_usdc).__name__}")
+        if math.isnan(amount_usdc) or math.isinf(amount_usdc):
+            raise ValueError(f"amount_usdc must be finite, got {amount_usdc}")
+        if amount_usdc <= 0:
+            raise ValueError(f"amount_usdc must be strictly positive, got {amount_usdc}")
+
         v_bytes = _parse_bytes(vendor_pk, 33)
         v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
         delta_micro = int(round(amount_usdc * 1e6))
+        if delta_micro > 0xFFFFFFFFFFFFFFFF:
+            raise OverflowError("amount_usdc exceeds uint64_t micro-USDC range")
 
         with self._lock:
             if v_bytes not in self._channels:
@@ -450,6 +461,12 @@ class CausalAgentWallet:
                 raise RuntimeError(f"csls_agent_sign_cheque failed with code {res}")
 
             return Cheque.from_c_pkt(c_pkt)
+
+    def __enter__(self) -> CausalAgentWallet:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
     def close(self):
         with self._lock:
@@ -480,9 +497,22 @@ class CausalVendorNode:
     guaranteeing independent credit exposure limits (delta_v) and monotonic sequence tracking.
     Allocated directly on the C11 heap via csls_vendor_new / csls_vendor_free.
     """
-    def __init__(self, secret_key: Optional[Union[str, bytes]] = None, delta_v_usdc: float = 1.0):
+    def __init__(
+        self,
+        secret_key: Optional[Union[str, bytes]] = None,
+        delta_v_usdc: float = 1.0,
+        max_channels: int = 65536,
+    ):
+        if not isinstance(delta_v_usdc, (int, float)):
+            raise TypeError(f"delta_v_usdc must be numeric, got {type(delta_v_usdc).__name__}")
+        if math.isnan(delta_v_usdc) or math.isinf(delta_v_usdc):
+            raise ValueError(f"delta_v_usdc must be finite, got {delta_v_usdc}")
+        if delta_v_usdc <= 0:
+            raise ValueError(f"delta_v_usdc must be strictly positive, got {delta_v_usdc}")
+
         self._lock = threading.RLock()
         self._closed = False
+        self._max_channels = max_channels
         if secret_key is None:
             self._sk_bytes = os.urandom(32)
         else:
@@ -546,6 +576,13 @@ class CausalVendorNode:
 
         with self._lock:
             if agent_pk not in self._channels:
+                if len(self._channels) >= self._max_channels:
+                    return ProcessResult(
+                        status_code=-10,
+                        accepted=False,
+                        accumulated_usdc=self.accumulated_usdc,
+                        error_message="MAX_CHANNELS_CAPACITY_REACHED: Vendor channel table full",
+                    )
                 if len(self._channels) == 0:
                     v_ctx = self._ctx
                 else:
@@ -599,6 +636,12 @@ class CausalVendorNode:
                 accumulated_usdc=total_usdc,
                 error_message=msg,
             )
+
+    def __enter__(self) -> CausalVendorNode:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
     def close(self):
         with self._lock:

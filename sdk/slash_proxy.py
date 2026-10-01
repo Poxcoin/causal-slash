@@ -10,6 +10,7 @@ before broadcasting residual settlements to external network sockets.
 from __future__ import annotations
 import http.server
 import json
+import logging
 import socket
 import struct
 import threading
@@ -203,9 +204,10 @@ class SlashSidecarProxy:
             try:
                 with socket.create_connection(self.upstream_addr, timeout=2.0) as sock:
                     sock.sendall(wire_pkt)
-            except (ConnectionRefusedError, socket.timeout, OSError):
-                # Upstream offline; in production buffered to persistent WAL
-                pass
+            except (ConnectionRefusedError, socket.timeout, OSError) as e:
+                logging.getLogger("SlashSidecarProxy").warning(
+                    "Upstream settlement delivery failed to %s: %s", self.upstream_addr, e
+                )
 
     def _make_handler(self):
         proxy_self = self
@@ -366,6 +368,13 @@ class SlashSidecarProxy:
             self._server = http.server.ThreadingHTTPServer((self.host, self.port), self._make_handler())
             self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
             self._thread.start()
+
+    def __enter__(self) -> SlashSidecarProxy:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.stop()
 
     def stop(self):
         """Cleanly stops the reverse proxy server and terminates the listener thread."""

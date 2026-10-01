@@ -157,13 +157,49 @@ def test_1_native_ffi_initialization():
     assert vendor.public_key[0] in (0x02, 0x03)
     assert vendor.accumulated_usdc == 0.0
 
-    # 3. Verify clean idempotent shutdown
+    # 3. Verify Context Manager (RAII) protocol
+    with CausalAgentWallet() as cm_wallet:
+        assert not cm_wallet._closed
+    assert cm_wallet._closed
+
+    with CausalVendorNode() as cm_vendor:
+        assert not cm_vendor._closed
+    assert cm_vendor._closed
+
+    # 4. Verify boundary and numeric safety validation
+    try:
+        wallet.sign_cheque("02" * 33, float("nan"))
+        assert False, "Should reject NaN"
+    except ValueError:
+        pass
+
+    try:
+        wallet.sign_cheque("02" * 33, -0.01)
+        assert False, "Should reject negative amount"
+    except ValueError:
+        pass
+
+    # 5. Verify max_channels capacity limit protection
+    bounded_vendor = CausalVendorNode(max_channels=1)
+    w1 = CausalAgentWallet()
+    w2 = CausalAgentWallet()
+    res1 = bounded_vendor.process_cheque(w1.sign_cheque(bounded_vendor.public_key_hex, 0.01))
+    assert res1.accepted
+    res2 = bounded_vendor.process_cheque(w2.sign_cheque(bounded_vendor.public_key_hex, 0.01))
+    assert not res2.accepted
+    assert res2.status_code == -10
+    bounded_vendor.close()
+    w1.close()
+    w2.close()
+
+    # 6. Verify clean idempotent shutdown
     wallet.close()
     vendor.close()
     wallet.close()  # Idempotent call
     vendor.close()
     print("  [PASS] C11 heap contexts allocated and freed with zero leaks.")
     print("  [PASS] secp256k1 keys and initial height states verified.")
+    print("  [PASS] Context manager RAII and boundary safety validated.")
 
 
 # ==============================================================================

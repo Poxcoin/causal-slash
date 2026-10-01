@@ -10,6 +10,8 @@ and trigger on-chain collateral foreclosure with automated bounty claims.
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import shutil
 import subprocess
@@ -146,6 +148,7 @@ class CausalSlashActionProvider(ActionProvider):
     ):
         super().__init__("causal_slash")
         self._lock = threading.RLock()
+        self._onchain_lock = threading.RLock()
         self._closed = False
 
         # Native C11 Engine Instances
@@ -175,6 +178,12 @@ class CausalSlashActionProvider(ActionProvider):
     def public_key_hex(self) -> str:
         return self._agent_wallet.public_key_hex
 
+    def __enter__(self) -> CausalSlashActionProvider:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
     # -----------------------------------------------------------------------
     # Action 1: Create Channel
     # -----------------------------------------------------------------------
@@ -193,20 +202,25 @@ class CausalSlashActionProvider(ActionProvider):
         """
         Creates an isolated off-chain channel and optionally reserves on-chain exposure.
         """
+        if not isinstance(deposit_usdc, (int, float)):
+            raise TypeError(f"deposit_usdc must be numeric, got {type(deposit_usdc).__name__}")
+        if math.isnan(deposit_usdc) or math.isinf(deposit_usdc):
+            raise ValueError(f"deposit_usdc must be finite, got {deposit_usdc}")
+        if deposit_usdc <= 0:
+            raise ValueError(f"deposit_usdc must be strictly positive, got {deposit_usdc}")
+
         with self._lock:
             if self._closed:
                 raise RuntimeError("CausalSlashActionProvider is closed")
-
             v_pk = self._normalize_vendor_pk(vendor_address)
-            tx_hash = None
 
-            # If connected to on-chain vault on Base / Anvil, allocate exposure
-            if self._vault_address and self._rpc_url and self._private_key and os.path.exists(self._cast_bin):
+        tx_hash = None
+        # If connected to on-chain vault on Base / Anvil, allocate exposure without blocking off-chain fast-paths
+        if self._vault_address and self._rpc_url and self._private_key and os.path.exists(self._cast_bin):
+            with self._onchain_lock:
                 try:
                     deposit_micro = int(round(deposit_usdc * 1e6))
-                    # Check if vendor is a 20-byte address, otherwise derive address
                     target_vendor_addr = vendor_address if len(vendor_address) == 42 and vendor_address.startswith("0x") else self._vendor_address_from_pk(v_pk)
-                    
                     cmd = [
                         self._cast_bin, "send", self._vault_address,
                         "allocateSessionExposure(address,uint256)",
@@ -222,9 +236,9 @@ class CausalSlashActionProvider(ActionProvider):
                         except Exception:
                             tx_hash = "confirmed"
                 except Exception as e:
-                    # Non-fatal if off-chain session pre-allocation
-                    pass
+                    logging.warning("Failed on-chain exposure pre-allocation: %s", e)
 
+        with self._lock:
             result = {
                 "status": "CHANNEL_CREATED",
                 "vendor_address": vendor_address,
@@ -254,6 +268,13 @@ class CausalSlashActionProvider(ActionProvider):
         """
         Signs a micro-cheque in C11 native memory (~3.2 µs execution time).
         """
+        if not isinstance(amount_usdc, (int, float)):
+            raise TypeError(f"amount_usdc must be numeric, got {type(amount_usdc).__name__}")
+        if math.isnan(amount_usdc) or math.isinf(amount_usdc):
+            raise ValueError(f"amount_usdc must be finite, got {amount_usdc}")
+        if amount_usdc <= 0:
+            raise ValueError(f"amount_usdc must be strictly positive, got {amount_usdc}")
+
         with self._lock:
             if self._closed:
                 raise RuntimeError("CausalSlashActionProvider is closed")
@@ -341,9 +362,10 @@ class CausalSlashActionProvider(ActionProvider):
         """
         Executes on-chain commit-reveal foreclosure against PerformanceCollateralVault.
         """
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("CausalSlashActionProvider is closed")
+        with self._onchain_lock:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("CausalSlashActionProvider is closed")
 
             if not self._vault_address or not self._rpc_url or not self._private_key:
                 raise RuntimeError("On-chain execution requires vault_address, rpc_url, and private_key")
@@ -413,14 +435,15 @@ class CausalSlashActionProvider(ActionProvider):
                 raise RuntimeError(f"revealAndSlash failed: {slash_res.stderr or slash_res.stdout}")
 
             # 5. Verify foreclosure status
-            is_slashed = True
+            is_slashed = False
             try:
                 out = subprocess.check_output(
-                    [self._cast_bin, "call", self._vault_address, "vaults(address)(uint256,bytes32,address,address,uint256,uint256,bool)", agent_addr, "--rpc-url", self._rpc_url]
+                    [self._cast_bin, "call", self._vault_address, "vaults(address)(uint256,bytes32,address,address,uint256,uint256,bool)", agent_addr, "--rpc-url", self._rpc_url],
+                    timeout=10,
                 ).decode().splitlines()
                 is_slashed = out[-1].strip().lower() == "true"
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning("Failed to query on-chain vault slash status: %s", e)
 
             result = {
                 "status": "FORECLOSED",
