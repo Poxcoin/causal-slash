@@ -26,11 +26,17 @@ contract SwarmDelegationVaultTest is Test {
     uint256 public subAgent2Pk;
     address public subAgent2Signer;
 
+    uint256 public vendorPk;
+    address public vendor;
+
     function setUp() public {
         deployer = address(0x1);
         treasury = address(0x2);
         insuranceReserve = address(0x3);
         finder = address(0x5);
+
+        vendorPk = 0x4444;
+        vendor = vm.addr(vendorPk);
 
         masterAgentPk = 0xA11CE;
         masterAgent = vm.addr(masterAgentPk);
@@ -245,5 +251,249 @@ contract SwarmDelegationVaultTest is Test {
         vm.prank(finder);
         vm.expectRevert(PerformanceCollateralVault.HashMismatch.selector);
         vault.slashSwarmSubAgent(slashArgs);
+    }
+
+    function _signSwarmCheque(
+        uint256 signerPk,
+        address master,
+        address chequeVendor,
+        uint64 height,
+        uint64 cumulativeAmount
+    ) internal view returns (bytes memory) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                vault.SWARM_CHEQUE_TYPEHASH(),
+                master,
+                chequeVendor,
+                height,
+                cumulativeAmount
+            )
+        );
+        bytes32 digest = vault.hashTypedDataV4(structHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function test_Swarm_SettleCheque_Success() public {
+        uint256 masterBond = 100_000 * 1e6;
+        bytes32 leaf0 = keccak256(abi.encodePacked(subAgent1Signer));
+        bytes32 leaf1 = keccak256(abi.encodePacked(subAgent2Signer));
+        bytes32 root = leaf0 <= leaf1
+            ? keccak256(abi.encodePacked(leaf0, leaf1))
+            : keccak256(abi.encodePacked(leaf1, leaf0));
+
+        _setupMasterVaultWithSwarm(masterBond, root, 1);
+
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leaf1;
+
+        uint64 channelHeight = 1;
+        uint64 cumulativeAmount = 1_500 * 1e6; // $1,500 USDC
+        bytes memory sig = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, channelHeight, cumulativeAmount);
+
+        uint256 vendorBalBefore = usdc.balanceOf(vendor);
+        vm.prank(vendor);
+        vault.settleSwarmCheque(masterAgent, channelHeight, cumulativeAmount, proof, sig);
+
+        assertEq(usdc.balanceOf(vendor) - vendorBalBefore, 1_500 * 1e6);
+        (uint256 remainingBond, , , , , , ) = vault.vaults(masterAgent);
+        assertEq(remainingBond, masterBond - 1_500 * 1e6);
+        assertEq(vault.swarmSettledAmounts(subAgent1Signer, vendor), 1_500 * 1e6);
+        assertEq(vault.swarmChannelHeights(subAgent1Signer, vendor), channelHeight);
+        assertEq(vault.subAgentTotalSettled(subAgent1Signer), 1_500 * 1e6);
+    }
+
+    function test_Swarm_SettleCheque_Monotonic_Rejection() public {
+        uint256 masterBond = 100_000 * 1e6;
+        bytes32 leaf0 = keccak256(abi.encodePacked(subAgent1Signer));
+        bytes32 leaf1 = keccak256(abi.encodePacked(subAgent2Signer));
+        bytes32 root = leaf0 <= leaf1
+            ? keccak256(abi.encodePacked(leaf0, leaf1))
+            : keccak256(abi.encodePacked(leaf1, leaf0));
+
+        _setupMasterVaultWithSwarm(masterBond, root, 1);
+
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leaf1;
+
+        // 1. Initial settlement at height 1, cumulative 1000 USDC
+        bytes memory sig1 = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 1, 1_000 * 1e6);
+        vm.prank(vendor);
+        vault.settleSwarmCheque(masterAgent, 1, 1_000 * 1e6, proof, sig1);
+
+        // 2. Replayed height (same height 1, higher amount) -> reverts InvalidSessionNonce
+        bytes memory sigReplay = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 1, 2_000 * 1e6);
+        vm.prank(vendor);
+        vm.expectRevert(PerformanceCollateralVault.InvalidSessionNonce.selector);
+        vault.settleSwarmCheque(masterAgent, 1, 2_000 * 1e6, proof, sigReplay);
+
+        // 3. Decreasing/same amount at higher height -> reverts NothingToSettle
+        bytes memory sigStaleAmt = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 2, 1_000 * 1e6);
+        vm.prank(vendor);
+        vm.expectRevert(PerformanceCollateralVault.NothingToSettle.selector);
+        vault.settleSwarmCheque(masterAgent, 2, 1_000 * 1e6, proof, sigStaleAmt);
+
+        bytes memory sigDecAmt = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 2, 800 * 1e6);
+        vm.prank(vendor);
+        vm.expectRevert(PerformanceCollateralVault.NothingToSettle.selector);
+        vault.settleSwarmCheque(masterAgent, 2, 800 * 1e6, proof, sigDecAmt);
+
+        // 4. Valid monotonic progression: height 2, cumulative 2500 USDC (delta 1500 USDC)
+        bytes memory sig2 = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 2, 2_500 * 1e6);
+        uint256 vendorBefore = usdc.balanceOf(vendor);
+        vm.prank(vendor);
+        vault.settleSwarmCheque(masterAgent, 2, 2_500 * 1e6, proof, sig2);
+        assertEq(usdc.balanceOf(vendor) - vendorBefore, 1_500 * 1e6);
+        assertEq(vault.swarmSettledAmounts(subAgent1Signer, vendor), 2_500 * 1e6);
+        assertEq(vault.swarmChannelHeights(subAgent1Signer, vendor), 2);
+    }
+
+    function test_Swarm_SettleCheque_SubAgentCap_Enforced() public {
+        uint256 masterBond = 100_000 * 1e6;
+        bytes32 leaf0 = keccak256(abi.encodePacked(subAgent1Signer));
+        bytes32 leaf1 = keccak256(abi.encodePacked(subAgent2Signer));
+        bytes32 root = leaf0 <= leaf1
+            ? keccak256(abi.encodePacked(leaf0, leaf1))
+            : keccak256(abi.encodePacked(leaf1, leaf0));
+
+        _setupMasterVaultWithSwarm(masterBond, root, 1);
+
+        // Master restricts subAgent1 to 2,000 USDC cap
+        vm.prank(masterAgent);
+        vault.setSubAgentCap(subAgent1Signer, 2_000 * 1e6);
+        assertEq(vault.subAgentCaps(masterAgent, subAgent1Signer), 2_000 * 1e6);
+
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leaf1;
+
+        // SubAgent signs cheque for 5,000 USDC (exceeds cap of 2,000 USDC)
+        bytes memory sig = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 1, 5_000 * 1e6);
+
+        uint256 vendorBefore = usdc.balanceOf(vendor);
+        vm.prank(vendor);
+        // Settlement succeeds, but payout is clamped to 2,000 USDC
+        vault.settleSwarmCheque(masterAgent, 1, 5_000 * 1e6, proof, sig);
+
+        assertEq(usdc.balanceOf(vendor) - vendorBefore, 2_000 * 1e6);
+        assertEq(vault.subAgentTotalSettled(subAgent1Signer), 2_000 * 1e6);
+
+        // Next cheque after cap exhausted reverts with SubAgentCapExceeded
+        bytes memory sig2 = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 2, 7_000 * 1e6);
+        vm.prank(vendor);
+        vm.expectRevert(SwarmDelegationVault.SubAgentCapExceeded.selector);
+        vault.settleSwarmCheque(masterAgent, 2, 7_000 * 1e6, proof, sig2);
+    }
+
+    function test_Swarm_TimelockedRoot_PreviousEpochSettlement() public {
+        uint256 masterBond = 100_000 * 1e6;
+
+        // Root 1 contains subAgent1
+        bytes32 leaf0 = keccak256(abi.encodePacked(subAgent1Signer));
+        bytes32 leaf1 = keccak256(abi.encodePacked(subAgent2Signer));
+        bytes32 root1 = leaf0 <= leaf1
+            ? keccak256(abi.encodePacked(leaf0, leaf1))
+            : keccak256(abi.encodePacked(leaf1, leaf0));
+
+        _setupMasterVaultWithSwarm(masterBond, root1, 1);
+
+        // SubAgent1 signs a cheque for 1,200 USDC
+        bytes memory sig = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 1, 1_200 * 1e6);
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leaf1;
+
+        // Master updates delegation root to Root 2 (excluding subAgent1)
+        bytes32 root2 = keccak256("new_swarm_epoch_root");
+        vm.prank(masterAgent);
+        vault.setDelegationRoot(root2, 1);
+
+        assertEq(vault.swarmMerkleRoots(masterAgent), root2);
+        assertEq(vault.previousRoots(masterAgent), root1);
+        assertEq(vault.previousRootExpiries(masterAgent), block.timestamp + 7 days);
+
+        // Warp 2 days forward (well within 7-day grace period)
+        vm.warp(block.timestamp + 2 days);
+
+        // Settlement against archived previous root succeeds
+        uint256 vendorBefore = usdc.balanceOf(vendor);
+        vm.prank(vendor);
+        vault.settleSwarmCheque(masterAgent, 1, 1_200 * 1e6, proof, sig);
+
+        assertEq(usdc.balanceOf(vendor) - vendorBefore, 1_200 * 1e6);
+    }
+
+    function test_Swarm_TimelockedRoot_RootRugSlashing_Repelled() public {
+        uint256 masterBond = 100_000 * 1e6;
+        uint256 subAgentQuota = 10_000 * 1e6;
+        bytes32 nonceRoot = keccak256("nonce_root");
+        uint256 expiry = block.timestamp + 14 days;
+
+        bytes32 leaf0 = vault.computeSubAgentLeaf(subAgent1Signer, subAgentQuota, nonceRoot, expiry, 0);
+        bytes32 leaf1 = keccak256("sibling_node");
+        bytes32 root1 = keccak256(abi.encodePacked(leaf0, leaf1));
+
+        _setupMasterVaultWithSwarm(masterBond, root1, 1);
+
+        // Whistleblower searcher discovers equivocation and prepares slashing proof
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leaf1;
+
+        SwarmDelegationVault.SwarmSlashArgs memory slashArgs = SwarmDelegationVault.SwarmSlashArgs({
+            masterAgent: masterAgent,
+            leafHash: leaf0,
+            merkleProof: proof,
+            leafIndex: 0,
+            extractedSk: subAgent1Pk,
+            subAgentQuota: subAgentQuota,
+            nonceRoot: nonceRoot,
+            expiry: expiry
+        });
+
+        // Malicious master detects impending slash and front-runs with setDelegationRoot to rug the root!
+        bytes32 rugRoot = keccak256("malicious_root_rug");
+        vm.prank(masterAgent);
+        vault.setDelegationRoot(rugRoot, 1);
+
+        assertEq(vault.swarmMerkleRoots(masterAgent), rugRoot);
+        assertEq(vault.previousRoots(masterAgent), root1);
+
+        // Searcher's slash transaction is mined. Vault checks previousRoots within grace period!
+        uint256 finderBefore = usdc.balanceOf(finder);
+        vm.prank(finder);
+        vault.slashSwarmSubAgent(slashArgs);
+
+        // Slashing succeeds! Master bond is slashed, searcher receives 15% bounty!
+        (uint256 remainingBond, , , , , , ) = vault.vaults(masterAgent);
+        assertEq(remainingBond, masterBond - subAgentQuota);
+        assertEq(usdc.balanceOf(finder) - finderBefore, (subAgentQuota * 15) / 100);
+        assertTrue(vault.slashedNullifiers(leaf0));
+    }
+
+    function test_Swarm_TimelockedRoot_ExpiredPreviousRoot_Reverts() public {
+        uint256 masterBond = 100_000 * 1e6;
+
+        bytes32 leaf0 = keccak256(abi.encodePacked(subAgent1Signer));
+        bytes32 leaf1 = keccak256(abi.encodePacked(subAgent2Signer));
+        bytes32 root1 = leaf0 <= leaf1
+            ? keccak256(abi.encodePacked(leaf0, leaf1))
+            : keccak256(abi.encodePacked(leaf1, leaf0));
+
+        _setupMasterVaultWithSwarm(masterBond, root1, 1);
+
+        bytes memory sig = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 1, 500 * 1e6);
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leaf1;
+
+        // Master updates root to Root 2
+        bytes32 root2 = keccak256("root_epoch_2");
+        vm.prank(masterAgent);
+        vault.setDelegationRoot(root2, 1);
+
+        // Warp 8 days forward (grace period 7 days expired!)
+        vm.warp(block.timestamp + 8 days);
+
+        // Settlement against expired root reverts with InvalidMerkleProof
+        vm.prank(vendor);
+        vm.expectRevert(SwarmDelegationVault.InvalidMerkleProof.selector);
+        vault.settleSwarmCheque(masterAgent, 1, 500 * 1e6, proof, sig);
     }
 }
