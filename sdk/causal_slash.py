@@ -13,8 +13,9 @@ import sys
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union, Dict, List, Set
+from typing import Optional, Tuple, Union, Dict, List, Set, Deque
 
 # Protocol Constants
 CSLS_MAGIC = 0x43534C53
@@ -225,8 +226,16 @@ class CausalAgentWallet:
     Sovereign AI Agent Wallet for ultra-fast, zero-gas micro-payments.
     Maintains an atomic monotonic height counter and generates deterministic EOTS cheques.
     """
-    def __init__(self, secret_key: Optional[Union[str, bytes]] = None, wal_path: Optional[str] = None):
+    def __init__(
+        self,
+        secret_key: Optional[Union[str, bytes]] = None,
+        wal_path: Optional[str] = None,
+        agent_private_key: Optional[Union[str, bytes]] = None,
+    ):
         self._ctx = _CslsAgentCtx()
+        self._closed = False
+        if secret_key is None and agent_private_key is not None:
+            secret_key = agent_private_key
         if secret_key is None:
             sk_bytes = os.urandom(32)
         else:
@@ -273,7 +282,9 @@ class CausalAgentWallet:
         return Cheque.from_c_pkt(c_pkt)
 
     def close(self):
-        _LIB.csls_agent_destroy(ctypes.byref(self._ctx))
+        if not getattr(self, "_closed", False):
+            self._closed = True
+            _LIB.csls_agent_destroy(ctypes.byref(self._ctx))
 
     def __del__(self):
         try:
@@ -289,6 +300,7 @@ class CausalVendorNode:
     """
     def __init__(self, secret_key: Optional[Union[str, bytes]] = None, delta_v_usdc: float = 1.0):
         self._ctx = _CslsVendorCtx()
+        self._closed = False
         if secret_key is None:
             sk_bytes = os.urandom(32)
         else:
@@ -379,7 +391,9 @@ class CausalVendorNode:
         )
 
     def close(self):
-        _LIB.csls_vendor_destroy(ctypes.byref(self._ctx))
+        if not getattr(self, "_closed", False):
+            self._closed = True
+            _LIB.csls_vendor_destroy(ctypes.byref(self._ctx))
 
     def __del__(self):
         try:
@@ -442,7 +456,7 @@ class DebtCycleMesh:
         self._gross_volume: int = 0
         self._total_cleared: int = 0
         self._cycles_eliminated: int = 0
-        self._history: List[CycleEliminationRecord] = []
+        self._history: Deque[CycleEliminationRecord] = deque(maxlen=10000)
 
     @staticmethod
     def _to_bytes(val: Union[bytes, str]) -> bytes:
