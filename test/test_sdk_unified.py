@@ -197,9 +197,38 @@ def test_1_native_ffi_initialization():
     vendor.close()
     wallet.close()  # Idempotent call
     vendor.close()
+
+    # 7. Cross-channel monotonic height progression & nonce collision prevention (v1 -> v2 -> v1)
+    w = CausalAgentWallet()
+    v1 = CausalVendorNode(delta_v_usdc=10.0)
+    v2 = CausalVendorNode(delta_v_usdc=10.0)
+    c1 = w.sign_cheque(v1.public_key, 0.001)
+    c2 = w.sign_cheque(v2.public_key, 0.001)
+    c3 = w.sign_cheque(v1.public_key, 0.001)
+
+    assert c1.height == 1, f"Expected c1.height=1, got {c1.height}"
+    assert c2.height == 2, f"Expected c2.height=2, got {c2.height}"
+    assert c3.height == 3, f"Expected c3.height=3, got {c3.height}"
+
+    r1 = v1.process_cheque(c1)
+    r2 = v2.process_cheque(c2)
+    r3 = v1.process_cheque(c3)
+    assert r1.accepted and r2.accepted and r3.accepted
+
+    raw_c1 = _CslsChequePkt.from_buffer_copy(c1.raw_packet)
+    raw_c2 = _CslsChequePkt.from_buffer_copy(c2.raw_packet)
+    extracted_sk = (ctypes.c_uint8 * 32)()
+    ext_rc = _LIB.csls_extract_private_key(ctypes.byref(raw_c1), ctypes.byref(raw_c2), extracted_sk)
+    assert ext_rc == -2, f"Key extraction between v1 and v2 must fail with -2, got {ext_rc}"
+
+    w.close()
+    v1.close()
+    v2.close()
+
     print("  [PASS] C11 heap contexts allocated and freed with zero leaks.")
     print("  [PASS] secp256k1 keys and initial height states verified.")
     print("  [PASS] Context manager RAII and boundary safety validated.")
+    print("  [PASS] Cross-channel (v1 -> v2 -> v1) monotonic sequence and zero key extraction verified.")
 
 
 # ==============================================================================

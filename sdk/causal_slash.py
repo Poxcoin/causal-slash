@@ -293,6 +293,30 @@ _LIB.csls_vendor_process_cheque.argtypes = [
     ctypes.POINTER(_CslsFraudPkt),
 ]
 
+_LIB.csls_vendor_advance_cleared.restype = ctypes.c_int
+_LIB.csls_vendor_advance_cleared.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.c_uint64,
+]
+
+_LIB.csls_vendor_get_channel_state.restype = ctypes.c_int
+_LIB.csls_vendor_get_channel_state.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.POINTER(ctypes.c_uint64),
+    ctypes.POINTER(ctypes.c_uint64),
+    ctypes.POINTER(ctypes.c_uint64),
+]
+
+_LIB.csls_agent_get_channel_state.restype = ctypes.c_int
+_LIB.csls_agent_get_channel_state.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint8),
+    ctypes.POINTER(ctypes.c_uint64),
+    ctypes.POINTER(ctypes.c_uint64),
+]
+
 # Ensure global crypto is initialized once
 if _LIB.csls_crypto_global_init() != 0:
     raise RuntimeError("Failed to initialize Causal-Slash OpenSSL secp256k1 crypto engine")
@@ -388,9 +412,6 @@ class CausalAgentWallet:
         self._ctx = _AgentCtxHandle(raw_ctx)
         self._master_ctx = self._ctx
 
-        # Multi-channel table: peer_pk (33 bytes) -> _AgentCtxHandle
-        self._channels: Dict[bytes, _AgentCtxHandle] = {}
-
     @property
     def public_key(self) -> bytes:
         return bytes(self._ctx.pk)
@@ -402,29 +423,33 @@ class CausalAgentWallet:
     @property
     def height(self) -> int:
         with self._lock:
-            if not self._channels:
-                return self._ctx.height
-            return sum(c.height for c in self._channels.values())
+            return self._ctx.height
 
     @property
     def total_sent_usdc(self) -> float:
         with self._lock:
-            if not self._channels:
-                return self._ctx.cumulative_sent / 1e6
-            return sum(c.cumulative_sent for c in self._channels.values()) / 1e6
+            return self._ctx.cumulative_sent / 1e6
 
     def get_channel_height(self, vendor_pk: Union[str, bytes]) -> int:
         v_bytes = _parse_bytes(vendor_pk, 33)
+        v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
+        h = ctypes.c_uint64(0)
+        cum = ctypes.c_uint64(0)
         with self._lock:
-            if v_bytes in self._channels:
-                return self._channels[v_bytes].height
+            rc = _LIB.csls_agent_get_channel_state(self._ctx, v_arr, ctypes.byref(h), ctypes.byref(cum))
+            if rc == 0:
+                return h.value
             return 0
 
     def get_channel_cumulative(self, vendor_pk: Union[str, bytes]) -> int:
         v_bytes = _parse_bytes(vendor_pk, 33)
+        v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
+        h = ctypes.c_uint64(0)
+        cum = ctypes.c_uint64(0)
         with self._lock:
-            if v_bytes in self._channels:
-                return self._channels[v_bytes].cumulative_sent
+            rc = _LIB.csls_agent_get_channel_state(self._ctx, v_arr, ctypes.byref(h), ctypes.byref(cum))
+            if rc == 0:
+                return cum.value
             return 0
 
     def sign_cheque(self, vendor_pk: Union[str, bytes], amount_usdc: float) -> Cheque:
@@ -447,27 +472,9 @@ class CausalAgentWallet:
             raise OverflowError("amount_usdc exceeds uint64_t micro-USDC range")
 
         with self._lock:
-            if v_bytes not in self._channels:
-                if len(self._channels) == 0:
-                    ch_ctx = self._ctx
-                else:
-                    sk_arr = (ctypes.c_uint8 * 32)(*self._sk_bytes)
-                    raw_ch = _LIB.csls_agent_new(sk_arr, None)
-                    if not raw_ch:
-                        raise RuntimeError("Failed to allocate agent channel context on C heap")
-                    ch_ctx = _AgentCtxHandle(raw_ch)
-                    # If master context height was explicitly tampered (e.g. for equivocation simulation),
-                    # mirror it to the new channel
-                    if self._ctx.height != 1:
-                        ch_ctx.height = self._ctx.height
-                self._channels[v_bytes] = ch_ctx
-
-            ctx = self._channels[v_bytes]
-            if self._ctx.height != 1 and self._ctx.height != ctx.height:
-                ctx.height = self._ctx.height
             c_pkt = _CslsChequePkt()
             res = _LIB.csls_agent_sign_cheque(
-                ctx, v_arr, delta_micro, ctypes.byref(c_pkt)
+                self._ctx, v_arr, delta_micro, ctypes.byref(c_pkt)
             )
             if res != 0:
                 raise RuntimeError(f"csls_agent_sign_cheque failed with code {res}")
@@ -484,16 +491,9 @@ class CausalAgentWallet:
         with self._lock:
             if not getattr(self, "_closed", False):
                 self._closed = True
-                freed = set()
                 if hasattr(self, "_ctx") and self._ctx and self._ctx.value:
                     _LIB.csls_agent_free(self._ctx)
-                    freed.add(self._ctx.value)
                     self._ctx = _AgentCtxHandle(None)
-                for ch_ctx in list(self._channels.values()):
-                    if ch_ctx and ch_ctx.value and ch_ctx.value not in freed:
-                        _LIB.csls_agent_free(ch_ctx)
-                        freed.add(ch_ctx.value)
-                self._channels.clear()
 
     def __del__(self):
         try:
@@ -537,9 +537,7 @@ class CausalVendorNode:
             raise RuntimeError("csls_vendor_new returned NULL: allocation failed")
         self._ctx = _VendorCtxHandle(raw_ctx)
         self._master_ctx = self._ctx
-
-        # Multi-channel table: agent_pk (33 bytes) -> _VendorCtxHandle
-        self._channels: Dict[bytes, _VendorCtxHandle] = {}
+        self._channel_accumulated: Dict[bytes, int] = {}
 
     @property
     def public_key(self) -> bytes:
@@ -552,16 +550,76 @@ class CausalVendorNode:
     @property
     def accumulated_usdc(self) -> float:
         with self._lock:
-            if not self._channels:
+            if not self._channel_accumulated:
                 return self._ctx.accumulated_amount / 1e6
-            return sum(c.accumulated_amount for c in self._channels.values()) / 1e6
+            return sum(self._channel_accumulated.values()) / 1e6
+
+    @property
+    def cleared_usdc(self) -> float:
+        with self._lock:
+            return self._ctx.cleared_amount / 1e6
+
+    @property
+    def last_height(self) -> int:
+        with self._lock:
+            return self._ctx.last_height
 
     def get_channel_accumulated(self, agent_pk: Union[str, bytes]) -> int:
         a_bytes = _parse_bytes(agent_pk, 33)
         with self._lock:
-            if a_bytes in self._channels:
-                return self._channels[a_bytes].accumulated_amount
+            if a_bytes in self._channel_accumulated:
+                return self._channel_accumulated[a_bytes]
+            a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
+            h = ctypes.c_uint64(0)
+            accum = ctypes.c_uint64(0)
+            cleared = ctypes.c_uint64(0)
+            rc = _LIB.csls_vendor_get_channel_state(self._ctx, a_arr, ctypes.byref(h), ctypes.byref(accum), ctypes.byref(cleared))
+            if rc == 0:
+                return accum.value
             return 0
+
+    def get_channel_height(self, agent_pk: Union[str, bytes]) -> int:
+        a_bytes = _parse_bytes(agent_pk, 33)
+        a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
+        h = ctypes.c_uint64(0)
+        accum = ctypes.c_uint64(0)
+        cleared = ctypes.c_uint64(0)
+        with self._lock:
+            rc = _LIB.csls_vendor_get_channel_state(self._ctx, a_arr, ctypes.byref(h), ctypes.byref(accum), ctypes.byref(cleared))
+            if rc == 0:
+                return h.value
+            return 0
+
+    def get_channel_cleared(self, agent_pk: Union[str, bytes]) -> int:
+        a_bytes = _parse_bytes(agent_pk, 33)
+        a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
+        h = ctypes.c_uint64(0)
+        accum = ctypes.c_uint64(0)
+        cleared = ctypes.c_uint64(0)
+        with self._lock:
+            rc = _LIB.csls_vendor_get_channel_state(self._ctx, a_arr, ctypes.byref(h), ctypes.byref(accum), ctypes.byref(cleared))
+            if rc == 0:
+                return cleared.value
+            return 0
+
+    def advance_cleared(self, agent_pk: Optional[Union[str, bytes]] = None, cleared_usdc: float = 0.0) -> None:
+        """Advances cleared_amount for an agent or globally, freeing the delta_v exposure buffer."""
+        if not isinstance(cleared_usdc, (int, float)):
+            raise TypeError(f"cleared_usdc must be numeric, got {type(cleared_usdc).__name__}")
+        if math.isnan(cleared_usdc) or math.isinf(cleared_usdc) or cleared_usdc < 0:
+            raise ValueError(f"cleared_usdc must be non-negative and finite, got {cleared_usdc}")
+        cleared_micro = int(round(cleared_usdc * 1e6))
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Vendor node is closed")
+            if agent_pk is not None:
+                a_bytes = _parse_bytes(agent_pk, 33)
+                a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
+                res = _LIB.csls_vendor_advance_cleared(self._ctx, a_arr, cleared_micro)
+            else:
+                res = _LIB.csls_vendor_advance_cleared(self._ctx, None, cleared_micro)
+            if res != 0:
+                raise RuntimeError(f"csls_vendor_advance_cleared failed with code {res}")
 
     def process_cheque(self, cheque: Union[Cheque, bytes]) -> ProcessResult:
         """
@@ -587,36 +645,25 @@ class CausalVendorNode:
         agent_pk = bytes(c_pkt.agent_pk)
 
         with self._lock:
-            if agent_pk not in self._channels:
-                if len(self._channels) >= self._max_channels:
+            if agent_pk not in self._channel_accumulated:
+                if len(self._channel_accumulated) >= self._max_channels:
                     return ProcessResult(
                         status_code=-10,
                         accepted=False,
                         accumulated_usdc=self.accumulated_usdc,
                         error_message="MAX_CHANNELS_CAPACITY_REACHED: Vendor channel table full",
                     )
-                if len(self._channels) == 0:
-                    v_ctx = self._ctx
-                else:
-                    sk_arr = (ctypes.c_uint8 * 32)(*self._sk_bytes)
-                    raw_ch = _LIB.csls_vendor_new(sk_arr, self._delta_v_micro)
-                    if not raw_ch:
-                        raise RuntimeError("Failed to allocate vendor channel context on C heap")
-                    v_ctx = _VendorCtxHandle(raw_ch)
-                self._channels[agent_pk] = v_ctx
 
-            ctx = self._channels[agent_pk]
             res = _LIB.csls_vendor_process_cheque(
-                ctx, ctypes.byref(c_pkt), ctypes.byref(c_fraud)
+                self._ctx, ctypes.byref(c_pkt), ctypes.byref(c_fraud)
             )
 
-            total_usdc = self.accumulated_usdc
-
             if res == CSLS_OK:
+                self._channel_accumulated[agent_pk] = c_pkt.cumulative_amt
                 return ProcessResult(
                     status_code=CSLS_OK,
                     accepted=True,
-                    accumulated_usdc=total_usdc,
+                    accumulated_usdc=self.accumulated_usdc,
                 )
 
             if res == CSLS_ERR_FRAUD:
@@ -629,7 +676,7 @@ class CausalVendorNode:
                 return ProcessResult(
                     status_code=CSLS_ERR_FRAUD,
                     accepted=False,
-                    accumulated_usdc=total_usdc,
+                    accumulated_usdc=self.accumulated_usdc,
                     error_message="EQUIVOCATION_DETECTED: Private key algebraically extracted!",
                     fraud_proof=proof,
                 )
@@ -645,7 +692,7 @@ class CausalVendorNode:
             return ProcessResult(
                 status_code=res,
                 accepted=False,
-                accumulated_usdc=total_usdc,
+                accumulated_usdc=self.accumulated_usdc,
                 error_message=msg,
             )
 
@@ -659,16 +706,9 @@ class CausalVendorNode:
         with self._lock:
             if not getattr(self, "_closed", False):
                 self._closed = True
-                freed = set()
                 if hasattr(self, "_ctx") and self._ctx and self._ctx.value:
                     _LIB.csls_vendor_free(self._ctx)
-                    freed.add(self._ctx.value)
                     self._ctx = _VendorCtxHandle(None)
-                for v_ctx in list(self._channels.values()):
-                    if v_ctx and v_ctx.value and v_ctx.value not in freed:
-                        _LIB.csls_vendor_free(v_ctx)
-                        freed.add(v_ctx.value)
-                self._channels.clear()
 
     def __del__(self):
         try:

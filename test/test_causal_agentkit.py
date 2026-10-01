@@ -36,6 +36,13 @@ def test_stream_micropayment_settles_and_tracks_exact_balances():
     bal2 = kit.get_channel_balance(vec.public_key)
     assert bal2["paid_micro"] == 2000 and bal2["last_height"] == 6
 
+    # Cross-channel v1 -> v2 -> v1 check: send back to llm
+    r3 = kit.stream_micropayment(llm.public_key, 0.0001, "llm.inference")
+    assert r3["status"] == "settled" and r3["height"] == 7
+    bal3 = kit.get_channel_balance(llm.public_key)
+    assert bal3["paid_micro"] == 600 and bal3["last_height"] == 7
+    assert bal3["cheques_sent"] == 6
+
 
 def test_provider_payout_creates_mutual_debt_and_reconcile_closes_ledger():
     kit, llm, vec = _kit_with_providers()

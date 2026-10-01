@@ -235,11 +235,8 @@ def run(with_c_gate: bool = True) -> dict:
     for payee, items in commercial.items():
         node = node_by_pk[payee]
         # Settlement-epoch boundary: the netting cycle just extinguished every
-        # pre-epoch obligation of this channel, so the continuity marker
-        # (accumulated cumulativeAmt) restarts from zero for the clearing leg.
-        # NOTE: in production this reset corresponds to a vendor-signed epoch
-        # commit; locally we hold the vendor node and apply it directly.
-        node._ctx.accumulated_amount = 0
+        # pre-epoch obligation of this channel, advancing cleared_amount.
+        node.advance_cleared(cleared_usdc=node.accumulated_usdc)
         # Static sort key: each payer settles exactly one cheque per payee, so
         # (payer cumulative now + this amount) is the post-cheque cumulative;
         # ascending order keeps the engine's -11 rule satisfied.

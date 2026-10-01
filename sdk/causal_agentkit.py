@@ -231,6 +231,11 @@ class CausalAgentKit:
         """
         # 1. Build the obligation graph from outstanding channel positions.
         mesh = DebtCycleMesh(treasury_node=self.treasury_node)
+        mesh.register_key(self.master.public_key, self.master._sk_bytes)
+        for p in self._providers.values():
+            if "wallet" in p and hasattr(p["wallet"], "_sk_bytes"):
+                mesh.register_key(p["pk"], p["wallet"]._sk_bytes)
+
         netting_volume = 0
         for counterparty, st in self._channels.items():
             if st.outstanding_micro > 0:
@@ -291,6 +296,15 @@ class CausalAgentKit:
             st.outstanding_micro = 0
             executed += 1
 
+        # Advance cleared_amount on both sides to release revolving credit delta_v buffer
+        for counterparty, st in self._channels.items():
+            if counterparty in pk_to_name:
+                node = self._providers[pk_to_name[counterparty]]["node"]
+                node.advance_cleared(self.master.public_key, st.paid_micro / 1e6)
+            if counterparty in self._receive_nodes:
+                receive_node = self._receive_nodes[counterparty]
+                receive_node.advance_cleared(counterparty, st.received_micro / 1e6)
+
         # 5. Ledger closure: outstanding positions == 0; the obligation graph
         #    (including fee edges) still conserves Kirchhoff exactly.
         residual_commercial = sum(abs(st.outstanding_micro)
@@ -304,7 +318,36 @@ class CausalAgentKit:
         return {"summary": summary, "settlements_executed": executed,
                 "treasury_fee_micro": self.treasury_fee_micro,
                 "netting_volume_micro": netting_volume,
-                "commercial_residual_micro": residual_commercial}
+                "commercial_residual_micro": residual_commercial,
+                "certificates": summary.certificates}
+
+    def settle(self, vendor_pk: Union[str, bytes]) -> dict:
+        """
+        Explicitly settles bilateral debt for a channel and advances cleared_amount,
+        revolving the delta_v exposure buffer.
+        """
+        if isinstance(vendor_pk, str):
+            vendor_pk = bytes.fromhex(vendor_pk[2:] if vendor_pk.startswith("0x") else vendor_pk)
+        st = self._channels.get(vendor_pk)
+        if not st:
+            return {"status": "no_channel", "cleared_usdc": 0.0}
+
+        pk_to_name = {p["pk"]: n for n, p in self._providers.items()}
+        if vendor_pk in pk_to_name:
+            node = self._providers[pk_to_name[vendor_pk]]["node"]
+            node.advance_cleared(self.master.public_key, st.paid_micro / 1e6)
+
+        if vendor_pk in self._receive_nodes:
+            recv_node = self._receive_nodes[vendor_pk]
+            recv_node.advance_cleared(vendor_pk, st.received_micro / 1e6)
+
+        st.outstanding_micro = 0
+        return {
+            "status": "settled",
+            "vendor_pk": vendor_pk.hex(),
+            "cleared_paid_usdc": st.paid_micro / 1e6,
+            "cleared_received_usdc": st.received_micro / 1e6,
+        }
 
     def get_channel_balance(self, vendor_pk) -> dict:
         if isinstance(vendor_pk, str):
