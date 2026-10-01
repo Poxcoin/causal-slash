@@ -7,7 +7,12 @@ LDFLAGS ?= -lcrypto
 
 SRCS = src/causal_daemon.c src/causal_daemon.h
 
-all: causal_daemon libcausal_slash.so
+all: causal_daemon libcausal_slash.so sdk/libbloodhound.so
+
+# Shared Bloodhound watchtower for Python FFI (e2e_full_stack_live.py / sdk/bloodhound.py).
+# Compiled WITHOUT BLOODHOUND_MAIN; exposes bloodhound_new/inspect_packet + csls core.
+sdk/libbloodhound.so: src/schnorr_bloodhound.c src/causal_daemon.c src/causal_daemon.h src/schnorr_bloodhound.h
+	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -shared src/schnorr_bloodhound.c src/causal_daemon.c $(LDFLAGS) -o sdk/libbloodhound.so
 
 causal_daemon: $(SRCS)
 	$(CC) $(CFLAGS) src/causal_daemon.c $(LDFLAGS) -o causal_daemon

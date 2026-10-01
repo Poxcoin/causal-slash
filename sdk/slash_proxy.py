@@ -112,7 +112,7 @@ if __name__ == "__main__":
 
     demo_sk = b"\x77" * 32
     demo_vendor_pk = b"\x02" + b"\x33" * 32
-    wallet = CausalAgentWallet(agent_private_key=demo_sk)
+    wallet = CausalAgentWallet(secret_key=demo_sk)
     proxy = SlashSidecarProxy(wallet, demo_vendor_pk, price_per_request_usdc=args.price, bind_host=args.host, bind_port=args.port)
     proxy.start()
     print(f"SlashSidecarProxy running on http://{args.host}:{args.port}")
