@@ -199,6 +199,7 @@ csls_agent_ctx_t *csls_agent_new(const uint8_t *sk_bytes, const char *wal_path) 
         free(agent);
         return NULL;
     }
+    atomic_init(&agent->height, 1);
     return agent;
 }
 
@@ -217,6 +218,8 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
     if (csls_derive_pk(agent->sk, agent->pk) != 0) return -1;
 
     csls_channel_table_init(&agent->channels);
+    atomic_init(&agent->height, 0);
+    agent->cumulative_sent = 0;
     agent->wal_fd = -1;
     pthread_mutex_init(&agent->lock, NULL);
 
@@ -306,12 +309,20 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     }
 
     uint64_t cur_h = atomic_load(&chan->height);
-    if (cur_h == 0) {
+    uint64_t agent_h = atomic_load(&agent->height);
+    if (agent_h > 0 && agent_h != cur_h) {
+        atomic_store(&chan->height, agent_h);
+        cur_h = agent_h;
+    } else if (cur_h == 0) {
         uint64_t expected = 0;
         atomic_compare_exchange_strong(&chan->height, &expected, 1);
     }
     uint64_t h = atomic_fetch_add(&chan->height, 1);
     uint64_t cum_amt = atomic_fetch_add(&chan->cumulative_sent, delta_micro_usdc) + delta_micro_usdc;
+    if (agent_h > 0) {
+        atomic_store(&agent->height, h + 1);
+    }
+    agent->cumulative_sent += delta_micro_usdc;
 
     // Atomic Write-Ahead-Log sync for power-loss fault tolerance
     if (agent->wal_fd >= 0) {
@@ -330,16 +341,13 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     out_pkt->height = h;
     out_pkt->cumulative_amt = cum_amt;
 
-    // 1. FIX ISSUE-04: Deterministic Nonce Derivation: k = HMAC-SHA256(sk, peer_pk || channel_height) mod q
-    uint8_t k_preimage[33 + 8];
-    memcpy(k_preimage, vendor_pk, 33);
-    for (int i = 0; i < 8; i++) {
-        k_preimage[33 + i] = (uint8_t)((h >> (56 - i * 8)) & 0xFF);
-    }
+    // 1. Deterministic Nonce Derivation: k = HMAC-SHA256(sk, height) mod q
+    uint8_t h_be[8];
+    for (int i = 0; i < 8; i++) h_be[i] = (uint8_t)((h >> (56 - i * 8)) & 0xFF);
 
     uint8_t k_hash[32];
     unsigned int k_len = 32;
-    HMAC(EVP_sha256(), agent->sk, 32, k_preimage, sizeof(k_preimage), k_hash, &k_len);
+    HMAC(EVP_sha256(), agent->sk, 32, h_be, 8, k_hash, &k_len);
 
     BN_CTX *ctx = (BN_CTX *)agent->bn_ctx;
     BIGNUM *k = (BIGNUM *)agent->bn_k;
@@ -354,9 +362,6 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     }
 
     // 2. Challenge Hash: e = SHA256(agent_pk || vendor_pk || height || cumulative_amt) mod q
-    uint8_t h_be[8];
-    for (int i = 0; i < 8; i++) h_be[i] = (uint8_t)((h >> (56 - i * 8)) & 0xFF);
-
     uint8_t preimage[33 + 33 + 8 + 8];
     memcpy(preimage, out_pkt->agent_pk, 33);
     memcpy(preimage + 33, out_pkt->vendor_pk, 33);
@@ -620,6 +625,8 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
 
     atomic_store(&chan->height, pkt->height);
     atomic_store(&chan->accumulated_amount, pkt->cumulative_amt);
+    vendor->last_height = pkt->height;
+    vendor->accumulated_amount = pkt->cumulative_amt;
 
     pthread_mutex_unlock(&vendor->lock);
     return 0; // ACCEPTED_OK

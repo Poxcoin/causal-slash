@@ -105,6 +105,9 @@ typedef struct {
 typedef struct {
     uint8_t sk[32];
     uint8_t pk[33];
+    uint8_t _pad[7];
+    _Atomic uint64_t height;
+    uint64_t cumulative_sent;
     csls_channel_table_t channels;
     char wal_path[256];
     int wal_fd;
@@ -121,8 +124,12 @@ typedef struct {
 typedef struct {
     uint8_t sk[32];
     uint8_t pk[33];
-    csls_channel_table_t channels;
+    uint8_t _pad[7];
+    uint64_t last_height;
+    uint64_t cleared_amount;
+    uint64_t accumulated_amount;
     uint64_t max_exposure_delta_v;
+    csls_channel_table_t channels;
     pthread_mutex_t lock;
     csls_history_entry_t history[CSLS_HISTORY_SIZE];
 } csls_vendor_ctx_t;

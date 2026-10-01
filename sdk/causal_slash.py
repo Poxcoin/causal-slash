@@ -198,11 +198,21 @@ class _VendorCtxHandle(ctypes.c_void_p):
             return 0
         return ctypes.c_uint64.from_address(self.value + 80).value
 
+    @cleared_amount.setter
+    def cleared_amount(self, val: int) -> None:
+        if self.value:
+            ctypes.c_uint64.from_address(self.value + 80).value = val
+
     @property
     def accumulated_amount(self) -> int:
         if not self.value:
             return 0
         return ctypes.c_uint64.from_address(self.value + 88).value
+
+    @accumulated_amount.setter
+    def accumulated_amount(self, val: int) -> None:
+        if self.value:
+            ctypes.c_uint64.from_address(self.value + 88).value = val
 
     @property
     def max_exposure_delta_v(self) -> int:
@@ -453,6 +463,8 @@ class CausalAgentWallet:
                 self._channels[v_bytes] = ch_ctx
 
             ctx = self._channels[v_bytes]
+            if self._ctx.height != 1 and self._ctx.height != ctx.height:
+                ctx.height = self._ctx.height
             c_pkt = _CslsChequePkt()
             res = _LIB.csls_agent_sign_cheque(
                 ctx, v_arr, delta_micro, ctypes.byref(c_pkt)
