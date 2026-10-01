@@ -11,6 +11,7 @@
 
 typedef struct {
     uint8_t agent_pk[33];
+    uint8_t vendor_pk[33];
     uint64_t height;
     uint64_t amount;
     uint8_t challenge_e[32];

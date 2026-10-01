@@ -269,7 +269,7 @@ def run(with_c_gate: bool = True) -> dict:
               f"accepted, hound recorded")
 
         attacker._ctx.height = 1                                        # deliberate rewind
-        fork = attacker.sign_cheque(b"\x02" + b"\x99" * 32, 0.07)       # same h=1
+        fork = attacker.sign_cheque(audit_vendor.public_key, 0.07)       # same h=1 conflicting cheque
         r_fork = audit_vendor.process_cheque(fork)
         assert not r_fork.accepted and r_fork.fraud_proof is not None, "equivocation not trapped"
         extracted = bytes(r_fork.fraud_proof.extracted_secret_key)

@@ -26,10 +26,14 @@ static const uint8_t HUNTER_ADDR[20] = {0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03
 // Public specification of the table index derivation (mirrors bh_slot_mix in
 // src/schnorr_bloodhound.c). Tests act as the omniscient adversary: they know
 // slot_seed exactly when the attack scenario grants the attacker that knowledge.
-static uint32_t spec_slot_index(uint64_t seed, uint64_t height, const uint8_t *agent_pk) {
+static uint32_t spec_slot_index(uint64_t seed, uint64_t height, const uint8_t *agent_pk, const uint8_t *vendor_pk) {
     uint32_t agent_hash = 0;
     memcpy(&agent_hash, agent_pk + 1, 4);
-    uint64_t x = height ^ (uint64_t)agent_hash ^ seed;
+    uint32_t vendor_hash = 0;
+    if (vendor_pk) {
+        memcpy(&vendor_hash, vendor_pk + 1, 4);
+    }
+    uint64_t x = height ^ (uint64_t)agent_hash ^ ((uint64_t)vendor_hash << 16) ^ seed;
     x ^= x >> 33;
     x *= 0xff51afd7ed558ccdULL;
     x ^= x >> 33;
@@ -159,7 +163,7 @@ static void test_bloodhound_eviction_attack_known_seed(void) {
     assert(csls_agent_sign_cheque(&rogue, v1, 1000, &A) == 0);
     assert(bloodhound_inspect_packet(control, &A, NULL) == 0);
     rogue.height = 777;
-    assert(csls_agent_sign_cheque(&rogue, v2, 999999, &B) == 0);
+    assert(csls_agent_sign_cheque(&rogue, v1, 999999, &B) == 0);
     bloodhound_exploit_payload_t pl;
     memset(&pl, 0, sizeof(pl));
     assert(bloodhound_inspect_packet(control, &B, &pl) == 1);
@@ -173,11 +177,12 @@ static void test_bloodhound_eviction_attack_known_seed(void) {
     assert(victim != NULL);
     assert(bloodhound_inspect_packet(victim, &A, NULL) == 0);
 
-    uint32_t evidence_slot = spec_slot_index(SEED, A.height, A.agent_pk);
+    uint32_t evidence_slot = spec_slot_index(SEED, A.height, A.agent_pk, A.vendor_pk);
     csls_cheque_pkt_t flood;
     memset(&flood, 0, sizeof(flood));
     flood.magic = CSLS_MAGIC;
     flood.type = CSLS_PKT_CHEQUE;
+    memcpy(flood.vendor_pk, v1, 33);
     flood.agent_pk[0] = 0x02;
     for (int i = 5; i < 33; i++) flood.agent_pk[i] = 0xAB;
     flood.height = 999;
@@ -190,14 +195,14 @@ static void test_bloodhound_eviction_attack_known_seed(void) {
         memset(probe, 0xAB, 33);
         probe[0] = 0x02;
         memcpy(probe + 1, &cand, 4);
-        if (spec_slot_index(SEED, flood.height, probe) == evidence_slot) {
+        if (spec_slot_index(SEED, flood.height, probe, flood.vendor_pk) == evidence_slot) {
             memcpy(flood.agent_pk + 1, &cand, 4);
             landed = 1;
             break;
         }
     }
     assert(landed);
-    assert(spec_slot_index(SEED, flood.height, flood.agent_pk) == evidence_slot);
+    assert(spec_slot_index(SEED, flood.height, flood.agent_pk, flood.vendor_pk) == evidence_slot);
     assert(bloodhound_inspect_packet(victim, &flood, NULL) == 0);
 
     memset(&pl, 0, sizeof(pl));
@@ -235,7 +240,7 @@ static void test_bloodhound_eviction_attack_wrong_seed_mitigated(void) {
     assert(csls_agent_sign_cheque(&rogue, v1, 1000, &A) == 0);
     assert(bloodhound_inspect_packet(hound, &A, NULL) == 0);
 
-    uint32_t evidence_slot = spec_slot_index(TRUE_SEED, A.height, A.agent_pk);
+    uint32_t evidence_slot = spec_slot_index(TRUE_SEED, A.height, A.agent_pk, A.vendor_pk);
 
     // Attacker's world model: they assume slot_seed == GUESSED_SEED (best guess
     // from public source code) and derive the evidence slot under that wrong
@@ -245,13 +250,13 @@ static void test_bloodhound_eviction_attack_wrong_seed_mitigated(void) {
     flood_pk[0] = 0x02;
     const uint32_t flood_prefix = 0xB0ADF00D;
     memcpy(flood_pk + 1, &flood_prefix, 4);
-    uint32_t slot_guess = spec_slot_index(GUESSED_SEED, A.height, A.agent_pk);
+    uint32_t slot_guess = spec_slot_index(GUESSED_SEED, A.height, A.agent_pk, A.vendor_pk);
     assert(slot_guess != evidence_slot); // wrong seed -> wrong world model
 
     uint64_t next_h = 400000;
     for (uint32_t i = 0; i < 512; i++) {
         uint64_t h = next_h;
-        while (spec_slot_index(GUESSED_SEED, h, flood_pk) != slot_guess) h++;
+        while (spec_slot_index(GUESSED_SEED, h, flood_pk, v1) != slot_guess) h++;
         next_h = h + 1;
 
         csls_cheque_pkt_t flood;
@@ -259,19 +264,20 @@ static void test_bloodhound_eviction_attack_wrong_seed_mitigated(void) {
         flood.magic = CSLS_MAGIC;
         flood.type = CSLS_PKT_CHEQUE;
         memcpy(flood.agent_pk, flood_pk, 33);
+        memcpy(flood.vendor_pk, v1, 33);
         flood.height = h;
         flood.cumulative_amt = 1;
 
         // Under the true seed the eviction packet deterministically misses the
         // evidence slot: no feedback channel exists to correct the guess.
-        assert(spec_slot_index(TRUE_SEED, flood.height, flood.agent_pk) != evidence_slot);
+        assert(spec_slot_index(TRUE_SEED, flood.height, flood.agent_pk, flood.vendor_pk) != evidence_slot);
         assert(bloodhound_inspect_packet(hound, &flood, NULL) == 0);
     }
 
     // Conflicting cheque at the same height: mitigation must hold.
     rogue.height = 31337;
     csls_cheque_pkt_t B;
-    assert(csls_agent_sign_cheque(&rogue, v2, 88888, &B) == 0);
+    assert(csls_agent_sign_cheque(&rogue, v1, 88888, &B) == 0);
     bloodhound_exploit_payload_t pl;
     memset(&pl, 0, sizeof(pl));
     int rc = bloodhound_inspect_packet(hound, &B, &pl);
@@ -322,6 +328,8 @@ static void test_bloodhound_blind_flood_resilience(void) {
             flood.type = CSLS_PKT_CHEQUE;
             flood.agent_pk[0] = 0x02;
             for (int k = 1; k < 33; k++) flood.agent_pk[k] = (uint8_t)(rand_r(&rng) & 0xFF);
+            flood.vendor_pk[0] = 0x02;
+            for (int k = 1; k < 33; k++) flood.vendor_pk[k] = (uint8_t)(rand_r(&rng) & 0xFF);
             flood.height = (uint64_t)rand_r(&rng) << 32 | rand_r(&rng);
             flood.cumulative_amt = rand_r(&rng);
             assert(bloodhound_inspect_packet(hound, &flood, NULL) == 0);
@@ -329,7 +337,7 @@ static void test_bloodhound_blind_flood_resilience(void) {
 
         rogue.height = 1000 + (uint64_t)r * 10;
         csls_cheque_pkt_t B;
-        assert(csls_agent_sign_cheque(&rogue, v2, 424242, &B) == 0);
+        assert(csls_agent_sign_cheque(&rogue, v1, 424242, &B) == 0);
         bloodhound_exploit_payload_t pl;
         memset(&pl, 0, sizeof(pl));
         if (bloodhound_inspect_packet(hound, &B, &pl) == 1 &&
@@ -363,7 +371,9 @@ static void test_bloodhound_benign_slot_collision_no_false_positive(void) {
     pkA[0] = 0x02; pkB[0] = 0x02;
     const uint32_t prefix_a = 0x0BADC0DE;
     memcpy(pkA + 1, &prefix_a, 4);
-    uint32_t target = spec_slot_index(SEED, height, pkA);
+    uint8_t dummy_v[33];
+    memset(dummy_v, 0x05, 33);
+    uint32_t target = spec_slot_index(SEED, height, pkA, dummy_v);
     uint32_t prefix_b = 0;
     int found = 0;
     for (uint32_t cand = 1; cand <= 1000000; cand++) {
@@ -371,7 +381,7 @@ static void test_bloodhound_benign_slot_collision_no_false_positive(void) {
         memset(probe, 0x22, 33);
         probe[0] = 0x02;
         memcpy(probe + 1, &cand, 4);
-        if (spec_slot_index(SEED, height, probe) == target) {
+        if (spec_slot_index(SEED, height, probe, dummy_v) == target) {
             prefix_b = cand;
             found = 1;
             break;
@@ -380,7 +390,7 @@ static void test_bloodhound_benign_slot_collision_no_false_positive(void) {
     assert(found);
     memcpy(pkB + 1, &prefix_b, 4);
     assert(memcmp(pkA, pkB, 33) != 0);
-    assert(spec_slot_index(SEED, height, pkA) == spec_slot_index(SEED, height, pkB));
+    assert(spec_slot_index(SEED, height, pkA, dummy_v) == spec_slot_index(SEED, height, pkB, dummy_v));
 
     csls_cheque_pkt_t pa, pb;
     memset(&pa, 0, sizeof(pa));
@@ -389,6 +399,8 @@ static void test_bloodhound_benign_slot_collision_no_false_positive(void) {
     pb.magic = CSLS_MAGIC; pb.type = CSLS_PKT_CHEQUE;
     memcpy(pa.agent_pk, pkA, 33);
     memcpy(pb.agent_pk, pkB, 33);
+    memcpy(pa.vendor_pk, dummy_v, 33);
+    memcpy(pb.vendor_pk, dummy_v, 33);
     pa.height = height; pb.height = height;
     pa.cumulative_amt = 500; pb.cumulative_amt = 900;
     for (int i = 0; i < 32; i++) { pa.challenge_e[i] = (uint8_t)i; pb.challenge_e[i] = (uint8_t)(i + 64); }
@@ -412,13 +424,13 @@ static void test_bloodhound_benign_slot_collision_no_false_positive(void) {
     bloodhound_init_seeded(hound, HUNTER_ADDR, SEED);
     uint64_t colliding_height = 0;
     for (uint64_t h = 1; h <= 10000000; h++) {
-        if (h != 42 && spec_slot_index(SEED, h, pkA) == target) { colliding_height = h; break; }
+        if (h != 42 && spec_slot_index(SEED, h, pkA, dummy_v) == target) { colliding_height = h; break; }
     }
     assert(colliding_height != 0);
     csls_cheque_pkt_t pc = pa;
     pc.height = colliding_height;
     pc.cumulative_amt = 700;
-    assert(spec_slot_index(SEED, pc.height, pc.agent_pk) == target);
+    assert(spec_slot_index(SEED, pc.height, pc.agent_pk, pc.vendor_pk) == target);
     assert(bloodhound_inspect_packet(hound, &pa, NULL) == 0);
     memset(&pl, 0, sizeof(pl));
     assert(bloodhound_inspect_packet(hound, &pc, &pl) == 0);
@@ -436,7 +448,7 @@ static void test_bloodhound_benign_slot_collision_no_false_positive(void) {
     assert(csls_agent_sign_cheque(&rogue, v1, 100, &A) == 0);
     assert(bloodhound_inspect_packet(hound, &A, NULL) == 0);
     rogue.height = 555;
-    assert(csls_agent_sign_cheque(&rogue, v2, 200, &B) == 0);
+    assert(csls_agent_sign_cheque(&rogue, v1, 200, &B) == 0);
     memset(&pl, 0, sizeof(pl));
     assert(bloodhound_inspect_packet(hound, &B, &pl) == 1);
     assert(memcmp(pl.extracted_sk, rogue_sk, 32) == 0);

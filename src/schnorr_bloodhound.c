@@ -171,21 +171,25 @@ int bloodhound_inspect_packet(bloodhound_ctx_t *ctx, const csls_cheque_pkt_t *pk
 
     ctx->packets_inspected++;
 
-    // Compute fast slot index from height and agent public key prefix
+    // Compute fast slot index from height, agent public key prefix, and vendor public key prefix
     uint32_t agent_hash = 0;
     memcpy(&agent_hash, pkt->agent_pk + 1, 4);
-    uint32_t slot = bh_slot_mix(pkt->height ^ (uint64_t)agent_hash ^ ctx->slot_seed);
+    uint32_t vendor_hash = 0;
+    memcpy(&vendor_hash, pkt->vendor_pk + 1, 4);
+    uint32_t slot = bh_slot_mix(pkt->height ^ (uint64_t)agent_hash ^ ((uint64_t)vendor_hash << 16) ^ ctx->slot_seed);
     bloodhound_slot_t *entry = &ctx->table[slot];
 
-    // Check for height collision from same agent
-    if (entry->occupied && entry->height == pkt->height && memcmp(entry->agent_pk, pkt->agent_pk, 33) == 0) {
+    // Check for height collision from same agent to same vendor
+    if (entry->occupied && entry->height == pkt->height && 
+        memcmp(entry->agent_pk, pkt->agent_pk, 33) == 0 &&
+        memcmp(entry->vendor_pk, pkt->vendor_pk, 33) == 0) {
         // If challenge differs, equivocation confirmed!
         if (memcmp(entry->challenge_e, pkt->challenge_e, 32) != 0) {
             csls_cheque_pkt_t c1;
             c1.magic = CSLS_MAGIC;
             c1.type = CSLS_PKT_CHEQUE;
             memcpy(c1.agent_pk, entry->agent_pk, 33);
-            memset(c1.vendor_pk, 0, 33);
+            memcpy(c1.vendor_pk, entry->vendor_pk, 33);
             c1.height = entry->height;
             c1.cumulative_amt = entry->amount;
             memcpy(c1.challenge_e, entry->challenge_e, 32);
@@ -222,6 +226,7 @@ int bloodhound_inspect_packet(bloodhound_ctx_t *ctx, const csls_cheque_pkt_t *pk
 
     // Record slot
     memcpy(entry->agent_pk, pkt->agent_pk, 33);
+    memcpy(entry->vendor_pk, pkt->vendor_pk, 33);
     entry->height = pkt->height;
     entry->amount = pkt->cumulative_amt;
     memcpy(entry->challenge_e, pkt->challenge_e, 32);

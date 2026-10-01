@@ -504,7 +504,7 @@ def test_5_coinbase_agentkit_action_provider():
         vendor.process_cheque(c1)
 
         attacker_wallet._ctx.height = 1
-        c2 = attacker_wallet.sign_cheque(b"\x02" + b"\x99" * 32, amount_usdc=0.02)
+        c2 = attacker_wallet.sign_cheque(vendor.public_key, amount_usdc=0.02)
         fraud_res = json.loads(provider.verify_cheque_stream(cheque_bytes=c2.raw_packet.hex()))
         assert fraud_res["status"] == "EQUIVOCATION_DETECTED"
         assert fraud_res["extracted_secret_key"].lower() == attacker_sk_hex.lower()
@@ -546,8 +546,7 @@ def test_6_equivocation_detection_key_inversion():
 
     # Cheque 2: Malicious double-spending fork at SAME height h=1 with distinct payload
     victim_wallet._ctx.height = 1
-    rogue_vendor_pk = b"\x02" + b"\x88" * 32
-    c2 = victim_wallet.sign_cheque(rogue_vendor_pk, amount_usdc=0.10)
+    c2 = victim_wallet.sign_cheque(vendor.public_key, amount_usdc=0.10)
 
     # 2. Process conflicting cheque on vendor
     res2 = vendor.process_cheque(c2)

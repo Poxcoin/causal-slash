@@ -341,13 +341,17 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     out_pkt->height = h;
     out_pkt->cumulative_amt = cum_amt;
 
-    // 1. Deterministic Nonce Derivation: k = HMAC-SHA256(sk, height) mod q
+    // 1. Deterministic Nonce Derivation: k = HMAC-SHA256(sk, vendor_pk || height) mod q
     uint8_t h_be[8];
     for (int i = 0; i < 8; i++) h_be[i] = (uint8_t)((h >> (56 - i * 8)) & 0xFF);
 
+    uint8_t k_preimage[33 + 8];
+    memcpy(k_preimage, vendor_pk, 33);
+    memcpy(k_preimage + 33, h_be, 8);
+
     uint8_t k_hash[32];
     unsigned int k_len = 32;
-    HMAC(EVP_sha256(), agent->sk, 32, h_be, 8, k_hash, &k_len);
+    HMAC(EVP_sha256(), agent->sk, 32, k_preimage, sizeof(k_preimage), k_hash, &k_len);
 
     BN_CTX *ctx = (BN_CTX *)agent->bn_ctx;
     BIGNUM *k = (BIGNUM *)agent->bn_k;
@@ -437,6 +441,7 @@ int csls_extract_private_key(const csls_cheque_pkt_t *c1, const csls_cheque_pkt_
     if (!c1 || !c2 || !out_sk) return -1;
     if (c1->height != c2->height) return -2; // Must be identical height
     if (memcmp(c1->agent_pk, c2->agent_pk, 33) != 0) return -6; // Must be same agent
+    if (memcmp(c1->vendor_pk, c2->vendor_pk, 33) != 0) return -7; // Equivocation is strictly per-vendor channel!
     if (memcmp(c1->challenge_e, c2->challenge_e, 32) == 0) return -3; // No equivocation
 
     BN_CTX *ctx = BN_CTX_new();

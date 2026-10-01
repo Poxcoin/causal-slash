@@ -78,6 +78,11 @@ test-30k-swarm:
 	./test_30k_adversarial_swarm
 	rm -f test_30k_adversarial_swarm
 
+test-multivendor:
+	$(CC) -fsanitize=address,undefined -g -Wall -Wextra -pthread -DCSLS_NO_MAIN -Isrc test/c/test_multivendor_nonce_isolation.c src/schnorr_bloodhound.c src/causal_daemon.c $(LDFLAGS) -o test_multivendor_nonce_isolation
+	./test_multivendor_nonce_isolation
+	rm -f test_multivendor_nonce_isolation
+
 
 bloodhound_daemon:
 	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -DBLOODHOUND_MAIN src/schnorr_bloodhound.c src/causal_daemon.c $(LDFLAGS) -o bloodhound_daemon
