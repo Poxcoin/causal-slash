@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Causal-Slash Protocol Developers
 //
 // Causal-Slash Protocol: Sovereign High-Frequency M2M Micro-Payment Engine

@@ -101,3 +101,25 @@ class SlashSidecarProxy:
             self._server.shutdown()
             self._server.server_close()
             self._server = None
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Causal-Slash Sidecar Reverse Proxy")
+    parser.add_argument("--port", type=int, default=8999, help="Port to bind the proxy to")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host address to bind to")
+    parser.add_argument("--price", type=float, default=0.0005, help="USDC cost per request")
+    args = parser.parse_args()
+
+    demo_sk = b"\x77" * 32
+    demo_vendor_pk = b"\x02" + b"\x33" * 32
+    wallet = CausalAgentWallet(agent_private_key=demo_sk)
+    proxy = SlashSidecarProxy(wallet, demo_vendor_pk, price_per_request_usdc=args.price, bind_host=args.host, bind_port=args.port)
+    proxy.start()
+    print(f"SlashSidecarProxy running on http://{args.host}:{args.port}")
+    print(f"Metering requests at ${args.price:.6f} USDC per completion.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopping proxy...")
+        proxy.stop()
