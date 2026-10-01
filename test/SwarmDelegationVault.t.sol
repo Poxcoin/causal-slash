@@ -496,4 +496,158 @@ contract SwarmDelegationVaultTest is Test {
         vm.expectRevert(SwarmDelegationVault.InvalidMerkleProof.selector);
         vault.settleSwarmCheque(masterAgent, 1, 500 * 1e6, proof, sig);
     }
+
+    /// @notice Proves rapid multiple root updates (Root A -> Root B -> Root C) do not rug Root A within 7 days.
+    function test_Swarm_MultiRootUpdate_GracePeriodPreserved() public {
+        uint256 masterBond = 100_000 * 1e6;
+
+        bytes32 leaf0 = keccak256(abi.encodePacked(subAgent1Signer));
+        bytes32 leaf1 = keccak256(abi.encodePacked(subAgent2Signer));
+        bytes32 rootA = leaf0 <= leaf1
+            ? keccak256(abi.encodePacked(leaf0, leaf1))
+            : keccak256(abi.encodePacked(leaf1, leaf0));
+
+        _setupMasterVaultWithSwarm(masterBond, rootA, 1);
+
+        bytes memory sig = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 1, 1_000 * 1e6);
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leaf1;
+
+        // Rapid updates: Root A -> Root B -> Root C within seconds
+        bytes32 rootB = keccak256("intermediate_root_B");
+        vm.prank(masterAgent);
+        vault.setDelegationRoot(rootB, 1);
+
+        bytes32 rootC = keccak256("active_root_C");
+        vm.prank(masterAgent);
+        vault.setDelegationRoot(rootC, 1);
+
+        assertEq(vault.swarmMerkleRoots(masterAgent), rootC);
+        assertTrue(vault.isRootValid(masterAgent, rootA));
+
+        // Advance 3 days (within 7-day grace window)
+        vm.warp(block.timestamp + 3 days);
+
+        // SubAgent under Root A settles successfully despite 2 successive root updates!
+        uint256 vendorBefore = usdc.balanceOf(vendor);
+        vm.prank(vendor);
+        vault.settleSwarmCheque(masterAgent, 1, 1_000 * 1e6, proof, sig);
+        assertEq(usdc.balanceOf(vendor) - vendorBefore, 1_000 * 1e6);
+    }
+
+    /// @notice Proves slashed sub-agents are quarantined and cannot subsequently drain master bond via cheques.
+    function test_Swarm_SlashedSubAgent_CannotSettle() public {
+        uint256 masterBond = 100_000 * 1e6;
+        uint256 subAgentQuota = 10_000 * 1e6;
+        bytes32 nonceRoot = keccak256("nonce_root");
+        uint256 expiry = block.timestamp + 14 days;
+
+        bytes32 leaf0 = vault.computeSubAgentLeaf(subAgent1Signer, subAgentQuota, nonceRoot, expiry, 0);
+        bytes32 leaf1 = keccak256("sibling");
+        bytes32 root = keccak256(abi.encodePacked(leaf0, leaf1));
+
+        _setupMasterVaultWithSwarm(masterBond, root, 1);
+
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leaf1;
+
+        // Searcher slashes subAgent1
+        SwarmDelegationVault.SwarmSlashArgs memory slashArgs = SwarmDelegationVault.SwarmSlashArgs({
+            masterAgent: masterAgent,
+            leafHash: leaf0,
+            merkleProof: proof,
+            leafIndex: 0,
+            extractedSk: subAgent1Pk,
+            subAgentQuota: subAgentQuota,
+            nonceRoot: nonceRoot,
+            expiry: expiry
+        });
+
+        vm.prank(finder);
+        vault.slashSwarmSubAgent(slashArgs);
+        assertTrue(vault.slashedSubAgents(masterAgent, subAgent1Signer));
+
+        // SubAgent1 (or colluding vendor) tries to settle a streaming cheque
+        bytes memory sig = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 1, 5_000 * 1e6);
+        vm.prank(vendor);
+        vm.expectRevert(SwarmDelegationVault.SubAgentAlreadySlashed.selector);
+        vault.settleSwarmCheque(masterAgent, 1, 5_000 * 1e6, proof, sig);
+    }
+
+    /// @notice Proves clamped delta records lastSettled + delta, enabling remaining payout after cap increase.
+    function test_Swarm_ClampedDelta_CanSettleRemainderAfterCapIncrease() public {
+        uint256 masterBond = 100_000 * 1e6;
+        bytes32 leaf0 = keccak256(abi.encodePacked(subAgent1Signer));
+        bytes32 leaf1 = keccak256(abi.encodePacked(subAgent2Signer));
+        bytes32 root = leaf0 <= leaf1
+            ? keccak256(abi.encodePacked(leaf0, leaf1))
+            : keccak256(abi.encodePacked(leaf1, leaf0));
+
+        _setupMasterVaultWithSwarm(masterBond, root, 1);
+
+        // Cap subAgent1 at 2,000 USDC
+        vm.prank(masterAgent);
+        vault.setSubAgentCap(subAgent1Signer, 2_000 * 1e6);
+
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leaf1;
+
+        // SubAgent signs 5,000 USDC cheque
+        bytes memory sig = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 1, 5_000 * 1e6);
+
+        // Settle first tranche: clamped to 2,000 USDC
+        vm.prank(vendor);
+        vault.settleSwarmCheque(masterAgent, 1, 5_000 * 1e6, proof, sig);
+        assertEq(vault.swarmSettledAmounts(subAgent1Signer, vendor), 2_000 * 1e6);
+        assertEq(vault.subAgentTotalSettled(subAgent1Signer), 2_000 * 1e6);
+
+        // Master raises cap to 6,000 USDC
+        vm.prank(masterAgent);
+        vault.setSubAgentCap(subAgent1Signer, 6_000 * 1e6);
+
+        // SubAgent issues updated height cheque for the same 5,000 USDC
+        bytes memory sig2 = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 2, 5_000 * 1e6);
+
+        uint256 vendorBefore = usdc.balanceOf(vendor);
+        vm.prank(vendor);
+        vault.settleSwarmCheque(masterAgent, 2, 5_000 * 1e6, proof, sig2);
+
+        // Remaining 3,000 USDC is settled cleanly without lost funds!
+        assertEq(usdc.balanceOf(vendor) - vendorBefore, 3_000 * 1e6);
+        assertEq(vault.swarmSettledAmounts(subAgent1Signer, vendor), 5_000 * 1e6);
+        assertEq(vault.subAgentTotalSettled(subAgent1Signer), 5_000 * 1e6);
+    }
+
+    /// @notice Proves swarm settlements cannot starve collateral reserved for session vendors.
+    function test_Swarm_SettleCheque_CannotStarveAllocatedExposure() public {
+        uint256 masterBond = 10_000 * 1e6;
+        bytes32 leaf0 = keccak256(abi.encodePacked(subAgent1Signer));
+        bytes32 leaf1 = keccak256(abi.encodePacked(subAgent2Signer));
+        bytes32 root = leaf0 <= leaf1
+            ? keccak256(abi.encodePacked(leaf0, leaf1))
+            : keccak256(abi.encodePacked(leaf1, leaf0));
+
+        _setupMasterVaultWithSwarm(masterBond, root, 1);
+
+        // Master allocates 8,000 USDC to direct enterprise session vendor
+        address directVendor = address(0x999);
+        vm.prank(masterAgent);
+        vault.allocateSessionExposure(directVendor, 8_000 * 1e6);
+        assertEq(vault.totalAllocatedExposure(masterAgent), 8_000 * 1e6);
+
+        bytes32[] memory proof = new bytes32[](1);
+        proof[0] = leaf1;
+
+        // SubAgent attempts to settle 3,000 USDC cheque (free margin is only 2,000 USDC!)
+        bytes memory sig = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 1, 3_000 * 1e6);
+        vm.prank(vendor);
+        vm.expectRevert(PerformanceCollateralVault.InsufficientCollateral.selector);
+        vault.settleSwarmCheque(masterAgent, 1, 3_000 * 1e6, proof, sig);
+
+        // Settle within free margin (2,000 USDC) succeeds
+        bytes memory sigValid = _signSwarmCheque(subAgent1Pk, masterAgent, vendor, 1, 2_000 * 1e6);
+        vm.prank(vendor);
+        vault.settleSwarmCheque(masterAgent, 1, 2_000 * 1e6, proof, sigValid);
+        assertEq(vault.swarmSettledAmounts(subAgent1Signer, vendor), 2_000 * 1e6);
+    }
 }
