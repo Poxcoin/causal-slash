@@ -40,4 +40,5 @@ deployment_receipt.json
 Thumbs.db
 .vscode/
 .idea/
+.agents/
 

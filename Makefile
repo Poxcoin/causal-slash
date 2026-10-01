@@ -73,6 +73,12 @@ test-bloodhound-strict:
 	./test_schnorr_bloodhound_strict
 	rm -f test_schnorr_bloodhound_strict
 
+test-30k-swarm:
+	$(CC) $(CFLAGS) -DCSLS_NO_MAIN test/c/test_30k_adversarial_swarm.c src/causal_daemon.c $(LDFLAGS) -o test_30k_adversarial_swarm
+	./test_30k_adversarial_swarm
+	rm -f test_30k_adversarial_swarm
+
+
 bloodhound_daemon:
 	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -DBLOODHOUND_MAIN src/schnorr_bloodhound.c src/causal_daemon.c $(LDFLAGS) -o bloodhound_daemon
 

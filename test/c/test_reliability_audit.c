@@ -27,7 +27,9 @@ static void test_audit_equivocation_false_positive_corrupt_key(void) {
     assert(vendor != NULL);
 
     csls_cheque_pkt_t c_legit;
-    agent.height = 100;
+    csls_channel_t *chan1 = csls_channel_get_or_create(&agent.channels, vendor->pk);
+    assert(chan1 != NULL);
+    chan1->height = 100;
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 50000, &c_legit) == 0);
 
     csls_fraud_pkt_t fraud;
@@ -81,8 +83,10 @@ static void test_audit_concurrency_out_of_order_stream_desync(void) {
     // In concurrent multithreaded network execution, pkt2 arrives before pkt1
     csls_fraud_pkt_t fraud;
     assert(csls_vendor_process_cheque(vendor, &pkt2, &fraud) == 0);
-    assert(vendor->last_height == 2);
-    assert(vendor->accumulated_amount == 2000);
+    csls_channel_t *vchan2 = csls_channel_get_or_create(&vendor->channels, agent.pk);
+    assert(vchan2 != NULL);
+    assert(vchan2->height == 2);
+    assert(vchan2->accumulated_amount == 2000);
 
     // When pkt1 arrives delayed, it is permanently rejected
     int res1 = csls_vendor_process_cheque(vendor, &pkt1, &fraud);
@@ -115,15 +119,17 @@ static void test_audit_ring_buffer_wrap_missed_equivocation(void) {
 
     // Cheque 1 at height 1
     csls_cheque_pkt_t c_h1;
-    agent.height = 1;
-    agent.cumulative_sent = 0;
+    csls_channel_t *chan3 = csls_channel_get_or_create(&agent.channels, vendor->pk);
+    assert(chan3 != NULL);
+    chan3->height = 1;
+    chan3->cumulative_sent = 0;
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 1000, &c_h1) == 0);
     assert(csls_vendor_process_cheque(vendor, &c_h1, &fraud) == 0);
 
     // Advance height to 65537 (same ring slot: 65537 & 65535 = 1)
     csls_cheque_pkt_t c_h65537;
-    agent.height = 65537;
-    agent.cumulative_sent = 1000;
+    chan3->height = 65537;
+    chan3->cumulative_sent = 1000;
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 1000, &c_h65537) == 0);
     assert(csls_vendor_process_cheque(vendor, &c_h65537, &fraud) == 0);
 
@@ -133,8 +139,8 @@ static void test_audit_ring_buffer_wrap_missed_equivocation(void) {
 
     // Create a conflicting double-spend cheque at height 1
     csls_cheque_pkt_t c_conflict;
-    agent.height = 1;
-    agent.cumulative_sent = 5000;
+    chan3->height = 1;
+    chan3->cumulative_sent = 5000;
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 500, &c_conflict) == 0);
 
     // When submitted, vendor evaluates: entry->height (65537) == pkt->height (1) => FALSE

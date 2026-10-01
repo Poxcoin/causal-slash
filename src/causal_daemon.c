@@ -118,6 +118,80 @@ static int csls_derive_pk(const uint8_t *sk_bytes, uint8_t *out_pk_compressed) {
     return (len == 33) ? 0 : -1;
 }
 
+// -----------------------------------------------------------------------------
+// Multi-Channel O(1) State Table Implementation
+// -----------------------------------------------------------------------------
+
+static inline uint64_t csls_hash_peer_pk(const uint8_t *pk) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (int i = 0; i < 33; i++) {
+        hash ^= pk[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+void csls_channel_table_init(csls_channel_table_t *table) {
+    if (!table) return;
+    memset(table, 0, sizeof(csls_channel_table_t));
+    for (size_t i = 0; i < CSLS_MAX_CHANNELS; i++) {
+        pthread_spin_init(&table->channels[i].lock, PTHREAD_PROCESS_PRIVATE);
+        atomic_init(&table->channels[i].height, 0);
+        atomic_init(&table->channels[i].cumulative_sent, 0);
+        atomic_init(&table->channels[i].cleared_amount, 0);
+        atomic_init(&table->channels[i].accumulated_amount, 0);
+        table->channels[i].occupied = false;
+    }
+    table->count = 0;
+}
+
+void csls_channel_table_destroy(csls_channel_table_t *table) {
+    if (!table) return;
+    for (size_t i = 0; i < CSLS_MAX_CHANNELS; i++) {
+        pthread_spin_destroy(&table->channels[i].lock);
+    }
+    memset(table, 0, sizeof(csls_channel_table_t));
+}
+
+csls_channel_t *csls_channel_get_or_create(csls_channel_table_t *table, const uint8_t *peer_pk) {
+    if (!table || !peer_pk) return NULL;
+
+    uint32_t start_slot = (uint32_t)(csls_hash_peer_pk(peer_pk) & CSLS_CHANNEL_MASK);
+
+    for (size_t step = 0; step < CSLS_MAX_CHANNELS; step++) {
+        uint32_t idx = (start_slot + step) & CSLS_CHANNEL_MASK;
+        csls_channel_t *chan = &table->channels[idx];
+
+        if (chan->occupied) {
+            if (memcmp(chan->peer_pk, peer_pk, 33) == 0) {
+                return chan;
+            }
+            continue;
+        }
+
+        pthread_spin_lock(&chan->lock);
+        if (!chan->occupied) {
+            memcpy(chan->peer_pk, peer_pk, 33);
+            atomic_init(&chan->height, 0);
+            atomic_init(&chan->cumulative_sent, 0);
+            atomic_init(&chan->cleared_amount, 0);
+            atomic_init(&chan->accumulated_amount, 0);
+            chan->occupied = true;
+            table->count++;
+            pthread_spin_unlock(&chan->lock);
+            return chan;
+        }
+
+        if (memcmp(chan->peer_pk, peer_pk, 33) == 0) {
+            pthread_spin_unlock(&chan->lock);
+            return chan;
+        }
+        pthread_spin_unlock(&chan->lock);
+    }
+
+    return NULL;
+}
+
 csls_agent_ctx_t *csls_agent_new(const uint8_t *sk_bytes, const char *wal_path) {
     csls_agent_ctx_t *agent = (csls_agent_ctx_t *)calloc(1, sizeof(csls_agent_ctx_t));
     if (!agent) return NULL;
@@ -142,8 +216,7 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
 
     if (csls_derive_pk(agent->sk, agent->pk) != 0) return -1;
 
-    atomic_init(&agent->height, 1);
-    agent->cumulative_sent = 0;
+    csls_channel_table_init(&agent->channels);
     agent->wal_fd = -1;
     pthread_mutex_init(&agent->lock, NULL);
 
@@ -177,10 +250,15 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
         strncpy(agent->wal_path, wal_path, sizeof(agent->wal_path) - 1);
         agent->wal_fd = open(agent->wal_path, O_RDWR | O_CREAT, 0600);
         if (agent->wal_fd >= 0) {
-            csls_wal_record_t rec = {0, 0};
-            if (read(agent->wal_fd, &rec, sizeof(csls_wal_record_t)) == sizeof(csls_wal_record_t) && rec.height > 0) {
-                atomic_store(&agent->height, rec.height + 1);
-                agent->cumulative_sent = rec.cumulative_sent;
+            csls_wal_record_t rec;
+            while (read(agent->wal_fd, &rec, sizeof(csls_wal_record_t)) == sizeof(csls_wal_record_t)) {
+                if (rec.height > 0) {
+                    csls_channel_t *ch = csls_channel_get_or_create(&agent->channels, rec.peer_pk);
+                    if (ch) {
+                        atomic_store(&ch->height, rec.height + 1);
+                        atomic_store(&ch->cumulative_sent, rec.cumulative_sent);
+                    }
+                }
             }
         }
     }
@@ -194,6 +272,7 @@ void csls_agent_destroy(csls_agent_ctx_t *agent) {
             agent->wal_fd = -1;
         }
         pthread_mutex_destroy(&agent->lock);
+        csls_channel_table_destroy(&agent->channels);
 
         if (agent->bn_ctx) {
             BN_free((BIGNUM *)agent->bn_sk);
@@ -213,19 +292,33 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
 
     pthread_mutex_lock(&agent->lock);
 
+    csls_channel_t *chan = csls_channel_get_or_create(&agent->channels, vendor_pk);
+    if (!chan) {
+        pthread_mutex_unlock(&agent->lock);
+        return -3; // CHANNEL_TABLE_FULL
+    }
+
+    uint64_t cur_cum = atomic_load(&chan->cumulative_sent);
     // Strict integer overflow check on cumulative amount
-    if (agent->cumulative_sent + delta_micro_usdc < agent->cumulative_sent) {
+    if (cur_cum + delta_micro_usdc < cur_cum) {
         pthread_mutex_unlock(&agent->lock);
         return -2; // OVERFLOW_ERROR
     }
 
-    uint64_t h = atomic_fetch_add(&agent->height, 1);
-    agent->cumulative_sent += delta_micro_usdc;
-    uint64_t cum_amt = agent->cumulative_sent;
+    uint64_t cur_h = atomic_load(&chan->height);
+    if (cur_h == 0) {
+        uint64_t expected = 0;
+        atomic_compare_exchange_strong(&chan->height, &expected, 1);
+    }
+    uint64_t h = atomic_fetch_add(&chan->height, 1);
+    uint64_t cum_amt = atomic_fetch_add(&chan->cumulative_sent, delta_micro_usdc) + delta_micro_usdc;
 
     // Atomic Write-Ahead-Log sync for power-loss fault tolerance
     if (agent->wal_fd >= 0) {
-        csls_wal_record_t rec = { .height = h, .cumulative_sent = cum_amt };
+        csls_wal_record_t rec;
+        memcpy(rec.peer_pk, vendor_pk, 33);
+        rec.height = h;
+        rec.cumulative_sent = cum_amt;
         ssize_t pw_res = pwrite(agent->wal_fd, &rec, sizeof(csls_wal_record_t), 0);
         (void)pw_res;
     }
@@ -237,13 +330,16 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     out_pkt->height = h;
     out_pkt->cumulative_amt = cum_amt;
 
-    // 1. Deterministic Nonce Derivation: k = HMAC-SHA256(sk, height) mod q
-    uint8_t h_be[8];
-    for (int i = 0; i < 8; i++) h_be[i] = (uint8_t)((h >> (56 - i * 8)) & 0xFF);
+    // 1. FIX ISSUE-04: Deterministic Nonce Derivation: k = HMAC-SHA256(sk, peer_pk || channel_height) mod q
+    uint8_t k_preimage[33 + 8];
+    memcpy(k_preimage, vendor_pk, 33);
+    for (int i = 0; i < 8; i++) {
+        k_preimage[33 + i] = (uint8_t)((h >> (56 - i * 8)) & 0xFF);
+    }
 
     uint8_t k_hash[32];
     unsigned int k_len = 32;
-    HMAC(EVP_sha256(), agent->sk, 32, h_be, 8, k_hash, &k_len);
+    HMAC(EVP_sha256(), agent->sk, 32, k_preimage, sizeof(k_preimage), k_hash, &k_len);
 
     BN_CTX *ctx = (BN_CTX *)agent->bn_ctx;
     BIGNUM *k = (BIGNUM *)agent->bn_k;
@@ -258,6 +354,9 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     }
 
     // 2. Challenge Hash: e = SHA256(agent_pk || vendor_pk || height || cumulative_amt) mod q
+    uint8_t h_be[8];
+    for (int i = 0; i < 8; i++) h_be[i] = (uint8_t)((h >> (56 - i * 8)) & 0xFF);
+
     uint8_t preimage[33 + 33 + 8 + 8];
     memcpy(preimage, out_pkt->agent_pk, 33);
     memcpy(preimage + 33, out_pkt->vendor_pk, 33);
@@ -312,9 +411,7 @@ int csls_vendor_init(csls_vendor_ctx_t *vendor, const uint8_t *sk_bytes, uint64_
 
     if (csls_derive_pk(vendor->sk, vendor->pk) != 0) return -1;
 
-    vendor->last_height = 0;
-    vendor->cleared_amount = 0;
-    vendor->accumulated_amount = 0;
+    csls_channel_table_init(&vendor->channels);
     vendor->max_exposure_delta_v = (delta_v > 0) ? delta_v : CSLS_DEFAULT_DELTA_V;
     pthread_mutex_init(&vendor->lock, NULL);
 
@@ -324,6 +421,7 @@ int csls_vendor_init(csls_vendor_ctx_t *vendor, const uint8_t *sk_bytes, uint64_
 void csls_vendor_destroy(csls_vendor_ctx_t *vendor) {
     if (vendor) {
         pthread_mutex_destroy(&vendor->lock);
+        csls_channel_table_destroy(&vendor->channels);
         memset(vendor, 0, sizeof(csls_vendor_ctx_t));
     }
 }
@@ -411,12 +509,22 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
 
     pthread_mutex_lock(&vendor->lock);
 
-    // 2. Exposure Buffer Invariant: unconfirmed delta <= delta_v
-    if (pkt->cumulative_amt < vendor->accumulated_amount) {
+    // O(1) Channel Lookup / Creation for this specific agent
+    csls_channel_t *chan = csls_channel_get_or_create(&vendor->channels, pkt->agent_pk);
+    if (!chan) {
+        pthread_mutex_unlock(&vendor->lock);
+        return -15; // CHANNEL_TABLE_FULL
+    }
+
+    uint64_t accumulated = atomic_load(&chan->accumulated_amount);
+    uint64_t cleared = atomic_load(&chan->cleared_amount);
+
+    // 2. Exposure Buffer Invariant: unconfirmed delta <= delta_v per channel
+    if (pkt->cumulative_amt < accumulated) {
         pthread_mutex_unlock(&vendor->lock);
         return -11; // DECREASING_AMOUNT_ATTACK
     }
-    uint64_t unconfirmed_exposure = pkt->cumulative_amt - vendor->cleared_amount;
+    uint64_t unconfirmed_exposure = pkt->cumulative_amt - cleared;
     if (unconfirmed_exposure > vendor->max_exposure_delta_v) {
         pthread_mutex_unlock(&vendor->lock);
         return -12; // EXPOSURE_BUFFER_EXCEEDED (Halt streaming)
@@ -464,7 +572,8 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
         return -21; // REPLAY_PACKET_IGNORED
     }
 
-    if (pkt->height <= vendor->last_height) {
+    uint64_t last_h = atomic_load(&chan->height);
+    if (last_h > 0 && pkt->height <= last_h) {
         pthread_mutex_unlock(&vendor->lock);
         return -22; // OUT_OF_ORDER_OR_OLD_REPLAY
     }
@@ -509,8 +618,8 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
     memcpy(entry->sig_s, pkt->sig_s, 32);
     entry->occupied = true;
 
-    vendor->last_height = pkt->height;
-    vendor->accumulated_amount = pkt->cumulative_amt;
+    atomic_store(&chan->height, pkt->height);
+    atomic_store(&chan->accumulated_amount, pkt->cumulative_amt);
 
     pthread_mutex_unlock(&vendor->lock);
     return 0; // ACCEPTED_OK
@@ -562,11 +671,12 @@ int csls_run_benchmark(uint32_t num_cheques) {
     double us_per_op = ((double)(t_end - t_start) / num_cheques) / 1000.0;
     double ops_per_sec = (double)num_cheques / total_sec;
 
+    csls_channel_t *vchan = csls_channel_get_or_create(&vendor->channels, agent.pk);
     printf("  Processed: %u cheques\n", num_cheques);
     printf("  Total Time: %.4f seconds\n", total_sec);
     printf("  Latency per End-to-End Cheque (Sign + Verify): %.2f microseconds\n", us_per_op);
     printf("  Throughput: %.0f operations/second\n", ops_per_sec);
-    printf("  Total Settled Volume: $%.2f USDC\n", (double)vendor->accumulated_amount / 1e6);
+    printf("  Total Settled Volume: $%.2f USDC\n", (double)(vchan ? atomic_load(&vchan->accumulated_amount) : 0) / 1e6);
 
     csls_agent_destroy(&agent);
     csls_vendor_free(vendor);
@@ -588,7 +698,8 @@ int csls_run_equivocation_test(void) {
     csls_agent_init(&agent, agent_sk, NULL);
 
     // 1. Legitimate Cheque at height h = 1001
-    atomic_store(&agent.height, 1001);
+    csls_channel_t *ch = csls_channel_get_or_create(&agent.channels, vendor->pk);
+    atomic_store(&ch->height, 1001);
     csls_cheque_pkt_t cheque1;
     csls_agent_sign_cheque(&agent, vendor->pk, 50000, &cheque1); // $0.05 at h=1001
 
@@ -596,12 +707,10 @@ int csls_run_equivocation_test(void) {
     printf("  [1] Legitimate Cheque at h=1001 accepted: %s\n", (r1 == 0) ? "YES" : "NO");
 
     // 2. Forking/Double-Spending Attack: Sign a conflicting cheque at SAME height h = 1001
-    // Malicious agent resets its height back to 1001 to equivocate
-    atomic_store(&agent.height, 1001);
+    // Malicious agent resets its channel height back to 1001 to equivocate
+    atomic_store(&ch->height, 1001);
     csls_cheque_pkt_t cheque2;
-    uint8_t fake_vendor_pk[33];
-    memset(fake_vendor_pk, 0x99, 33);
-    csls_agent_sign_cheque(&agent, fake_vendor_pk, 70000, &cheque2); // $0.07 at h=1001 to someone else
+    csls_agent_sign_cheque(&agent, vendor->pk, 70000, &cheque2); // $0.07 at h=1001 (conflicting cheque to same vendor)
 
     printf("  [2] Attacking with conflicting cheque on same height h=1001...\n");
 
@@ -701,8 +810,9 @@ static void *vendor_tcp_worker(void *arg) {
         csls_fraud_pkt_t fraud;
         int res = csls_vendor_process_cheque(vendor, &pkt, &fraud);
 
+        csls_channel_t *vchan = csls_channel_get_or_create(&vendor->channels, pkt.agent_pk);
         ack.acknowledged_h = pkt.height;
-        ack.cumulative_amt = vendor->accumulated_amount;
+        ack.cumulative_amt = vchan ? atomic_load(&vchan->accumulated_amount) : 0;
         ack.status_code = (res == 0) ? 0 : ((res == -20) ? 3 : 1);
 
         if (send(client_sock, &ack, sizeof(ack), MSG_NOSIGNAL) != (ssize_t)sizeof(ack)) {

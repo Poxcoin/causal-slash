@@ -67,6 +67,7 @@ typedef struct {
 
 // Write-Ahead Log entry for atomic crash recovery
 typedef struct {
+    uint8_t  peer_pk[33];
     uint64_t height;
     uint64_t cumulative_sent;
 } csls_wal_record_t;
@@ -81,12 +82,30 @@ typedef struct {
     bool     occupied;
 } csls_history_entry_t;
 
+// Multi-Channel O(1) State Table
+#define CSLS_MAX_CHANNELS 1024
+#define CSLS_CHANNEL_MASK (CSLS_MAX_CHANNELS - 1)
+
+typedef struct {
+    uint8_t  peer_pk[33];
+    _Atomic uint64_t height;
+    _Atomic uint64_t cumulative_sent;
+    _Atomic uint64_t cleared_amount;
+    _Atomic uint64_t accumulated_amount;
+    pthread_spinlock_t lock;
+    bool occupied;
+} csls_channel_t;
+
+typedef struct {
+    csls_channel_t channels[CSLS_MAX_CHANNELS];
+    size_t count;
+} csls_channel_table_t;
+
 // Client (Agent) Context
 typedef struct {
     uint8_t sk[32];
     uint8_t pk[33];
-    _Atomic uint64_t height;
-    uint64_t cumulative_sent;
+    csls_channel_table_t channels;
     char wal_path[256];
     int wal_fd;
     pthread_mutex_t lock;
@@ -102,13 +121,16 @@ typedef struct {
 typedef struct {
     uint8_t sk[32];
     uint8_t pk[33];
-    uint64_t last_height;
-    uint64_t cleared_amount;
-    uint64_t accumulated_amount;
+    csls_channel_table_t channels;
     uint64_t max_exposure_delta_v;
     pthread_mutex_t lock;
     csls_history_entry_t history[CSLS_HISTORY_SIZE];
 } csls_vendor_ctx_t;
+
+// Channel Table API (O(1) Linear Probing)
+void            csls_channel_table_init(csls_channel_table_t *table);
+void            csls_channel_table_destroy(csls_channel_table_t *table);
+csls_channel_t *csls_channel_get_or_create(csls_channel_table_t *table, const uint8_t *peer_pk);
 
 // Core Protocol Functions
 int  csls_crypto_global_init(void);

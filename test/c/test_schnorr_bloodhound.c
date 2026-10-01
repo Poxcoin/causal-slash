@@ -100,10 +100,12 @@ static void test_bloodhound_equivocation_hunting(void) {
     csls_cheque_pkt_t legit_h500 = pkt;
     assert(legit_h500.height == 500);
 
-    // Rogue agent forks: signs conflicting cheque at SAME height 500 to vendor 2 with different amount
+    // Rogue agent forks: signs conflicting cheque at SAME height 500 to vendor 1 with different amount
     csls_cheque_pkt_t double_spend_h500;
-    rogue.height = 500; // Reset height to forge double-spend
-    assert(csls_agent_sign_cheque(&rogue, vendor2_pk, 5000, &double_spend_h500) == 0);
+    csls_channel_t *rchan = csls_channel_get_or_create(&rogue.channels, vendor1_pk);
+    assert(rchan != NULL);
+    rchan->height = 500; // Reset height to forge double-spend
+    assert(csls_agent_sign_cheque(&rogue, vendor1_pk, 5000, &double_spend_h500) == 0);
     assert(double_spend_h500.height == 500);
 
     // Bloodhound sniffs the double-spend cheque

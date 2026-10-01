@@ -65,13 +65,16 @@ int main() {
     uint64_t expected_total_cheques = (uint64_t)NUM_THREADS * CHEQUES_PER_THREAD;
     uint64_t expected_cumulative = expected_total_cheques * DELTA_PER_CHEQUE;
 
-    printf("Final Agent Height: %lu (Expected: %lu)\n", 
-           (unsigned long)g_agent.height, (unsigned long)(expected_total_cheques + 1));
-    printf("Final Cumulative Sent: %lu micro-USDC (Expected: %lu)\n", 
-           (unsigned long)g_agent.cumulative_sent, (unsigned long)expected_cumulative);
+    csls_channel_t *chan = csls_channel_get_or_create(&g_agent.channels, g_vendor_pk);
+    assert(chan != NULL);
 
-    assert(g_agent.height == expected_total_cheques + 1);
-    assert(g_agent.cumulative_sent == expected_cumulative);
+    printf("Final Agent Height: %lu (Expected: %lu)\n", 
+           (unsigned long)chan->height, (unsigned long)(expected_total_cheques + 1));
+    printf("Final Cumulative Sent: %lu micro-USDC (Expected: %lu)\n", 
+           (unsigned long)chan->cumulative_sent, (unsigned long)expected_cumulative);
+
+    assert(chan->height == expected_total_cheques + 1);
+    assert(chan->cumulative_sent == expected_cumulative);
 
     csls_agent_destroy(&g_agent);
     csls_crypto_global_cleanup();
