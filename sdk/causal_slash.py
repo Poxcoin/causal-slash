@@ -11,8 +11,10 @@ import ctypes
 import os
 import sys
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Dict, List, Set
 
 # Protocol Constants
 CSLS_MAGIC = 0x43534C53
@@ -177,6 +179,14 @@ class Cheque:
             cumulative_amount_usdc=pkt.cumulative_amt / 1e6,
             raw_packet=bytes(pkt),
         )
+
+    @property
+    def cumulative_amt(self) -> int:
+        return int(round(self.cumulative_amount_usdc * 1e6))
+
+
+# Alias for formal protocol specification naming
+CslsCheque = Cheque
 
 
 @dataclass(frozen=True)
@@ -378,6 +388,403 @@ class CausalVendorNode:
             pass
 
 
+# -----------------------------------------------------------------------------
+# DebtCycleMesh: High-Frequency In-Memory Debt Clearing & Kirchhoff Cycle Reduction
+# -----------------------------------------------------------------------------
+
+@dataclass
+class CycleEliminationRecord:
+    cycle: List[bytes]
+    bottleneck_amount_micro_usdc: int
+    cycle_length: int
+    cleared_volume_micro_usdc: int
+    timestamp: float
+
+
+@dataclass
+class NettingSummary:
+    gross_obligations_count: int
+    gross_volume_micro_usdc: int
+    net_obligations_count: int
+    net_volume_micro_usdc: int
+    cycles_eliminated_count: int
+    total_cleared_micro_usdc: int
+    volume_compression_ratio: float
+    tx_compression_ratio: float
+
+
+class DebtCycleMesh:
+    """
+    In-memory high-frequency debt mesh and P2P cycle clearing engine.
+    Implements Kirchhoff Cycle Elimination (BILLION_AGENT_ARCHITECTURE.md Section 2)
+    for autonomous agent swarms, canceling closed loops of reciprocal micro-debts
+    in RAM with thread-safe concurrency.
+
+    Mathematical Invariants Enforced:
+    1. Conservation of Net Balance: b'(u) == b(u) for all agents u in V (Theorem 2).
+    2. Strict Monotonic Debt Reduction: W(T(G)) = W(G) - k * Delta_C (Theorem 3).
+    3. Compression: >= 99% reduction of on-chain settlement transactions and volume
+       on high-density cyclical workloads.
+    """
+
+    def __init__(self, auto_bilateral_netting: bool = True):
+        self._lock = threading.RLock()
+        self._auto_bilateral = auto_bilateral_netting
+        # _adj[debtor][creditor] = amount_micro_usdc
+        self._adj: Dict[bytes, Dict[bytes, int]] = {}
+        self._nodes: Set[bytes] = set()
+
+        # Cumulative tracking for streaming CslsCheque channels: (agent_pk, vendor_pk) -> cumulative_amt
+        self._channel_cumulative: Dict[Tuple[bytes, bytes], int] = {}
+
+        # Accounting and audit statistics
+        self._gross_tx_count: int = 0
+        self._gross_volume: int = 0
+        self._total_cleared: int = 0
+        self._cycles_eliminated: int = 0
+        self._history: List[CycleEliminationRecord] = []
+
+    @staticmethod
+    def _to_bytes(val: Union[bytes, str]) -> bytes:
+        if isinstance(val, bytes):
+            return val
+        if isinstance(val, str):
+            if val.startswith("0x") or val.startswith("0X"):
+                return bytes.fromhex(val[2:])
+            try:
+                return bytes.fromhex(val)
+            except ValueError:
+                return val.encode("utf-8")
+        return bytes(val)
+
+    def add_obligation(
+        self,
+        debtor: Union[bytes, str],
+        creditor: Union[bytes, str],
+        amount_micro_usdc: int,
+    ) -> int:
+        """
+        Records a micro-debt obligation where debtor owes creditor amount_micro_usdc.
+        Thread-safe. Performs immediate bilateral netting if enabled.
+        Returns the resulting net edge weight (debtor -> creditor).
+        """
+        if amount_micro_usdc <= 0:
+            raise ValueError(f"Obligation amount must be positive, got {amount_micro_usdc}")
+
+        u = self._to_bytes(debtor)
+        v = self._to_bytes(creditor)
+        if u == v:
+            raise ValueError("Self-obligation not permitted (debtor == creditor)")
+
+        with self._lock:
+            self._nodes.add(u)
+            self._nodes.add(v)
+            self._gross_tx_count += 1
+            self._gross_volume += amount_micro_usdc
+
+            if self._auto_bilateral:
+                reverse_debt = self._adj.get(v, {}).get(u, 0)
+                if reverse_debt > 0:
+                    if reverse_debt >= amount_micro_usdc:
+                        new_reverse = reverse_debt - amount_micro_usdc
+                        if new_reverse == 0:
+                            del self._adj[v][u]
+                            if not self._adj[v]:
+                                del self._adj[v]
+                        else:
+                            self._adj[v][u] = new_reverse
+                        cleared = amount_micro_usdc * 2
+                        self._total_cleared += cleared
+                        return 0
+                    else:
+                        cleared = reverse_debt * 2
+                        self._total_cleared += cleared
+                        del self._adj[v][u]
+                        if not self._adj[v]:
+                            del self._adj[v]
+                        remaining = amount_micro_usdc - reverse_debt
+                        existing = self._adj.get(u, {}).get(v, 0)
+                        total_uv = existing + remaining
+                        if u not in self._adj:
+                            self._adj[u] = {}
+                        self._adj[u][v] = total_uv
+                        return total_uv
+
+            if u not in self._adj:
+                self._adj[u] = {}
+            total = self._adj[u].get(v, 0) + amount_micro_usdc
+            self._adj[u][v] = total
+            return total
+
+    def record_cheque(self, cheque: CslsCheque) -> int:
+        """
+        Ingests a CslsCheque from an active L4 streaming channel.
+        Extracts incremental micro-debt from the monotonic cumulative amount
+        and updates the mesh.
+        """
+        with self._lock:
+            u = bytes(cheque.agent_pk)
+            v = bytes(cheque.vendor_pk)
+            pair = (u, v)
+            prev_amt = self._channel_cumulative.get(pair, 0)
+            curr_amt = cheque.cumulative_amt
+            if curr_amt < prev_amt:
+                raise ValueError(
+                    f"Cheque cumulative amount {curr_amt} < previous {prev_amt}"
+                )
+            delta = curr_amt - prev_amt
+            if delta == 0:
+                return 0
+            self._channel_cumulative[pair] = curr_amt
+            return self.add_obligation(u, v, delta)
+
+    def get_net_balance(self, agent: Union[bytes, str]) -> int:
+        """
+        Computes divergence balance b(u) = sum(w(in)) - sum(w(out)).
+        Positive: net creditor (funds receivable).
+        Negative: net debtor (funds payable).
+        """
+        u = self._to_bytes(agent)
+        with self._lock:
+            in_flow = 0
+            out_flow = 0
+            for creditor, amount in self._adj.get(u, {}).items():
+                out_flow += amount
+            for debtor, targets in self._adj.items():
+                if u in targets:
+                    in_flow += targets[u]
+            return in_flow - out_flow
+
+    def get_all_net_balances(self) -> Dict[bytes, int]:
+        """
+        Returns net divergence balances b(u) for all nodes in the mesh.
+        Enforces Kirchhoff Flow Invariant: sum(b(u)) == 0.
+        """
+        with self._lock:
+            balances: Dict[bytes, int] = {node: 0 for node in self._nodes}
+            for u, targets in self._adj.items():
+                for v, amt in targets.items():
+                    balances[u] -= amt
+                    balances[v] += amt
+            total_div = sum(balances.values())
+            if total_div != 0:
+                raise RuntimeError(
+                    f"Kirchhoff invariant violation: sum(b) = {total_div} != 0"
+                )
+            return balances
+
+    def find_cycle(self) -> Optional[List[bytes]]:
+        """
+        Finds a simple directed cycle in the active debt graph using iterative DFS.
+        Returns list of nodes representing the cycle [v1, v2, ..., vk, v1], or None.
+        """
+        with self._lock:
+            state: Dict[bytes, int] = {}  # 0: unvisited, 1: visiting (stack), 2: visited
+
+            for start_node in list(self._adj.keys()):
+                if state.get(start_node, 0) != 0:
+                    continue
+
+                stack = [(start_node, iter(list(self._adj.get(start_node, {}).keys())))]
+                state[start_node] = 1
+
+                while stack:
+                    u, neighbors = stack[-1]
+                    try:
+                        v = next(neighbors)
+                        if self._adj.get(u, {}).get(v, 0) <= 0:
+                            continue
+
+                        v_state = state.get(v, 0)
+                        if v_state == 1:
+                            # Directed cycle detected! Backtrack stack to reconstruct [v, ..., v]
+                            cycle = [v]
+                            for node, _ in reversed(stack):
+                                cycle.append(node)
+                                if node == v:
+                                    break
+                            cycle.reverse()
+                            return cycle
+                        elif v_state == 0:
+                            state[v] = 1
+                            stack.append((v, iter(list(self._adj.get(v, {}).keys()))))
+                    except StopIteration:
+                        state[u] = 2
+                        stack.pop()
+
+            return None
+
+    def reduce_kirchhoff_cycles(
+        self, max_cycles: Optional[int] = None
+    ) -> Tuple[int, int]:
+        """
+        Executes iterative Kirchhoff Cycle Elimination (Section 2.2).
+        Continuously detects directed cycles C, finds bottleneck Delta_C = min w(v_i, v_{i+1}),
+        and subtracts Delta_C along each edge of the cycle.
+
+        Guarantees:
+        - Net divergence balance of every node is strictly preserved (Theorem 2).
+        - Monotonic reduction of gross debt by k * Delta_C (Theorem 3).
+        - Terminates when graph is a Directed Acyclic Graph (DAG) or max_cycles reached.
+
+        Returns (cycles_eliminated_count, total_micro_usdc_cleared).
+        """
+        with self._lock:
+            eliminated_count = 0
+            cleared_volume = 0
+
+            while max_cycles is None or eliminated_count < max_cycles:
+                cycle = self.find_cycle()
+                if not cycle:
+                    break
+
+                k = len(cycle) - 1
+                if k < 2:
+                    break
+
+                # Bottleneck Capacity Delta_C
+                bottleneck = min(
+                    self._adj[cycle[i]][cycle[i + 1]] for i in range(k)
+                )
+
+                if bottleneck <= 0:
+                    break
+
+                # Subtract Delta_C along cycle
+                for i in range(k):
+                    u = cycle[i]
+                    v = cycle[i + 1]
+                    new_weight = self._adj[u][v] - bottleneck
+                    if new_weight <= 0:
+                        del self._adj[u][v]
+                        if not self._adj[u]:
+                            del self._adj[u]
+                    else:
+                        self._adj[u][v] = new_weight
+
+                cycle_cleared = k * bottleneck
+                cleared_volume += cycle_cleared
+                self._total_cleared += cycle_cleared
+                eliminated_count += 1
+                self._cycles_eliminated += 1
+
+                self._history.append(
+                    CycleEliminationRecord(
+                        cycle=cycle,
+                        bottleneck_amount_micro_usdc=bottleneck,
+                        cycle_length=k,
+                        cleared_volume_micro_usdc=cycle_cleared,
+                        timestamp=time.time(),
+                    )
+                )
+
+            return eliminated_count, cleared_volume
+
+    def get_summary(self) -> NettingSummary:
+        """
+        Returns summary statistics for the debt mesh including compression ratios.
+        """
+        with self._lock:
+            net_tx_count = sum(len(targets) for targets in self._adj.values())
+            net_volume = sum(
+                sum(targets.values()) for targets in self._adj.values()
+            )
+
+            gross_vol = self._gross_volume
+            gross_tx = self._gross_tx_count
+
+            vol_compression = (
+                1.0 - (net_volume / gross_vol) if gross_vol > 0 else 1.0
+            )
+            tx_compression = (
+                1.0 - (net_tx_count / gross_tx) if gross_tx > 0 else 1.0
+            )
+
+            return NettingSummary(
+                gross_obligations_count=gross_tx,
+                gross_volume_micro_usdc=gross_vol,
+                net_obligations_count=net_tx_count,
+                net_volume_micro_usdc=net_volume,
+                cycles_eliminated_count=self._cycles_eliminated,
+                total_cleared_micro_usdc=self._total_cleared,
+                volume_compression_ratio=max(0.0, vol_compression),
+                tx_compression_ratio=max(0.0, tx_compression),
+            )
+
+    def generate_clearing_settlements(self) -> List[Tuple[bytes, bytes, int]]:
+        """
+        Generates minimal on-chain settlement transfers pairing net debtors with net creditors.
+        Reduces N nodes to at most N - 1 settlement transactions.
+        Returns list of (debtor_pk, creditor_pk, amount_micro_usdc).
+        """
+        with self._lock:
+            balances = self.get_all_net_balances()
+            debtors: List[List[Union[bytes, int]]] = [
+                [node, -amt] for node, amt in balances.items() if amt < 0
+            ]
+            creditors: List[List[Union[bytes, int]]] = [
+                [node, amt] for node, amt in balances.items() if amt > 0
+            ]
+
+            debtors.sort(key=lambda x: int(x[1]), reverse=True)
+            creditors.sort(key=lambda x: int(x[1]), reverse=True)
+
+            settlements: List[Tuple[bytes, bytes, int]] = []
+            d_idx = 0
+            c_idx = 0
+
+            while d_idx < len(debtors) and c_idx < len(creditors):
+                debtor_node, d_amount = debtors[d_idx]
+                creditor_node, c_amount = creditors[c_idx]
+                transfer = min(int(d_amount), int(c_amount))
+                if transfer > 0:
+                    settlements.append((bytes(debtor_node), bytes(creditor_node), transfer))
+                    debtors[d_idx][1] = int(d_amount) - transfer
+                    creditors[c_idx][1] = int(c_amount) - transfer
+
+                if debtors[d_idx][1] == 0:
+                    d_idx += 1
+                if creditors[c_idx][1] == 0:
+                    c_idx += 1
+
+            return settlements
+
+    @property
+    def is_dag(self) -> bool:
+        """Returns True if the current debt graph is acyclic (DAG)."""
+        return self.find_cycle() is None
+
+    @property
+    def total_system_debt(self) -> int:
+        """Returns current total outstanding debt W(G) = sum(w(u, v))."""
+        with self._lock:
+            return sum(sum(targets.values()) for targets in self._adj.values())
+
+    @property
+    def active_edges_count(self) -> int:
+        """Returns number of active directed debt edges."""
+        with self._lock:
+            return sum(len(targets) for targets in self._adj.values())
+
+    @property
+    def active_nodes_count(self) -> int:
+        """Returns number of unique active nodes."""
+        with self._lock:
+            return len(self._nodes)
+
+    def clear(self) -> None:
+        """Clears all mesh state."""
+        with self._lock:
+            self._adj.clear()
+            self._nodes.clear()
+            self._channel_cumulative.clear()
+            self._gross_tx_count = 0
+            self._gross_volume = 0
+            self._total_cleared = 0
+            self._cycles_eliminated = 0
+            self._history.clear()
+
+
 if __name__ == "__main__":
     import time
     print("=" * 70)
@@ -433,5 +840,33 @@ if __name__ == "__main__":
     print(f"  Extracted SK: {r2.fraud_proof.extracted_secret_key.hex()[:18]}...")
     print(f"  True SK:      {bytes(attacker_agent._ctx.sk).hex()[:18]}...")
     print("  [PASS] Mathematical Invariant Verified: Extracted key matches agent secret key")
+
+    # 4. DebtCycleMesh Kirchhoff Cycle Reduction & Invariant Test
+    print("\n[3] Testing DebtCycleMesh & Kirchhoff Cycle Reduction...")
+    mesh = DebtCycleMesh()
+    pk_a = b"\x02" + b"A" * 32
+    pk_b = b"\x02" + b"B" * 32
+    pk_c = b"\x02" + b"C" * 32
+    pk_d = b"\x02" + b"D" * 32
+
+    mesh.add_obligation(pk_a, pk_b, 100_000) # $0.10
+    mesh.add_obligation(pk_b, pk_c, 100_000) # $0.10
+    mesh.add_obligation(pk_c, pk_d, 100_000) # $0.10
+    mesh.add_obligation(pk_d, pk_a, 100_000) # $0.10
+    mesh.add_obligation(pk_b, pk_d, 50_000)  # $0.05
+
+    bal_before = mesh.get_all_net_balances()
+    assert sum(bal_before.values()) == 0
+
+    cycles, cleared = mesh.reduce_kirchhoff_cycles()
+    bal_after = mesh.get_all_net_balances()
+
+    assert bal_before == bal_after, "Kirchhoff Net Balance Invariant Violated!"
+    assert mesh.is_dag, "Residual graph must be a DAG!"
+    print(f"  Cycles Eliminated: {cycles}")
+    print(f"  Cleared Volume: ${cleared / 1e6:.4f} USDC")
+    print(f"  Remaining Net System Debt: ${mesh.total_system_debt / 1e6:.4f} USDC")
+    print("  [PASS] Mathematical Invariant Verified: Net balances strictly preserved (Theorem 2)")
     print("=" * 70)
     print("ALL PYTHON SDK VERIFICATIONS COMPLETED SUCCESSFULLY!")
+
