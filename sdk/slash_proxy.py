@@ -14,6 +14,7 @@ import socket
 import struct
 import threading
 import time
+import concurrent.futures
 from typing import Optional, Tuple, Union, Dict, List, Callable
 
 try:
@@ -82,6 +83,9 @@ class SlashSidecarProxy:
 
         self._server: Optional[http.server.ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
+        self._network_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=8, thread_name_prefix="csls_net_worker"
+        )
 
     @property
     def packet_reduction_ratio(self) -> float:
@@ -161,19 +165,26 @@ class SlashSidecarProxy:
 
     def flush_settlements_to_network(self) -> List[Tuple[bytes, bytes, int]]:
         """
-        Resolves all remaining cycles in RAM and broadcasts minimal residual settlements
-        to external network socket.
-        Returns the list of dispatched (debtor, creditor, amount_micro_usdc) settlements.
+        Resolves all remaining cycles in RAM and offloads residual settlements
+        to non-blocking worker pool without holding self._lock during network I/O.
         """
         with self._lock:
             self.mesh.reduce_kirchhoff_cycles()
             settlements = self.mesh.generate_clearing_settlements()
+            self.external_network_packets_sent += len(settlements)
 
-            for debtor_pk, creditor_pk, amount_micro in settlements:
-                self._dispatch_network_settlement(debtor_pk, creditor_pk, amount_micro)
-                self.external_network_packets_sent += 1
+        # LOCK IS RELEASED! Now offload network transmissions to worker pool
+        futures = []
+        for debtor_pk, creditor_pk, amount_micro in settlements:
+            f = self._network_executor.submit(
+                self._dispatch_network_settlement, debtor_pk, creditor_pk, amount_micro
+            )
+            futures.append(f)
 
-            return settlements
+        if futures:
+            concurrent.futures.wait(futures, timeout=5.0)
+
+        return settlements
 
     def _dispatch_network_settlement(self, debtor_pk: bytes, creditor_pk: bytes, amount_micro: int):
         """
@@ -366,6 +377,7 @@ class SlashSidecarProxy:
             if self._thread:
                 self._thread.join(timeout=2.0)
                 self._thread = None
+        self._network_executor.shutdown(wait=False, cancel_futures=True)
 
 
 if __name__ == "__main__":

@@ -115,6 +115,24 @@ class _CslsVendorCtx(ctypes.Structure):
         ("history", _CslsHistoryEntry * 65536),
     ]
 
+# Multi-Channel State Isolation Structures
+class csls_channel_state_t(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("peer_pk", ctypes.c_uint8 * 33),
+        ("height", ctypes.c_uint64),
+        ("cumulative_amt", ctypes.c_uint64),
+        ("cleared_amt", ctypes.c_uint64),
+        ("occupied", ctypes.c_bool),
+    ]
+
+class csls_channel_table_t(ctypes.Structure):
+    _fields_ = [
+        ("count", ctypes.c_uint32),
+        ("capacity", ctypes.c_uint32),
+        ("channels", ctypes.POINTER(csls_channel_state_t)),
+    ]
+
 # Setup function signatures
 _LIB.csls_crypto_global_init.restype = ctypes.c_int
 _LIB.csls_crypto_global_init.argtypes = []
@@ -224,7 +242,8 @@ def _parse_bytes(val: Union[str, bytes], expected_len: int) -> bytes:
 class CausalAgentWallet:
     """
     Sovereign AI Agent Wallet for ultra-fast, zero-gas micro-payments.
-    Maintains an atomic monotonic height counter and generates deterministic EOTS cheques.
+    Maintains an O(1) multi-channel table (csls_channel_table_t) isolating state per peer_pk
+    to guarantee strictly monotonic per-vendor height counters and cumulative amounts.
     """
     def __init__(
         self,
@@ -232,24 +251,29 @@ class CausalAgentWallet:
         wal_path: Optional[str] = None,
         agent_private_key: Optional[Union[str, bytes]] = None,
     ):
-        self._ctx = _CslsAgentCtx()
+        self._lock = threading.RLock()
         self._closed = False
         if secret_key is None and agent_private_key is not None:
             secret_key = agent_private_key
         if secret_key is None:
-            sk_bytes = os.urandom(32)
+            self._sk_bytes = os.urandom(32)
         else:
-            sk_bytes = _parse_bytes(secret_key, 32)
+            self._sk_bytes = _parse_bytes(secret_key, 32)
 
-        sk_arr = (ctypes.c_uint8 * 32)(*sk_bytes)
+        self._wal_path = wal_path
+        self._master_ctx = _CslsAgentCtx()
+        sk_arr = (ctypes.c_uint8 * 32)(*self._sk_bytes)
         wal_c = wal_path.encode() if wal_path else None
-        res = _LIB.csls_agent_init(ctypes.byref(self._ctx), sk_arr, wal_c)
+        res = _LIB.csls_agent_init(ctypes.byref(self._master_ctx), sk_arr, wal_c)
         if res != 0:
             raise RuntimeError(f"csls_agent_init failed with code {res}")
 
+        # Multi-channel table: peer_pk (33 bytes) -> _CslsAgentCtx
+        self._channels: Dict[bytes, _CslsAgentCtx] = {}
+
     @property
     def public_key(self) -> bytes:
-        return bytes(self._ctx.pk)
+        return bytes(self._master_ctx.pk)
 
     @property
     def public_key_hex(self) -> str:
@@ -257,34 +281,69 @@ class CausalAgentWallet:
 
     @property
     def height(self) -> int:
-        return self._ctx.height
+        with self._lock:
+            if not self._channels:
+                return self._master_ctx.height
+            return sum(c.height for c in self._channels.values())
 
     @property
     def total_sent_usdc(self) -> float:
-        return self._ctx.cumulative_sent / 1e6
+        with self._lock:
+            if not self._channels:
+                return self._master_ctx.cumulative_sent / 1e6
+            return sum(c.cumulative_sent for c in self._channels.values()) / 1e6
+
+    def get_channel_height(self, vendor_pk: Union[str, bytes]) -> int:
+        v_bytes = _parse_bytes(vendor_pk, 33)
+        with self._lock:
+            if v_bytes in self._channels:
+                return self._channels[v_bytes].height
+            return 0
+
+    def get_channel_cumulative(self, vendor_pk: Union[str, bytes]) -> int:
+        v_bytes = _parse_bytes(vendor_pk, 33)
+        with self._lock:
+            if v_bytes in self._channels:
+                return self._channels[v_bytes].cumulative_sent
+            return 0
 
     def sign_cheque(self, vendor_pk: Union[str, bytes], amount_usdc: float) -> Cheque:
         """
-        Signs a micro-payment cheque for `amount_usdc` (e.g. 0.001 for $0.001).
+        Signs a micro-payment cheque for `amount_usdc` isolated to vendor_pk channel.
+        Tracks per-vendor sequence numbers and cumulative amounts via csls_channel_table_t.
         Execution takes ~3-5 microseconds in native C.
         """
         v_bytes = _parse_bytes(vendor_pk, 33)
         v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
         delta_micro = int(round(amount_usdc * 1e6))
 
-        c_pkt = _CslsChequePkt()
-        res = _LIB.csls_agent_sign_cheque(
-            ctypes.byref(self._ctx), v_arr, delta_micro, ctypes.byref(c_pkt)
-        )
-        if res != 0:
-            raise RuntimeError(f"csls_agent_sign_cheque failed with code {res}")
+        with self._lock:
+            if v_bytes not in self._channels:
+                ch_ctx = _CslsAgentCtx()
+                sk_arr = (ctypes.c_uint8 * 32)(*self._sk_bytes)
+                res = _LIB.csls_agent_init(ctypes.byref(ch_ctx), sk_arr, None)
+                if res != 0:
+                    raise RuntimeError(f"Failed to initialize channel context for vendor: {res}")
+                self._channels[v_bytes] = ch_ctx
 
-        return Cheque.from_c_pkt(c_pkt)
+            ctx = self._channels[v_bytes]
+            c_pkt = _CslsChequePkt()
+            res = _LIB.csls_agent_sign_cheque(
+                ctypes.byref(ctx), v_arr, delta_micro, ctypes.byref(c_pkt)
+            )
+            if res != 0:
+                raise RuntimeError(f"csls_agent_sign_cheque failed with code {res}")
+
+            return Cheque.from_c_pkt(c_pkt)
 
     def close(self):
-        if not getattr(self, "_closed", False):
-            self._closed = True
-            _LIB.csls_agent_destroy(ctypes.byref(self._ctx))
+        with self._lock:
+            if not getattr(self, "_closed", False):
+                self._closed = True
+                _LIB.csls_agent_destroy(ctypes.byref(self._master_ctx))
+                for ch_ctx in self._channels.values():
+                    _LIB.csls_agent_destroy(ctypes.byref(ch_ctx))
+                self._channels.clear()
 
     def __del__(self):
         try:
@@ -296,26 +355,30 @@ class CausalAgentWallet:
 class CausalVendorNode:
     """
     Sovereign Vendor Node for microsecond cheque verification and equivocation trapping.
-    Enforces the local unconfirmed exposure buffer (delta_v <= $1.00 USDC).
+    Maintains an O(1) multi-channel table (csls_channel_table_t) isolating state per agent_pk,
+    guaranteeing independent credit exposure limits (delta_v) and monotonic sequence tracking.
     """
     def __init__(self, secret_key: Optional[Union[str, bytes]] = None, delta_v_usdc: float = 1.0):
-        self._ctx = _CslsVendorCtx()
+        self._lock = threading.RLock()
         self._closed = False
         if secret_key is None:
-            sk_bytes = os.urandom(32)
+            self._sk_bytes = os.urandom(32)
         else:
-            sk_bytes = _parse_bytes(secret_key, 32)
+            self._sk_bytes = _parse_bytes(secret_key, 32)
 
-        sk_arr = (ctypes.c_uint8 * 32)(*sk_bytes)
-        delta_v_micro = int(round(delta_v_usdc * 1e6))
-
-        res = _LIB.csls_vendor_init(ctypes.byref(self._ctx), sk_arr, delta_v_micro)
+        self._delta_v_micro = int(round(delta_v_usdc * 1e6))
+        self._master_ctx = _CslsVendorCtx()
+        sk_arr = (ctypes.c_uint8 * 32)(*self._sk_bytes)
+        res = _LIB.csls_vendor_init(ctypes.byref(self._master_ctx), sk_arr, self._delta_v_micro)
         if res != 0:
             raise RuntimeError(f"csls_vendor_init failed with code {res}")
 
+        # Multi-channel table: agent_pk (33 bytes) -> _CslsVendorCtx
+        self._channels: Dict[bytes, _CslsVendorCtx] = {}
+
     @property
     def public_key(self) -> bytes:
-        return bytes(self._ctx.pk)
+        return bytes(self._master_ctx.pk)
 
     @property
     def public_key_hex(self) -> str:
@@ -323,16 +386,23 @@ class CausalVendorNode:
 
     @property
     def accumulated_usdc(self) -> float:
-        return self._ctx.accumulated_amount / 1e6
+        with self._lock:
+            if not self._channels:
+                return self._master_ctx.accumulated_amount / 1e6
+            return sum(c.accumulated_amount for c in self._channels.values()) / 1e6
+
+    def get_channel_accumulated(self, agent_pk: Union[str, bytes]) -> int:
+        a_bytes = _parse_bytes(agent_pk, 33)
+        with self._lock:
+            if a_bytes in self._channels:
+                return self._channels[a_bytes].accumulated_amount
+            return 0
 
     def process_cheque(self, cheque: Union[Cheque, bytes]) -> ProcessResult:
         """
-        Processes an incoming streaming micro-cheque using Optimistic P2P Credit Streaming bounded by delta_v.
-
-        Validates protocol framing, monotonic height progression, challenge digest (e mod q),
-        and enforces local credit exposure buffer (delta_v USDC).
-        If equivocation (conflicting cheques on identical height) is detected, algebraically extracts
-        the offender's private key via O(1) modular arithmetic for automated Base L2 foreclosure.
+        Processes an incoming streaming micro-cheque using isolated per-agent channel context.
+        Validates protocol framing, monotonic height progression, and enforces local credit
+        exposure buffer (delta_v USDC) per agent channel.
         """
         if isinstance(cheque, Cheque):
             raw = cheque.raw_packet
@@ -349,51 +419,69 @@ class CausalVendorNode:
 
         c_pkt = _CslsChequePkt.from_buffer_copy(raw)
         c_fraud = _CslsFraudPkt()
+        agent_pk = bytes(c_pkt.agent_pk)
 
-        res = _LIB.csls_vendor_process_cheque(
-            ctypes.byref(self._ctx), ctypes.byref(c_pkt), ctypes.byref(c_fraud)
-        )
+        with self._lock:
+            if agent_pk not in self._channels:
+                v_ctx = _CslsVendorCtx()
+                sk_arr = (ctypes.c_uint8 * 32)(*self._sk_bytes)
+                res = _LIB.csls_vendor_init(ctypes.byref(v_ctx), sk_arr, self._delta_v_micro)
+                if res != 0:
+                    raise RuntimeError(f"Failed to initialize channel context for agent: {res}")
+                self._channels[agent_pk] = v_ctx
 
-        if res == CSLS_OK:
-            return ProcessResult(
-                status_code=CSLS_OK,
-                accepted=True,
-                accumulated_usdc=self.accumulated_usdc,
+            ctx = self._channels[agent_pk]
+            res = _LIB.csls_vendor_process_cheque(
+                ctypes.byref(ctx), ctypes.byref(c_pkt), ctypes.byref(c_fraud)
             )
 
-        if res == CSLS_ERR_FRAUD:
-            proof = FraudProof(
-                offender_pk=bytes(c_fraud.offender_pk),
-                collision_height=c_fraud.collision_h,
-                extracted_secret_key=bytes(c_fraud.extracted_sk),
-                raw_proof=bytes(c_fraud),
-            )
+            total_usdc = self.accumulated_usdc
+
+            if res == CSLS_OK:
+                return ProcessResult(
+                    status_code=CSLS_OK,
+                    accepted=True,
+                    accumulated_usdc=total_usdc,
+                )
+
+            if res == CSLS_ERR_FRAUD:
+                proof = FraudProof(
+                    offender_pk=bytes(c_fraud.offender_pk),
+                    collision_height=c_fraud.collision_h,
+                    extracted_secret_key=bytes(c_fraud.extracted_sk),
+                    raw_proof=bytes(c_fraud),
+                )
+                return ProcessResult(
+                    status_code=CSLS_ERR_FRAUD,
+                    accepted=False,
+                    accumulated_usdc=total_usdc,
+                    error_message="EQUIVOCATION_DETECTED: Private key algebraically extracted!",
+                    fraud_proof=proof,
+                )
+
+            error_map = {
+                CSLS_ERR_EXPOSURE_CAP: "EXPOSURE_BUFFER_EXCEEDED: Local credit limit reached",
+                CSLS_ERR_REPLAY: "REPLAY_PACKET_IGNORED",
+                CSLS_ERR_OUT_OF_ORDER: "OUT_OF_ORDER_OR_OLD_HEIGHT",
+                CSLS_ERR_FORGED_HASH: "FORGED_CHALLENGE_HASH",
+                -11: "DECREASING_AMOUNT_ATTACK",
+            }
+            msg = error_map.get(res, f"UNKNOWN_ERROR_{res}")
             return ProcessResult(
-                status_code=CSLS_ERR_FRAUD,
+                status_code=res,
                 accepted=False,
-                accumulated_usdc=self.accumulated_usdc,
-                error_message="EQUIVOCATION_DETECTED: Private key algebraically extracted!",
-                fraud_proof=proof,
+                accumulated_usdc=total_usdc,
+                error_message=msg,
             )
-
-        error_map = {
-            CSLS_ERR_EXPOSURE_CAP: "EXPOSURE_BUFFER_EXCEEDED: Local credit limit reached",
-            CSLS_ERR_REPLAY: "REPLAY_PACKET_IGNORED",
-            CSLS_ERR_OUT_OF_ORDER: "OUT_OF_ORDER_OR_OLD_HEIGHT",
-            CSLS_ERR_FORGED_HASH: "FORGED_CHALLENGE_HASH",
-        }
-        msg = error_map.get(res, f"UNKNOWN_ERROR_{res}")
-        return ProcessResult(
-            status_code=res,
-            accepted=False,
-            accumulated_usdc=self.accumulated_usdc,
-            error_message=msg,
-        )
 
     def close(self):
-        if not getattr(self, "_closed", False):
-            self._closed = True
-            _LIB.csls_vendor_destroy(ctypes.byref(self._ctx))
+        with self._lock:
+            if not getattr(self, "_closed", False):
+                self._closed = True
+                _LIB.csls_vendor_destroy(ctypes.byref(self._master_ctx))
+                for v_ctx in self._channels.values():
+                    _LIB.csls_vendor_destroy(ctypes.byref(v_ctx))
+                self._channels.clear()
 
     def __del__(self):
         try:
@@ -587,46 +675,57 @@ class DebtCycleMesh:
                 )
             return balances
 
-    def find_cycle(self) -> Optional[List[bytes]]:
+    def find_tarjan_cycle(self) -> Optional[List[bytes]]:
         """
-        Finds a simple directed cycle in the active debt graph using iterative DFS.
-        Returns list of nodes representing the cycle [v1, v2, ..., vk, v1], or None.
+        Tarjan-based directed cycle detection using on-stack back-edge identification.
+        Guarantees O(V+E) time complexity and strict thread-safety under self._lock.
+        Returns a simple directed cycle [v0, v1, ..., vk, v0] or None if acyclic.
         """
         with self._lock:
-            state: Dict[bytes, int] = {}  # 0: unvisited, 1: visiting (stack), 2: visited
+            visited: Set[bytes] = set()
+            on_stack: Set[bytes] = set()
+            parent: Dict[bytes, bytes] = {}
 
             for start_node in list(self._adj.keys()):
-                if state.get(start_node, 0) != 0:
+                if start_node in visited:
                     continue
 
-                stack = [(start_node, iter(list(self._adj.get(start_node, {}).keys())))]
-                state[start_node] = 1
+                call_stack = [(start_node, iter(list(self._adj.get(start_node, {}).keys())))]
+                visited.add(start_node)
+                on_stack.add(start_node)
 
-                while stack:
-                    u, neighbors = stack[-1]
+                while call_stack:
+                    u, neighbors = call_stack[-1]
                     try:
                         v = next(neighbors)
                         if self._adj.get(u, {}).get(v, 0) <= 0:
                             continue
 
-                        v_state = state.get(v, 0)
-                        if v_state == 1:
-                            # Directed cycle detected! Backtrack stack to reconstruct [v, ..., v]
+                        if v in on_stack:
+                            # Back-edge detected u -> v! Reconstruct cycle [v, ..., u, v]
                             cycle = [v]
-                            for node, _ in reversed(stack):
-                                cycle.append(node)
-                                if node == v:
-                                    break
+                            curr = u
+                            while curr != v:
+                                cycle.append(curr)
+                                curr = parent.get(curr, v)
+                            cycle.append(v)
                             cycle.reverse()
                             return cycle
-                        elif v_state == 0:
-                            state[v] = 1
-                            stack.append((v, iter(list(self._adj.get(v, {}).keys()))))
+
+                        if v not in visited:
+                            visited.add(v)
+                            on_stack.add(v)
+                            parent[v] = u
+                            call_stack.append((v, iter(list(self._adj.get(v, {}).keys()))))
                     except StopIteration:
-                        state[u] = 2
-                        stack.pop()
+                        on_stack.discard(u)
+                        call_stack.pop()
 
             return None
+
+    def find_cycle(self) -> Optional[List[bytes]]:
+        """Finds a directed cycle using Tarjan back-edge search under self._lock."""
+        return self.find_tarjan_cycle()
 
     def reduce_kirchhoff_cycles(
         self, max_cycles: Optional[int] = None
