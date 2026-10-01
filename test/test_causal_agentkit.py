@@ -54,6 +54,11 @@ def test_provider_payout_creates_mutual_debt_and_reconcile_closes_ledger():
     # Netted volume = min(400, 3000) = 400 micro -> fee floors to 0 at this scale.
     assert report["netting_volume_micro"] == 400
     assert report["treasury_fee_micro"] == 400 * 100 // 1_000_000
+    # Repeated reconcile must NOT double-book the treasury fee.
+    fee_once = report["treasury_fee_micro"]
+    report2 = kit.reconcile_mesh_debt()
+    assert report2["treasury_fee_micro"] == fee_once
+    assert report2["settlements_executed"] == 0
     # After reconciliation the channel net is settled: outstanding == 0.
     assert kit.get_channel_balance(llm.public_key)["outstanding_micro"] == 0
 
@@ -66,8 +71,8 @@ def test_pending_relay_path_queues_real_signed_cheque():
     bal = kit.get_channel_balance(remote_pk)
     assert bal["pending_count"] == 1
     raw = kit._channels[remote_pk].pending[0]
-    assert len(raw) == 151 and raw[:4] == b"CSLS"[::-1] or raw[:4] == (0x43534C53).to_bytes(4, "little")
     # magic must be the CSLS u32LE constant and the packet must be well-formed
+    assert len(raw) == 151
     assert int.from_bytes(raw[:4], "little") == 0x43534C53
     assert raw[4] == 0x01
     assert raw[5:38] == kit.master.public_key

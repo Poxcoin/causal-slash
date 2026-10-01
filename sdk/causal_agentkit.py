@@ -116,6 +116,8 @@ class CausalAgentKit:
         self._channels: Dict[bytes, ChannelState] = {}
         self._providers: Dict[str, dict] = {}
         self.treasury_fee_micro = 0
+        self._fee_charged_netting_micro = 0   # fee base already booked (anti double-booking)
+        self._lifetime_sent_micro = 0         # master's global cumulative (engine -12 is lifetime)
         self.last_netting: Optional[NettingSummary] = None
 
     @classmethod
@@ -132,8 +134,19 @@ class CausalAgentKit:
         # reset, otherwise the receiving channel's monotonicity rule (-11)
         # rejects later payouts from the same provider identity.
         vendor_wallet = CausalAgentWallet(secret_key=bytes(node._ctx.sk))
+        # Engine -12 semantics: cleared_amount never grows, so a vendor node's
+        # delta_v is a LIFETIME cap on the payer's GLOBAL cumulative. The
+        # provider node must therefore already accept the master's lifetime
+        # spend, or the first cheque would fail with $0 owed to this vendor.
+        node_delta_micro = int(node._ctx.max_exposure_delta_v)
+        if node_delta_micro < self._lifetime_sent_micro:
+            raise ValueError(
+                f"provider node delta_v ({node_delta_micro} micro) is below the "
+                f"master's lifetime cumulative ({self._lifetime_sent_micro} micro); "
+                f"the engine would reject every cheque with -12")
         self._providers[name] = {"node": node, "pk": node.public_key,
-                                 "wallet": vendor_wallet}
+                                 "wallet": vendor_wallet,
+                                 "delta_v_micro": node_delta_micro}
         # Dedicated master-side receiving channel for this provider.
         self._receive_nodes[node.public_key] = CausalVendorNode(
             secret_key=self._master_sk_bytes,
@@ -175,18 +188,25 @@ class CausalAgentKit:
         if amount_micro <= 0:
             raise ValueError("amount must be positive")
 
+        provider = next((p for p in self._providers.values() if p["pk"] == vendor_pk), None)
+        if provider is not None and self._lifetime_sent_micro + amount_micro > provider["delta_v_micro"]:
+            raise ValueError(
+                f"payment would push the master's lifetime cumulative "
+                f"({self._lifetime_sent_micro} micro) past this provider node's "
+                f"delta_v ({provider['delta_v_micro']} micro) - engine -12 lifetime cap")
+
         cheque = self.master.sign_cheque(vendor_pk, amount_micro / 1e6)
         st = self._channels.setdefault(vendor_pk, ChannelState())
         st.cheques_sent += 1
         st.last_height = cheque.height
 
-        provider = next((p for p in self._providers.values() if p["pk"] == vendor_pk), None)
         if provider is not None:
             result = provider["node"].process_cheque(cheque)
             if not result.accepted:
                 raise RuntimeError(f"cheque rejected: {result.error_message}")
             st.paid_micro += amount_micro
             st.outstanding_micro += amount_micro
+            self._lifetime_sent_micro += amount_micro
             return {"status": "settled", "height": cheque.height,
                     "cumulative_micro": int(round(cheque.cumulative_amount_usdc * 1e6)),
                     "amount_micro": amount_micro, "purpose": purpose,
@@ -224,21 +244,27 @@ class CausalAgentKit:
         summary = mesh.net_all()
 
         # 3. Treasury fee: 0.01% of bilaterally netted (mutually extinguished)
-        #    volume, charged to the net debtor of each channel.
+        #    volume, charged to the net debtor of each channel. The base is
+        #    delta-based (lifetime mutual volume minus already-charged) so
+        #    repeated reconciles never double-book.
         fee_booked = 0
+        netting_volume = 0
         for counterparty, st in self._channels.items():
-            mutual = min(st.paid_micro, st.received_micro)
-            netting_volume += mutual
-            fee = mutual * TREASURY_FEE_NUM // TREASURY_FEE_DEN
-            if fee == 0:
-                continue
-            if st.outstanding_micro > 0:
-                debtor, creditor = self.master.public_key, counterparty
-            else:
-                debtor, creditor = counterparty, self.master.public_key
-            mesh.add_obligation(debtor, self.treasury_node, fee)
-            self.treasury_fee_micro += fee
-            fee_booked += fee
+            netting_volume += min(st.paid_micro, st.received_micro)
+        chargeable = netting_volume - self._fee_charged_netting_micro
+        if chargeable > 0:
+            fee_total = chargeable * TREASURY_FEE_NUM // TREASURY_FEE_DEN
+            debtors = [self.master.public_key if st.outstanding_micro > 0 else cp
+                       for cp, st in self._channels.items()]
+            if fee_total > 0 and debtors:
+                base, remainder = divmod(fee_total, len(debtors))
+                for i, debtor in enumerate(debtors):
+                    share = base + (1 if i < remainder else 0)
+                    if share > 0:
+                        mesh.add_obligation(debtor, self.treasury_node, share)
+                        self.treasury_fee_micro += share
+                        fee_booked += share
+            self._fee_charged_netting_micro += chargeable
 
         # 4. Execute residual net positions as real cheques (house model).
         executed = 0

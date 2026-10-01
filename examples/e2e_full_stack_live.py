@@ -214,7 +214,8 @@ def run(with_c_gate: bool = True) -> dict:
     print(f"netting compression    : {summary.compression_ratio:.4%} of gross volume")
     print(f"treasury fee (0.01%)   : {_fmt_usdc(summary.treasury_fee_micro)}")
     assert abs(sum(mesh.all_net_balances().values())) == 0, "Kirchhoff invariant violated"
-    print(f"Kirchhoff invariant    : sum(net balances) == 0 EXACT")
+    print(f"conservation identity : sum(net balances) == 0 (structural); "
+          f"minimality enforced in net_all (residual == sum|net|/2)")
 
     settlements = mesh.generate_clearing_settlements()
     wallet_by_pk = {w.public_key: w for w in active_wallets + vendor_wallets}
@@ -236,6 +237,8 @@ def run(with_c_gate: bool = True) -> dict:
         # Settlement-epoch boundary: the netting cycle just extinguished every
         # pre-epoch obligation of this channel, so the continuity marker
         # (accumulated cumulativeAmt) restarts from zero for the clearing leg.
+        # NOTE: in production this reset corresponds to a vendor-signed epoch
+        # commit; locally we hold the vendor node and apply it directly.
         node._ctx.accumulated_amount = 0
         # Static sort key: each payer settles exactly one cheque per payee, so
         # (payer cumulative now + this amount) is the post-cheque cumulative;
@@ -332,16 +335,17 @@ def run(with_c_gate: bool = True) -> dict:
     timing_hound.close()
     print(f"Python FFI path        : {ffi_ns_per_op:,.0f} ns/op "
           f"(sign + inspect, ctypes overhead included, {N_TIMING:,} iterations)")
-    print(f"C-level 35ns gate      : delegated to make test-bloodhound (bare-metal build)")
+    print(f"C-level gates          : make test-bloodhound (ASan suite) + "
+          f"test-bloodhound-strict (bare-metal 35ns invariant)")
     gate_rc = None
     if with_c_gate:
-        proc = subprocess.run(["make", "test-bloodhound"], cwd=_ROOT,
-                              capture_output=True, text=True, timeout=300)
-        gate_rc = proc.returncode
-        assert gate_rc == 0, f"test-bloodhound failed (rc={gate_rc}):\n{proc.stdout[-2000:]}"
-        last_lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()][-3:]
-        for ln in last_lines:
-            print(f"  | {ln}")
+        for target in ("test-bloodhound", "test-bloodhound-strict"):
+            proc = subprocess.run(["make", target], cwd=_ROOT,
+                                  capture_output=True, text=True, timeout=300)
+            assert proc.returncode == 0, f"{target} failed (rc={proc.returncode}):\n{proc.stdout[-2000:]}"
+            last_lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()][-2:]
+            for ln in last_lines:
+                print(f"  [{target}] {ln}")
     stats["ffi_ns_per_op"] = ffi_ns_per_op
     stats["c_gate_rc"] = gate_rc
 

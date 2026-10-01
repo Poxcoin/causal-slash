@@ -21,6 +21,8 @@ CSLS_PKT_ACK = 0x02
 CSLS_PKT_FRAUD = 0x03
 
 CSLS_OK = 0
+CSLS_ERR_INVALID_PACKET = -10
+CSLS_ERR_DECREASING_AMT = -11
 CSLS_ERR_EXPOSURE_CAP = -12
 CSLS_ERR_FRAUD = -20
 CSLS_ERR_REPLAY = -21
@@ -252,6 +254,10 @@ class CausalAgentWallet:
         v_bytes = _parse_bytes(vendor_pk, 33)
         v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
         delta_micro = int(round(amount_usdc * 1e6))
+        # u64 guard: ctypes would silently truncate delta_micro >= 2**64 and
+        # corrupt the cumulative stream (engine's own overflow check comes too late).
+        if not 0 < delta_micro < 2 ** 64:
+            raise ValueError(f"amount out of u64 micro-USDC range: {amount_usdc}")
 
         c_pkt = _CslsChequePkt()
         res = _LIB.csls_agent_sign_cheque(
@@ -355,6 +361,8 @@ class CausalVendorNode:
             )
 
         error_map = {
+            CSLS_ERR_INVALID_PACKET: "INVALID_PACKET_FRAMING",
+            CSLS_ERR_DECREASING_AMT: "DECREASING_CUMULATIVE_AMT (payer global cumulative below vendor's last accepted)",
             CSLS_ERR_EXPOSURE_CAP: "EXPOSURE_BUFFER_EXCEEDED: Local credit limit reached",
             CSLS_ERR_REPLAY: "REPLAY_PACKET_IGNORED",
             CSLS_ERR_OUT_OF_ORDER: "OUT_OF_ORDER_OR_OLD_HEIGHT",

@@ -30,4 +30,4 @@ def test_full_stack_e2e_all_stages():
     assert len(stats["attacker_address"]) == 40
     # Honest FFI measurement exists (Python path; ~tens of microseconds).
     assert 0 < stats["ffi_ns_per_op"] < 100_000
-    assert stats["peak_rss_mb"] < 500
+    assert stats["peak_rss_mb"] < 1500

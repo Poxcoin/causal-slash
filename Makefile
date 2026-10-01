@@ -67,6 +67,12 @@ test-bloodhound:
 	./test_schnorr_bloodhound
 	rm -f test_schnorr_bloodhound
 
+# Strict bare-metal gate: enforces the 35ns interception invariant (no sanitizer).
+test-bloodhound-strict:
+	$(CC) -O3 -Wall -Wextra -pthread -DBLOODHOUND_PERF_STRICT -DCSLS_NO_MAIN -Isrc test/c/test_schnorr_bloodhound.c src/schnorr_bloodhound.c src/causal_daemon.c $(LDFLAGS) -o test_schnorr_bloodhound_strict
+	./test_schnorr_bloodhound_strict
+	rm -f test_schnorr_bloodhound_strict
+
 bloodhound_daemon:
 	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -DBLOODHOUND_MAIN src/schnorr_bloodhound.c src/causal_daemon.c $(LDFLAGS) -o bloodhound_daemon
 

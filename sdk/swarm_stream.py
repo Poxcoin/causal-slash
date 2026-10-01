@@ -48,6 +48,7 @@ class StreamCoordinator:
     payee_nodes: Dict[bytes, CausalVendorNode] = field(default_factory=dict)
     ledger: Dict[Tuple[bytes, bytes], int] = field(default_factory=dict)
     channel_stats: Dict[Tuple[bytes, bytes], ChannelStats] = field(default_factory=dict)
+    _last_cum_by_payer: Dict[bytes, int] = field(default_factory=dict)
     next_height: int = 1
     total_streamed_micro: int = 0
     total_cheques: int = 0
@@ -109,6 +110,8 @@ class StreamCoordinator:
                 f"code={result.status_code} msg={result.error_message}")
 
         payer_pk, payee_pk = payer_wallet.public_key, payee_node.public_key
+        self._last_cum_by_payer[payer_pk] = int.from_bytes(
+            cheque.raw_packet[79:87], "little")
         key = (payer_pk, payee_pk)
         stats = self.channel_stats.setdefault(key, ChannelStats())
         stats.paid_micro += amount_micro
@@ -136,32 +139,49 @@ class StreamCoordinator:
         """
         if lane_height < self.next_height:
             raise ValueError("lane height violates global monotonicity")
-        payer_wallet._ctx.height = lane_height - 1
+        if lane_height < payer_wallet._ctx.height:
+            raise ValueError("lane height would rewind payer")
+        # Engine post-increments: parking at `lane_height` signs exactly there.
+        payer_wallet._ctx.height = lane_height
         cheque = payer_wallet.sign_cheque(vendor_pk, amount_micro / 1e6)
         if cheque.height != lane_height:
             raise AssertionError("engine height mismatch")
         self.next_height = lane_height + 1
         return cheque
 
-    def deliver(self, payee_node: CausalVendorNode, cheque: Cheque, amount_micro: int):
-        """Delivers a previously signed (offline) cheque; records on acceptance."""
+    def deliver(self, payee_node: CausalVendorNode, cheque: Cheque,
+                amount_micro: Optional[int] = None):
+        """
+        Delivers a previously signed (offline) cheque; records on acceptance.
+        The ledger amount is DERIVED from the cheque's own cumulative delta
+        (never trusted from the caller), keeping the Kirchhoff graph honest.
+        """
         result = payee_node.process_cheque(cheque)
         if not result.accepted:
             raise ChequeStatusError(
                 f"offline cheque h={cheque.height} rejected: "
                 f"code={result.status_code} msg={result.error_message}")
+        raw_cum = int.from_bytes(cheque.raw_packet[79:87], "little")
+        last = self._last_cum_by_payer.get(cheque.agent_pk, 0)
+        derived_amount = raw_cum - last
+        if derived_amount <= 0:
+            raise ValueError("offline cheque cumulative delta must be positive")
+        if amount_micro is not None and amount_micro != derived_amount:
+            raise ValueError(
+                f"declared amount {amount_micro} != cheque cumulative delta {derived_amount}")
+        self._last_cum_by_payer[cheque.agent_pk] = raw_cum
         key = (cheque.agent_pk, payee_node.public_key)
         stats = self.channel_stats.setdefault(key, ChannelStats())
-        stats.paid_micro += amount_micro
+        stats.paid_micro += derived_amount
         stats.cheques_sent += 1
         stats.last_height = cheque.height
         recv_stats = self.channel_stats.setdefault((payee_node.public_key, cheque.agent_pk),
                                                    ChannelStats())
-        recv_stats.received_micro += amount_micro
+        recv_stats.received_micro += derived_amount
         recv_stats.cheques_received += 1
         recv_stats.last_height = cheque.height
-        self.ledger[key] = self.ledger.get(key, 0) + amount_micro
-        self.total_streamed_micro += amount_micro
+        self.ledger[key] = self.ledger.get(key, 0) + derived_amount
+        self.total_streamed_micro += derived_amount
         self.total_cheques += 1
         return result
 
