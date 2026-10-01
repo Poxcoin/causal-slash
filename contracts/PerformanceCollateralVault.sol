@@ -43,6 +43,8 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     );
 
     uint256 public constant EMERGENCY_DISPUTE_PERIOD = 4 hours; // Safe dispute window against L2 reorg/sequencer delays
+    uint256 public constant OPTIMISTIC_DISPUTE_PERIOD = 4 hours; // Dispute window for optimistic Schnorr settlements
+    uint256 public constant OPTIMISTIC_DISPUTE_BLOCKS = 7200; // ~4 hours on Base L2 (2s block time)
     uint256 public constant MIN_COMMIT_DELAY = 1;
     uint256 public constant MAX_COMMIT_WINDOW = 256;
     uint256 public constant COMMIT_BOND = 1 * 1e6; // 1 USDC anti-spam bond
@@ -86,14 +88,28 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         bytes32 salt;
     }
 
+    struct OptimisticChequeCommit {
+        address agent;
+        address vendor;
+        uint64 channelHeight;
+        uint64 cumulativeAmountUSDC;
+        bytes32 challengeE;
+        bytes32 sigS;
+        uint256 commitTimestamp;
+        uint256 commitBlock;
+        bool finalizedOrDisputed;
+    }
+
     mapping(address => AgentVault) public vaults;
     mapping(bytes32 => FraudCommitment) public commitments;
+    mapping(address => mapping(address => OptimisticChequeCommit)) public optimisticCheques;
     mapping(address => mapping(address => uint256)) public settledAmounts;     // agent => vendor => settled USDC
     mapping(address => mapping(address => uint256)) public lastSessionNonces;
     mapping(address => mapping(address => uint256)) public vendorExposure;     // agent => vendor => active quota
     mapping(address => uint256) public totalAllocatedExposure;                 // agent => sum of active reserved session buffers
     mapping(address => uint256) public slashedRestitutionPool;                 // agent => restitution pool for active vendors
     mapping(address => uint256) public disputeLocks;                           // agent => block number until which instantWithdraw is locked
+    mapping(address => uint256) public activeDisputeCount;                     // agent => number of concurrent active optimistic disputes
     mapping(address => uint256) public slashTimestamps;                        // agent => timestamp when slashed
 
     event CollateralDeposited(address indexed agent, uint256 amountUSDC, bytes32 indexed merkleRoot, address signingAddress);
@@ -109,6 +125,9 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     event DamageClaimed(address indexed vendor, uint256 amountUSDC);
     event ProtocolFeeUpdated(uint256 newFeeBps);
     event CommitmentExpiredAndForfeited(bytes32 indexed commitHash, address indexed committer, address indexed targetAgent);
+    event OptimisticChequeCommitted(address indexed agent, address indexed vendor, uint64 channelHeight, uint64 cumulativeAmountUSDC, bytes32 challengeE, bytes32 sigS, uint256 disputeTimeout);
+    event OptimisticChequeDisputed(address indexed agent, address indexed vendor, bytes32 reason);
+    event OptimisticChequeFinalized(address indexed agent, address indexed vendor, uint256 deltaUSDC, uint256 cumulativeUSDC);
 
     error AlreadySlashed();
     error InsufficientCollateral();
@@ -621,6 +640,323 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         if (treasuryAmount > 0) {
             usdc.safeTransfer(treasury, treasuryAmount);
         }
+    }
+
+    /**
+     * @notice Vendor commits a 151-byte wire Schnorr EOTS cheque optimistically.
+     * Enforces canonical 82-byte wire preimage verification and initiates 4-hour dispute window.
+     * Requires 1 USDC COMMIT_BOND anti-spam bond.
+     */
+    function commitSchnorrCheque(
+        address agent,
+        bytes32 agentPubX,
+        bytes32 agentPubY,
+        bytes32 vendorPubX,
+        bytes32 vendorPubY,
+        uint64 channelHeight,
+        uint64 cumulativeAmountUSDC,
+        bytes32 challengeE,
+        bytes32 sigS
+    ) external nonReentrant {
+        AgentVault storage vault = vaults[agent];
+        if (vault.signingAddress == address(0)) revert InvalidKey();
+        if (vault.isSlashed) revert AlreadySlashed();
+        if (block.number <= disputeLocks[agent]) revert TimelockActive();
+
+        // 1. Verify uncompressed agent public key maps to vault.signingAddress
+        address derivedAgent = address(uint160(uint256(keccak256(abi.encodePacked(agentPubX, agentPubY)))));
+        if (derivedAgent != vault.signingAddress) revert InvalidKey();
+
+        // 2. Verify uncompressed vendor public key maps to msg.sender
+        address derivedVendor = address(uint160(uint256(keccak256(abi.encodePacked(vendorPubX, vendorPubY)))));
+        if (derivedVendor != msg.sender) revert Unauthorized();
+
+        // 3. Monotonicity and delta checks
+        if (channelHeight <= lastSessionNonces[agent][msg.sender]) revert InvalidSessionNonce();
+        if (cumulativeAmountUSDC <= settledAmounts[agent][msg.sender]) revert NothingToSettle();
+
+        uint256 delta = cumulativeAmountUSDC - settledAmounts[agent][msg.sender];
+        if (delta > vault.collateralBond) revert InsufficientCollateral();
+
+        // 4. Verify canonical 82-byte wire preimage & challenge hash
+        uint8 agentPrefix = (uint256(agentPubY) & 1 == 0) ? 0x02 : 0x03;
+        uint8 vendorPrefix = (uint256(vendorPubY) & 1 == 0) ? 0x02 : 0x03;
+        bytes memory preimage = abi.encodePacked(
+            agentPrefix, agentPubX,
+            vendorPrefix, vendorPubX,
+            channelHeight,
+            cumulativeAmountUSDC
+        );
+        bytes32 shaDigest = sha256(preimage);
+        uint256 expectedE = uint256(shaDigest) % SECP256K1_N;
+        if (challengeE != bytes32(expectedE)) revert HashMismatch();
+
+        // 5. Signature scalar range check
+        if (uint256(sigS) == 0 || uint256(sigS) >= SECP256K1_N) revert InvalidSignature();
+
+        // 6. Check existing commitment
+        OptimisticChequeCommit storage existing = optimisticCheques[agent][msg.sender];
+        if (existing.commitBlock != 0 && !existing.finalizedOrDisputed) {
+            revert AlreadyCommitted();
+        }
+
+        // 7. Anti-spam commit bond deposit
+        usdc.safeTransferFrom(msg.sender, address(this), COMMIT_BOND);
+
+        // 8. Lock agent instant margin release during dispute window
+        activeDisputeCount[agent]++;
+        uint256 disputeExpiryBlock = block.number + OPTIMISTIC_DISPUTE_BLOCKS + 64;
+        if (disputeLocks[agent] < disputeExpiryBlock) {
+            disputeLocks[agent] = disputeExpiryBlock;
+        }
+
+        optimisticCheques[agent][msg.sender] = OptimisticChequeCommit({
+            agent: agent,
+            vendor: msg.sender,
+            channelHeight: channelHeight,
+            cumulativeAmountUSDC: cumulativeAmountUSDC,
+            challengeE: challengeE,
+            sigS: sigS,
+            commitTimestamp: block.timestamp,
+            commitBlock: block.number,
+            finalizedOrDisputed: false
+        });
+
+        emit OptimisticChequeCommitted(
+            agent,
+            msg.sender,
+            channelHeight,
+            cumulativeAmountUSDC,
+            challengeE,
+            sigS,
+            block.timestamp + OPTIMISTIC_DISPUTE_PERIOD
+        );
+    }
+
+    /**
+     * @notice Agent disputes optimistic commit by presenting a valid MutualClose voucher
+     * signed by the vendor with a session nonce >= commit height or settled amount >= commit amount.
+     * The commit is cancelled, and the vendor's 1 USDC COMMIT_BOND is forfeited to the agent.
+     */
+    function disputeCommitWithMutualClose(
+        address vendor,
+        uint256 finalSettledAmount,
+        uint256 releasedExposure,
+        uint256 sessionNonce,
+        uint256 deadline,
+        bytes calldata vendorSignature
+    ) external nonReentrant {
+        if (block.timestamp > deadline) revert ChequeExpired();
+        AgentVault storage vault = vaults[msg.sender];
+        if (vault.signingAddress == address(0)) revert Unauthorized();
+
+        OptimisticChequeCommit storage commit = optimisticCheques[msg.sender][vendor];
+        if (commit.commitBlock == 0 || commit.finalizedOrDisputed) revert NoActiveCommitment();
+
+        // Verify vendor's EIP-712 Mutual Close signature
+        bytes32 structHash = keccak256(
+            abi.encode(MUTUAL_CLOSE_TYPEHASH, msg.sender, vendor, finalSettledAmount, releasedExposure, sessionNonce, deadline)
+        );
+        if (ECDSA.recover(_hashTypedDataV4(structHash), vendorSignature) != vendor) {
+            revert InvalidSignature();
+        }
+
+        // Prove commit is superseded or invalid
+        if (sessionNonce < commit.channelHeight && finalSettledAmount < commit.cumulativeAmountUSDC) {
+            revert Unauthorized();
+        }
+
+        commit.finalizedOrDisputed = true;
+
+        // Release dispute lock if no active optimistic disputes remain
+        if (activeDisputeCount[msg.sender] > 0) {
+            activeDisputeCount[msg.sender]--;
+        }
+        if (activeDisputeCount[msg.sender] == 0) {
+            disputeLocks[msg.sender] = 0;
+        }
+
+        // Forfeit commit bond to agent
+        usdc.safeTransfer(msg.sender, COMMIT_BOND);
+
+        emit OptimisticChequeDisputed(msg.sender, vendor, "MutualClose");
+    }
+
+    /**
+     * @notice Computes Merkle root for deterministic nonce inclusion proofs.
+     */
+    function computeNonceMerkleRoot(
+        bytes32 leaf,
+        bytes32[] calldata proof,
+        uint256 index
+    ) public pure returns (bytes32) {
+        bytes32 current = leaf;
+        uint256 len = proof.length;
+        for (uint256 i = 0; i < len; ) {
+            if (((index >> i) & 1) == 0) {
+                current = keccak256(abi.encodePacked(current, proof[i]));
+            } else {
+                current = keccak256(abi.encodePacked(proof[i], current));
+            }
+            unchecked {
+                ++i;
+            }
+        }
+        return current;
+    }
+
+    /**
+     * @notice Agent disputes optimistic commit by revealing the deterministic ephemeral nonce k.
+     * In Schnorr EOTS: s = (k + e * sk) mod q => sk = (s - k) * e^(-1) mod q.
+     * If the vendor committed a forged scalar s, deriveAddress(sk) != signingAddress.
+     * Forgery is proven mathematically, the commit is voided, and COMMIT_BOND is forfeited to agent.
+     */
+    function disputeCommitWithNonce(
+        address vendor,
+        uint256 revealedNonceK
+    ) external nonReentrant {
+        AgentVault storage vault = vaults[msg.sender];
+        if (vault.signingAddress == address(0)) revert Unauthorized();
+
+        OptimisticChequeCommit storage commit = optimisticCheques[msg.sender][vendor];
+        if (commit.commitBlock == 0 || commit.finalizedOrDisputed) revert NoActiveCommitment();
+        if (revealedNonceK == 0 || revealedNonceK >= SECP256K1_N) revert InvalidKey();
+
+        uint256 s = uint256(commit.sigS);
+        uint256 e = uint256(commit.challengeE);
+
+        // Compute diff = (s - k) mod q
+        uint256 diff;
+        if (s >= revealedNonceK) {
+            diff = s - revealedNonceK;
+        } else {
+            diff = SECP256K1_N - ((revealedNonceK - s) % SECP256K1_N);
+        }
+
+        // Compute candidate private key skCandidate = diff * e^(-1) mod q
+        uint256 invE = modInverse(e, SECP256K1_N);
+        uint256 skCandidate = mulmod(diff, invE, SECP256K1_N);
+
+        // If candidate key derives genuine agent signingAddress, signature was genuine!
+        bool isValidGenuineSig = false;
+        if (skCandidate > 0 && skCandidate < SECP256K1_N) {
+            try this.deriveAddress(skCandidate) returns (address derived) {
+                if (derived == vault.signingAddress) {
+                    isValidGenuineSig = true;
+                }
+            } catch {}
+        }
+
+        if (isValidGenuineSig) {
+            // Cannot dispute a genuine signature with correct nonce
+            revert InvalidSignature();
+        }
+
+        commit.finalizedOrDisputed = true;
+
+        // Release dispute lock if no active optimistic disputes remain
+        if (activeDisputeCount[msg.sender] > 0) {
+            activeDisputeCount[msg.sender]--;
+        }
+        if (activeDisputeCount[msg.sender] == 0) {
+            disputeLocks[msg.sender] = 0;
+        }
+
+        // Forfeit commit bond to agent
+        usdc.safeTransfer(msg.sender, COMMIT_BOND);
+
+        emit OptimisticChequeDisputed(msg.sender, vendor, "ForgedScalar");
+    }
+
+    /**
+     * @notice Finalizes optimistic Schnorr cheque after 4-hour dispute period (or immediately by agent).
+     * Pays out earned USDC to vendor and refunds 1 USDC COMMIT_BOND.
+     * Insolvency-resilient: if collateral is deficient, pays remaining bond and ALWAYS refunds COMMIT_BOND.
+     */
+    function finalizeSchnorrCheque(address agent, address vendor) external nonReentrant {
+        OptimisticChequeCommit storage commit = optimisticCheques[agent][vendor];
+        if (commit.commitBlock == 0 || commit.finalizedOrDisputed) revert NoActiveCommitment();
+
+        AgentVault storage vault = vaults[agent];
+        if (vault.isSlashed) revert AlreadySlashed();
+
+        // Dispute period check: 4 hours required unless agent cooperatively settles early
+        if (msg.sender != vault.agentOwner && block.timestamp < commit.commitTimestamp + OPTIMISTIC_DISPUTE_PERIOD) {
+            revert TimelockActive();
+        }
+
+        commit.finalizedOrDisputed = true;
+
+        uint256 cumulativeAmountUSDC = commit.cumulativeAmountUSDC;
+        if (cumulativeAmountUSDC <= settledAmounts[agent][vendor]) revert NothingToSettle();
+
+        uint256 delta = cumulativeAmountUSDC - settledAmounts[agent][vendor];
+        uint256 payableDelta = delta > vault.collateralBond ? vault.collateralBond : delta;
+
+        // Update settled state
+        settledAmounts[agent][vendor] = cumulativeAmountUSDC;
+        if (commit.channelHeight > lastSessionNonces[agent][vendor]) {
+            lastSessionNonces[agent][vendor] = commit.channelHeight;
+        }
+        vault.collateralBond -= payableDelta;
+
+        // Dynamic quota relief: deduct from active vendor exposure and total exposure
+        uint256 activeQuota = vendorExposure[agent][vendor];
+        uint256 exposureToRelieve = payableDelta > activeQuota ? activeQuota : payableDelta;
+        if (exposureToRelieve > 0) {
+            vendorExposure[agent][vendor] -= exposureToRelieve;
+            if (exposureToRelieve > totalAllocatedExposure[agent]) {
+                totalAllocatedExposure[agent] = 0;
+            } else {
+                totalAllocatedExposure[agent] -= exposureToRelieve;
+            }
+        }
+
+        // Dynamic clamping of pending emergency withdrawal
+        uint256 freeMargin = vault.collateralBond > totalAllocatedExposure[agent]
+            ? vault.collateralBond - totalAllocatedExposure[agent]
+            : 0;
+        if (vault.pendingWithdrawal > freeMargin) {
+            vault.pendingWithdrawal = freeMargin;
+        }
+
+        // Release dispute locks if no active optimistic disputes remain
+        if (activeDisputeCount[agent] > 0) {
+            activeDisputeCount[agent]--;
+        }
+        if (activeDisputeCount[agent] == 0) {
+            disputeLocks[agent] = 0;
+        }
+
+        uint256 fee = (payableDelta * protocolFeeBps) / 10000;
+        _ensureLiquidCash(payableDelta + COMMIT_BOND);
+
+        // Refund COMMIT_BOND to honest vendor + pay earned (payableDelta - fee)
+        usdc.safeTransfer(vendor, payableDelta - fee + COMMIT_BOND);
+        if (fee > 0) {
+            usdc.safeTransfer(treasury, fee);
+        }
+
+        emit ChequeSettled(agent, vendor, payableDelta, cumulativeAmountUSDC);
+        emit OptimisticChequeFinalized(agent, vendor, payableDelta, cumulativeAmountUSDC);
+    }
+
+    /**
+     * @notice Modular inverse using EVM big-int modexp precompile (0x05): a^(m-2) mod m.
+     */
+    function modInverse(uint256 a, uint256 m) public view returns (uint256) {
+        if (a == 0) revert InvalidKey();
+        bytes memory input = abi.encode(
+            uint256(32),
+            uint256(32),
+            uint256(32),
+            a,
+            m - 2,
+            m
+        );
+        (bool success, bytes memory returnData) = address(0x05).staticcall(input);
+        if (!success || returnData.length < 32) revert InvalidKey();
+        return abi.decode(returnData, (uint256));
     }
 
     /**

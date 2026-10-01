@@ -772,4 +772,272 @@ contract PerformanceCollateralVaultTest is Test {
         vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
         vault.finalizeEmergencyWithdrawal();
     }
+
+    function _generateSchnorrCheque(
+        uint64 channelHeight,
+        uint64 cumulativeAmountUSDC,
+        uint256 nonceK
+    ) internal view returns (
+        bytes32 agentPubX,
+        bytes32 agentPubY,
+        bytes32 vendorPubX,
+        bytes32 vendorPubY,
+        bytes32 challengeE,
+        bytes32 sigS
+    ) {
+        agentPubX = 0x5d45cb81aa765d69ca52e3869491ecf0e8fdf6a63d64e65b5213647ee4973ae5;
+        agentPubY = 0xa4a4a32b51a76d77773517e7c103a7dcfdab36fe3cafa2bdb17f82b12fd019db;
+        vendorPubX = 0x71550e6c83a9381f35c568d1a80e11fa3e0efc97dfd0e0f17492a2edb64c37a9;
+        vendorPubY = 0xb9043eebf5c3fece2bc13ccd260914ef4a220a55782ab6f6744bcd7aa4d5e2d6;
+
+        uint8 agentPrefix = 0x03;
+        uint8 vendorPrefix = 0x02;
+        bytes memory preimage = abi.encodePacked(
+            agentPrefix, agentPubX,
+            vendorPrefix, vendorPubX,
+            channelHeight,
+            cumulativeAmountUSDC
+        );
+        uint256 N = vault.SECP256K1_N();
+        challengeE = bytes32(uint256(sha256(preimage)) % N);
+        uint256 s = addmod(nonceK, mulmod(uint256(challengeE), agentSigningPk, N), N);
+        sigS = bytes32(s);
+    }
+
+    function test_OptimisticSchnorr_HappyPath_AfterDisputePeriod() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        vault.allocateSessionExposure(vendor, 5 * 1e6);
+        vm.stopPrank();
+
+        // Mint USDC to vendor for commit bond
+        vm.prank(deployer);
+        usdc.mint(vendor, 10 * 1e6);
+        vm.prank(vendor);
+        usdc.approve(address(vault), type(uint256).max);
+
+        uint256 nonceK = 0x123456789ABCDEF;
+        (
+            bytes32 aPubX, bytes32 aPubY,
+            bytes32 vPubX, bytes32 vPubY,
+            bytes32 e, bytes32 s
+        ) = _generateSchnorrCheque(1, 2 * 1e6, nonceK);
+
+        // Vendor commits cheque
+        vm.prank(vendor);
+        vault.commitSchnorrCheque(agentOwner, aPubX, aPubY, vPubX, vPubY, 1, 2 * 1e6, e, s);
+
+        // Verify 1 USDC bond deducted from vendor
+        assertEq(usdc.balanceOf(vendor), 9 * 1e6);
+
+        // Agent cannot instantWithdraw during dispute lock
+        vm.prank(agentOwner);
+        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
+        vault.instantWithdraw(1 * 1e6);
+
+        // Cannot finalize before 4 hours
+        vm.warp(block.timestamp + 3 hours);
+        vm.prank(vendor);
+        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
+        vault.finalizeSchnorrCheque(agentOwner, vendor);
+
+        // Warp past 4 hours dispute period
+        vm.warp(block.timestamp + 2 hours);
+        vm.prank(vendor);
+        vault.finalizeSchnorrCheque(agentOwner, vendor);
+
+        // Vendor received 2 USDC earned + 1 USDC bond refund = 12 USDC total
+        assertEq(usdc.balanceOf(vendor), 12 * 1e6);
+        (uint256 remainingBond,,,,,,) = vault.vaults(agentOwner);
+        assertEq(remainingBond, 8 * 1e6);
+        assertEq(vault.settledAmounts(agentOwner, vendor), 2 * 1e6);
+        assertEq(vault.lastSessionNonces(agentOwner, vendor), 1);
+        // Quota relieved: 5 USDC - 2 USDC = 3 USDC
+        assertEq(vault.vendorExposure(agentOwner, vendor), 3 * 1e6);
+    }
+
+    function test_OptimisticSchnorr_CooperativeImmediateConfirmation() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        vault.allocateSessionExposure(vendor, 5 * 1e6);
+        vm.stopPrank();
+
+        vm.prank(deployer);
+        usdc.mint(vendor, 10 * 1e6);
+        vm.prank(vendor);
+        usdc.approve(address(vault), type(uint256).max);
+
+        (
+            bytes32 aPubX, bytes32 aPubY,
+            bytes32 vPubX, bytes32 vPubY,
+            bytes32 e, bytes32 s
+        ) = _generateSchnorrCheque(1, 4 * 1e6, 0xABCDEF112233);
+
+        vm.prank(vendor);
+        vault.commitSchnorrCheque(agentOwner, aPubX, aPubY, vPubX, vPubY, 1, 4 * 1e6, e, s);
+
+        // Agent cooperatively finalizes immediately in 0 SECONDS
+        vm.prank(agentOwner);
+        vault.finalizeSchnorrCheque(agentOwner, vendor);
+
+        assertEq(usdc.balanceOf(vendor), 14 * 1e6); // 9 USDC + 4 USDC delta + 1 USDC bond refund
+        assertEq(vault.settledAmounts(agentOwner, vendor), 4 * 1e6);
+    }
+
+    function test_OptimisticSchnorr_DisputeWithMutualClose_ForfeitsVendorBond() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        vault.allocateSessionExposure(vendor, 5 * 1e6);
+        vm.stopPrank();
+
+        vm.prank(deployer);
+        usdc.mint(vendor, 10 * 1e6);
+        vm.prank(vendor);
+        usdc.approve(address(vault), type(uint256).max);
+
+        (
+            bytes32 aPubX, bytes32 aPubY,
+            bytes32 vPubX, bytes32 vPubY,
+            bytes32 e, bytes32 s
+        ) = _generateSchnorrCheque(1, 2 * 1e6, 0x111);
+
+        vm.prank(vendor);
+        vault.commitSchnorrCheque(agentOwner, aPubX, aPubY, vPubX, vPubY, 1, 2 * 1e6, e, s);
+
+        // Agent possesses vendor-signed MutualClose at higher nonce 2
+        bytes32 structHash = keccak256(
+            abi.encode(MUTUAL_CLOSE_TYPEHASH, agentOwner, vendor, 2 * 1e6, 0, 2, block.timestamp + 1000)
+        );
+        (uint8 v, bytes32 r, bytes32 sigS_ec) = vm.sign(vendorPk, vault.hashTypedDataV4(structHash));
+        bytes memory vendorSig = abi.encodePacked(r, sigS_ec, v);
+
+        uint256 agentBalBefore = usdc.balanceOf(agentOwner);
+
+        // Agent disputes commit with MutualClose
+        vm.prank(agentOwner);
+        vault.disputeCommitWithMutualClose(vendor, 2 * 1e6, 0, 2, block.timestamp + 1000, vendorSig);
+
+        // Vendor's 1 USDC commit bond forfeited to agentOwner
+        assertEq(usdc.balanceOf(agentOwner) - agentBalBefore, 1 * 1e6);
+
+        // Finalize now reverts (commitment was disputed/cancelled)
+        vm.warp(block.timestamp + 5 hours);
+        vm.prank(vendor);
+        vm.expectRevert(PerformanceCollateralVault.NoActiveCommitment.selector);
+        vault.finalizeSchnorrCheque(agentOwner, vendor);
+    }
+
+    function test_OptimisticSchnorr_DisputeForgedScalarWithNonce_ForfeitsVendorBond() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        vault.allocateSessionExposure(vendor, 5 * 1e6);
+        vm.stopPrank();
+
+        vm.prank(deployer);
+        usdc.mint(vendor, 10 * 1e6);
+        vm.prank(vendor);
+        usdc.approve(address(vault), type(uint256).max);
+
+        uint256 realNonceK = 0x55555555;
+        (
+            bytes32 aPubX, bytes32 aPubY,
+            bytes32 vPubX, bytes32 vPubY,
+            bytes32 e,
+        ) = _generateSchnorrCheque(1, 3 * 1e6, realNonceK);
+
+        // Rogue vendor commits FORGED scalar s
+        bytes32 forgedS = bytes32(uint256(0x999999999999));
+        vm.prank(vendor);
+        vault.commitSchnorrCheque(agentOwner, aPubX, aPubY, vPubX, vPubY, 1, 3 * 1e6, e, forgedS);
+
+        uint256 agentBalBefore = usdc.balanceOf(agentOwner);
+
+        // Agent reveals nonce k to mathematically prove scalar forgery
+        vm.prank(agentOwner);
+        vault.disputeCommitWithNonce(vendor, realNonceK);
+
+        // Bond forfeited to agent as restitution
+        assertEq(usdc.balanceOf(agentOwner) - agentBalBefore, 1 * 1e6);
+    }
+
+    function test_OptimisticSchnorr_DisputeWithNonce_FailsIfSignatureGenuine() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        vault.allocateSessionExposure(vendor, 5 * 1e6);
+        vm.stopPrank();
+
+        vm.prank(deployer);
+        usdc.mint(vendor, 10 * 1e6);
+        vm.prank(vendor);
+        usdc.approve(address(vault), type(uint256).max);
+
+        uint256 realNonceK = 0x7777777;
+        (
+            bytes32 aPubX, bytes32 aPubY,
+            bytes32 vPubX, bytes32 vPubY,
+            bytes32 e, bytes32 s
+        ) = _generateSchnorrCheque(1, 3 * 1e6, realNonceK);
+
+        // Honest vendor commits genuine cheque
+        vm.prank(vendor);
+        vault.commitSchnorrCheque(agentOwner, aPubX, aPubY, vPubX, vPubY, 1, 3 * 1e6, e, s);
+
+        // Malicious agent attempts to falsely dispute valid signature
+        vm.prank(agentOwner);
+        vm.expectRevert(PerformanceCollateralVault.InvalidSignature.selector);
+        vault.disputeCommitWithNonce(vendor, realNonceK);
+    }
+
+    function test_OptimisticSchnorr_Monotonic_And_HashMismatch_Rejections() public {
+        vm.startPrank(agentOwner);
+        vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
+        vault.allocateSessionExposure(vendor, 5 * 1e6);
+        vm.stopPrank();
+
+        vm.prank(deployer);
+        usdc.mint(vendor, 10 * 1e6);
+        vm.prank(vendor);
+        usdc.approve(address(vault), type(uint256).max);
+
+        (
+            bytes32 aPubX, bytes32 aPubY,
+            bytes32 vPubX, bytes32 vPubY,
+            bytes32 e, bytes32 s
+        ) = _generateSchnorrCheque(1, 2 * 1e6, 0x123);
+
+        // 1. Corrupted challenge hash reverts with HashMismatch
+        vm.prank(vendor);
+        vm.expectRevert(PerformanceCollateralVault.HashMismatch.selector);
+        vault.commitSchnorrCheque(agentOwner, aPubX, aPubY, vPubX, vPubY, 1, 2 * 1e6, bytes32(uint256(e) ^ 0xFF), s);
+
+        // Settle a genuine cheque at height 5 for 3 USDC via ECDSA settleCheque
+        bytes32 structHash = keccak256(
+            abi.encode(CHEQUE_TYPEHASH, agentOwner, vendor, 3 * 1e6, 5, block.timestamp + 1000)
+        );
+        (uint8 v, bytes32 r, bytes32 sigS_ec) = vm.sign(agentSigningPk, vault.hashTypedDataV4(structHash));
+        vm.prank(vendor);
+        vault.settleCheque(agentOwner, 3 * 1e6, 5, block.timestamp + 1000, abi.encodePacked(r, sigS_ec, v));
+
+        // 2. Committing height <= lastSessionNonce (h=5) reverts with InvalidSessionNonce
+        (
+            bytes32 aPubX2, bytes32 aPubY2,
+            bytes32 vPubX2, bytes32 vPubY2,
+            bytes32 e2, bytes32 s2
+        ) = _generateSchnorrCheque(5, 4 * 1e6, 0x456);
+
+        vm.prank(vendor);
+        vm.expectRevert(PerformanceCollateralVault.InvalidSessionNonce.selector);
+        vault.commitSchnorrCheque(agentOwner, aPubX2, aPubY2, vPubX2, vPubY2, 5, 4 * 1e6, e2, s2);
+
+        // 3. Committing cumulativeAmount <= settledAmounts (3 USDC) reverts with NothingToSettle
+        (
+            bytes32 aPubX3, bytes32 aPubY3,
+            bytes32 vPubX3, bytes32 vPubY3,
+            bytes32 e3, bytes32 s3
+        ) = _generateSchnorrCheque(6, 2 * 1e6, 0x789);
+
+        vm.prank(vendor);
+        vm.expectRevert(PerformanceCollateralVault.NothingToSettle.selector);
+        vault.commitSchnorrCheque(agentOwner, aPubX3, aPubY3, vPubX3, vPubY3, 6, 2 * 1e6, e3, s3);
+    }
 }
