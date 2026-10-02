@@ -43,4 +43,6 @@ Thumbs.db
 .vscode/
 .idea/
 .agents/
+.v2c/
+bin/
 

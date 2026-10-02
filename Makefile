@@ -7,7 +7,14 @@ LDFLAGS ?= -lcrypto
 
 SRCS = src/causal_daemon.c src/causal_daemon.h
 
-all: causal_daemon libcausal_slash.so sdk/libbloodhound.so
+all: causal_daemon csls_daemon libcausal_slash.so sdk/libbloodhound.so
+
+# Standalone network daemon (Terminal 1): TCP frontend over the frozen core.
+# The daemon's CLI main is guarded by CSLS_DAEMON_NO_MAIN so the in-process
+# test suite can link the same translation unit without a main() collision.
+csls_daemon: src/causal_daemon.c src/causal_daemon.h src/csls_daemon.c src/csls_daemon.h
+	@mkdir -p bin
+	$(CC) $(CFLAGS) -DCSLS_NO_MAIN src/causal_daemon.c src/csls_daemon.c $(LDFLAGS) -o bin/csls_daemon
 
 # Shared Bloodhound watchtower for Python FFI (e2e_full_stack_live.py / sdk/bloodhound.py).
 # Compiled WITHOUT BLOODHOUND_MAIN; exposes bloodhound_new/inspect_packet + csls core.
@@ -95,7 +102,7 @@ bloodhound_daemon:
 	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -DBLOODHOUND_MAIN src/schnorr_bloodhound.c src/causal_daemon.c $(LDFLAGS) -o bloodhound_daemon
 
 clean:
-	rm -f causal_daemon bloodhound_daemon sdk/libcausal_slash.so sdk/libbloodhound.so libcausal_slash.so causal_daemon_asan causal_daemon_tsan test_* *.o
+	rm -f causal_daemon bloodhound_daemon sdk/libcausal_slash.so sdk/libbloodhound.so libcausal_slash.so causal_daemon_asan causal_daemon_tsan test_* *.o bin/csls_daemon
 
 # ThreadSanitizer gate (H1: data races; ASan does NOT catch races)
 # setarch -R disables ASLR for the process: TSan is incompatible with
@@ -116,6 +123,31 @@ test-poc-identity:
 	$(CC) -O2 -Isrc -DCSLS_NO_MAIN test/c/poc_identity_theft.c src/causal_daemon.c $(LDFLAGS) -o test_poc_identity
 	./test_poc_identity
 	rm -f test_poc_identity
+
+# ---- Network daemon (Terminal 1) gates -------------------------------------
+# Live loopback TCP: welcome + SESSION_INIT + 167B MAC cheques + replay/
+# double-sign severance + exposure cap + anti-Slowloris. Zero mocks.
+
+test-daemon: csls_daemon
+	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -DCSLS_DAEMON_NO_MAIN test/c/test_csls_daemon_net.c src/causal_daemon.c src/csls_daemon.c $(LDFLAGS) -o test_csls_daemon_net
+	./test_csls_daemon_net
+	rm -f test_csls_daemon_net
+	@echo "[SMOKE] standalone binary: boot + graceful SIGTERM"
+	@VSK=$$(printf '4%.0s' $$(seq 1 64)) ; \
+	 timeout --preserve-status -s TERM 1 ./bin/csls_daemon --port 19445 --vendor-sk $$VSK ; \
+	 rc=$$? ; \
+	 if [ $$rc -ne 0 ] ; then echo "[SMOKE] FAILED (rc=$$rc)" ; exit 1 ; fi ; \
+	 echo "[SMOKE] OK (rc=0)"
+
+test-daemon-asan:
+	$(CC) -O2 -fsanitize=address,undefined -g -Wall -Wextra -pthread -Isrc -DCSLS_NO_MAIN -DCSLS_DAEMON_NO_MAIN test/c/test_csls_daemon_net.c src/causal_daemon.c src/csls_daemon.c $(LDFLAGS) -o test_csls_daemon_net_asan
+	./test_csls_daemon_net_asan
+	rm -f test_csls_daemon_net_asan
+
+test-daemon-tsan:
+	$(CC) -O1 -g -fsanitize=thread -Wall -Wextra -pthread -Isrc -DCSLS_NO_MAIN -DCSLS_DAEMON_NO_MAIN test/c/test_csls_daemon_net.c src/causal_daemon.c src/csls_daemon.c $(LDFLAGS) -o test_csls_daemon_net_tsan
+	setarch $$(uname -m) -R ./test_csls_daemon_net_tsan
+	rm -f test_csls_daemon_net_tsan
 
 test-redteam-wal-forge:
 	$(CC) -O2 -Isrc -DCSLS_NO_MAIN test/c/test_redteam_wal_forge.c src/causal_daemon.c src/schnorr_bloodhound.c $(LDFLAGS) -o test_redteam_wal_forge

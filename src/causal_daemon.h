@@ -36,6 +36,7 @@
 #define CSLS_PKT_FRAUD        0x03
 #define CSLS_PKT_HALT         0x04
 #define CSLS_PKT_SESSION_INIT 0x05
+#define CSLS_PKT_WELCOME      0x06
 
 // Error codes (negative returns)
 #define CSLS_ERR_BAD_MAC    (-24) // missing/invalid session MAC (C2 gate)
@@ -86,6 +87,15 @@ typedef struct {
     uint8_t  auth_mac[16];
 } csls_session_init_pkt_t;    // 95 bytes
 
+// Welcome frame pushed by the network daemon immediately after accept:
+// announces the live vendor identity so agents can address cheques without
+// out-of-band key exchange (coordination board, Замечание #07).
+typedef struct {
+    uint32_t magic;           // CSLS_MAGIC
+    uint8_t  type;            // CSLS_PKT_WELCOME (0x06)
+    uint8_t  vendor_pk[33];   // Compressed secp256k1 public key of the vendor
+} csls_welcome_pkt_t;         // 38 bytes
+
 // Acknowledgement packet sent by vendor to client
 typedef struct {
     uint32_t magic;           // CSLS_MAGIC
@@ -132,6 +142,7 @@ typedef struct {
 #if defined(__GNUC__)
 _Static_assert(sizeof(csls_wal_sector_t) == CSLS_WAL_SECTOR, "WAL sector must be 4096 bytes");
 _Static_assert(sizeof(csls_session_init_pkt_t) == 95, "session init packet size drift");
+_Static_assert(sizeof(csls_welcome_pkt_t) == 38, "welcome packet size drift");
 #endif
 
 // History entry for equivocation detection
