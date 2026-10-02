@@ -379,35 +379,7 @@ contract SwarmDelegationVault is PerformanceCollateralVault {
                 }
                 if (rootGraceExpiries[agent][computed] >= block.timestamp) return true;
 
-                // 2. Direct binary pairings for depth 1
-                if (pLen == 1) {
-                    bytes32 c1 = keccak256(abi.encodePacked(leaf, proof[0]));
-                    if (rootGraceExpiries[agent][c1] >= block.timestamp) return true;
-                    bytes32 c2 = keccak256(abi.encodePacked(proof[0], leaf));
-                    if (rootGraceExpiries[agent][c2] >= block.timestamp) return true;
-                }
 
-                // 3. Binary permutations for shallow trees (depth 2 to 5)
-                if (pLen > 1 && pLen <= 5) {
-                    uint256 total = 2 ** pLen;
-                    for (uint256 idx = 0; idx < total; ) {
-                        bytes32 curr = leaf;
-                        for (uint256 i = 0; i < pLen; ) {
-                            if (((idx >> i) & 1) == 0) {
-                                curr = keccak256(abi.encodePacked(curr, proof[i]));
-                            } else {
-                                curr = keccak256(abi.encodePacked(proof[i], curr));
-                            }
-                            unchecked {
-                                ++i;
-                            }
-                        }
-                        if (rootGraceExpiries[agent][curr] >= block.timestamp) return true;
-                        unchecked {
-                            ++idx;
-                        }
-                    }
-                }
             }
 
             unchecked {
