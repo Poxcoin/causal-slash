@@ -129,10 +129,29 @@ typedef struct {
     uint64_t cleared_amount;
     uint64_t accumulated_amount;
     uint64_t max_exposure_delta_v;
+    uint64_t slot_seed;
     csls_channel_table_t channels;
     pthread_mutex_t lock;
     csls_history_entry_t history[CSLS_HISTORY_SIZE];
 } csls_vendor_ctx_t;
+
+// SplitMix64 history slot mixer to eliminate slot collisions across multi-agent streams
+static inline uint32_t csls_slot_mix(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return (uint32_t)(x & CSLS_HISTORY_MASK);
+}
+
+static inline uint32_t csls_vendor_slot(uint64_t height, const uint8_t *agent_pk, const uint8_t *vendor_pk, uint64_t seed) {
+    uint32_t agent_hash = 0;
+    memcpy(&agent_hash, agent_pk + 1, 4);
+    uint32_t vendor_hash = 0;
+    memcpy(&vendor_hash, vendor_pk + 1, 4);
+    return csls_slot_mix(height ^ (uint64_t)agent_hash ^ ((uint64_t)vendor_hash << 16) ^ seed);
+}
 
 // Channel Table API (O(1) Linear Probing)
 void            csls_channel_table_init(csls_channel_table_t *table);

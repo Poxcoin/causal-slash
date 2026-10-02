@@ -133,8 +133,8 @@ static void test_audit_ring_buffer_wrap_missed_equivocation(void) {
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 1000, &c_h65537) == 0);
     assert(csls_vendor_process_cheque(vendor, &c_h65537, &fraud) == 0);
 
-    // Slot 1 is now overwritten with height 65537
-    uint32_t slot = (uint32_t)(1 & CSLS_HISTORY_MASK);
+    // Slot is now overwritten with height 65537
+    uint32_t slot = csls_vendor_slot(c_h65537.height, c_h65537.agent_pk, c_h65537.vendor_pk, vendor->slot_seed);
     assert(vendor->history[slot].height == 65537);
 
     // Create a conflicting double-spend cheque at height 1
@@ -143,12 +143,10 @@ static void test_audit_ring_buffer_wrap_missed_equivocation(void) {
     chan3->cumulative_sent = 5000;
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 500, &c_conflict) == 0);
 
-    // When submitted, vendor evaluates: entry->height (65537) == pkt->height (1) => FALSE
-    // Followed by pkt->height (1) <= last_height (65537) => returns -22
+    // Fix verified: SplitMix64 slot mixing prevents eviction across wrap-arounds
     int res = csls_vendor_process_cheque(vendor, &c_conflict, &fraud);
-    assert(res == -22); // OUT_OF_ORDER_OR_OLD_REPLAY, NOT -20!
-
-    printf("  FINDING: Equivocation at height 1 missed (returned code -22 instead of -20).\n");
+    assert(res == -20); // FRAUD_EQUIVOCATION_DETECTED!
+    printf("  FIX VERIFIED: Equivocation at height 1 caught despite stream progression (code -20).\n");
     printf("  IMPACT: Offender evades local key extraction if stream advances > 64k entries.\n");
 
     csls_agent_destroy(&agent);

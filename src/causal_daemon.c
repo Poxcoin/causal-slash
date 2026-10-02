@@ -24,6 +24,7 @@
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
 #include <openssl/obj_mac.h>
+#include <openssl/rand.h>
 
 // Global Cryptographic Contexts (secp256k1)
 static EC_GROUP *g_secp256k1_group = NULL;
@@ -199,7 +200,10 @@ csls_agent_ctx_t *csls_agent_new(const uint8_t *sk_bytes, const char *wal_path) 
         free(agent);
         return NULL;
     }
-    atomic_init(&agent->height, 1);
+    uint64_t cur = atomic_load(&agent->height);
+    if (cur == 0) {
+        atomic_init(&agent->height, 1);
+    }
     return agent;
 }
 
@@ -254,6 +258,7 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
         agent->wal_fd = open(agent->wal_path, O_RDWR | O_CREAT, 0600);
         if (agent->wal_fd >= 0) {
             csls_wal_record_t rec;
+            uint64_t max_wal_h = 0;
             while (read(agent->wal_fd, &rec, sizeof(csls_wal_record_t)) == sizeof(csls_wal_record_t)) {
                 if (rec.height > 0) {
                     csls_channel_t *ch = csls_channel_get_or_create(&agent->channels, rec.peer_pk);
@@ -261,7 +266,13 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
                         atomic_store(&ch->height, rec.height + 1);
                         atomic_store(&ch->cumulative_sent, rec.cumulative_sent);
                     }
+                    if (rec.height + 1 > max_wal_h) {
+                        max_wal_h = rec.height + 1;
+                    }
                 }
+            }
+            if (max_wal_h > 0) {
+                atomic_store(&agent->height, max_wal_h);
             }
         }
     }
@@ -324,13 +335,17 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     }
     agent->cumulative_sent += delta_micro_usdc;
 
-    // Atomic Write-Ahead-Log sync for power-loss fault tolerance
+    // Atomic Write-Ahead-Log sync for power-loss fault tolerance (per-channel offset)
     if (agent->wal_fd >= 0) {
         csls_wal_record_t rec;
         memcpy(rec.peer_pk, vendor_pk, 33);
         rec.height = h;
         rec.cumulative_sent = cum_amt;
-        ssize_t pw_res = pwrite(agent->wal_fd, &rec, sizeof(csls_wal_record_t), 0);
+        int chan_idx = (int)(chan - agent->channels.channels);
+        off_t offset = (chan_idx >= 0 && chan_idx < CSLS_MAX_CHANNELS)
+            ? (off_t)(chan_idx * sizeof(csls_wal_record_t))
+            : 0;
+        ssize_t pw_res = pwrite(agent->wal_fd, &rec, sizeof(csls_wal_record_t), offset);
         (void)pw_res;
     }
 
@@ -433,8 +448,15 @@ int csls_vendor_init(csls_vendor_ctx_t *vendor, const uint8_t *sk_bytes, uint64_
     vendor->max_exposure_delta_v = (delta_v > 0) ? delta_v : CSLS_DEFAULT_DELTA_V;
     pthread_mutex_init(&vendor->lock, NULL);
 
+    if (RAND_bytes((unsigned char *)&vendor->slot_seed, sizeof(vendor->slot_seed)) != 1) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        vendor->slot_seed = (uint64_t)ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 32) ^ 0xCAFEBABEDEADBEEFULL;
+    }
+
     return 0;
 }
+
 
 void csls_vendor_destroy(csls_vendor_ctx_t *vendor) {
     if (vendor) {
@@ -549,8 +571,8 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
         return -12; // EXPOSURE_BUFFER_EXCEEDED (Halt streaming)
     }
 
-    // 3. Monotonicity and Equivocation Trap (O(1) Circular History Table)
-    uint32_t slot = (uint32_t)(pkt->height & CSLS_HISTORY_MASK);
+    // 3. Monotonicity and Equivocation Trap (O(1) Circular History Table with splitmix mixing)
+    uint32_t slot = csls_vendor_slot(pkt->height, pkt->agent_pk, pkt->vendor_pk, vendor->slot_seed);
     csls_history_entry_t *entry = &vendor->history[slot];
 
     if (entry->occupied && entry->height == pkt->height && memcmp(entry->agent_pk, pkt->agent_pk, 33) == 0) {
