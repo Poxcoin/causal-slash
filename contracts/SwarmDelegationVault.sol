@@ -582,6 +582,7 @@ contract SwarmDelegationVault is PerformanceCollateralVault {
 
         vault.collateralBond = masterBond - penalty;
         swarmSlashedTotals[args.masterAgent] += penalty;
+        slashTimestamps[args.masterAgent] = block.timestamp;
 
         _ensureLiquidCash(penalty);
 

@@ -14,7 +14,7 @@ state_bloat_test
 /causal_daemon_test
 /bloodhound_daemon
 /libcausal_slash.so
-test_*
+/test_*
 
 # Foundry artifacts
 out/
