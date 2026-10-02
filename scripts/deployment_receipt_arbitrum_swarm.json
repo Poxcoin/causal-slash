@@ -1,0 +1,14 @@
+{
+  "contractName": "SwarmDelegationVault",
+  "network": "Arbitrum Sepolia",
+  "chainId": 421614,
+  "contractAddress": "0x901c98Da847DD24ff23FcC37B6D1549A17F12253",
+  "deployer": "0xEa2CdaEab16afFD49eD0715CD345fD7292D6c144",
+  "txHash": "0x2ea41c3c792b3260ec3dd850bb3f0268aba7fbc7ba8412a9ba79d72821c3d87e",
+  "usdcToken": "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
+  "treasury": "0xEa2CdaEab16afFD49eD0715CD345fD7292D6c144",
+  "insuranceReserve": "0xEa2CdaEab16afFD49eD0715CD345fD7292D6c144",
+  "maxSwarmTreeDepth": 32,
+  "rootGracePeriodSeconds": 604800,
+  "deployedAt": "2026-10-02T03:20:39.313Z"
+}
