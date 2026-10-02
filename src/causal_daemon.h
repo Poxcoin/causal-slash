@@ -106,13 +106,18 @@ typedef struct {
     csls_cheque_pkt_t cheque2;// Conflicting signed cheque on same height
 } csls_fraud_pkt_t;
 
-// Dual-Sector Ping-Pong WAL sector (exactly one disk sector: torn-write proof)
+// Dual-Sector Ping-Pong WAL sector (exactly one disk sector: torn-write proof).
+// Authenticity: hmac = HMAC-SHA256(sk, "CSLS_WAL_INTEGRITY_v1" || magic ||
+// sequence || reserved_height), compared in constant time (CRYPTO_memcmp).
+// A local co-tenant without the agent's sk cannot forge a sector with a lowered
+// reserved_height (Red Team P1: CRC-forgery AND wipe/truncate vectors closed).
+// Owner-side forgery is self-harm (own key burns).
 typedef struct {
     uint32_t magic;            // CSLS_WAL_MAGIC ("CSWL")
     uint32_t sequence;         // Monotonic lease version (odd/even => sector A/B)
     uint64_t reserved_height;  // Durable lease top; heights <= reserved are safe
-    uint64_t crc64;            // CRC-64/ECMA-182 over the first 24 bytes
-    uint8_t  padding[4072];
+    uint8_t  hmac[32];         // HMAC-SHA256(sk, domain || magic || seq || reserved)
+    uint8_t  _pad[4048];
 } csls_wal_sector_t;           // 4096 bytes
 
 // Legacy per-signature WAL record (kept for ABI compatibility with old tooling)

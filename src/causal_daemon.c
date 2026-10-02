@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -124,24 +125,6 @@ static int csls_derive_pk(const uint8_t *sk_bytes, uint8_t *out_pk_compressed) {
 // Cryptographic Infrastructure: CRC-64/ECMA-182, SipHash-2-4 (128-bit), ECDH,
 // session KDF, and the Dual-Sector Ping-Pong Watermark WAL (C1 fix).
 // -----------------------------------------------------------------------------
-
-static uint64_t g_crc64_tab[256];
-static pthread_once_t g_crc64_once = PTHREAD_ONCE_INIT;
-static void csls_crc64_build(void) {
-    for (uint64_t i = 0; i < 256; i++) {
-        uint64_t c = i << 56;
-        for (int k = 0; k < 8; k++)
-            c = (c & 0x8000000000000000ULL) ? (c << 1) ^ 0x42F0E1EBA9EA3693ULL : (c << 1);
-        g_crc64_tab[i] = c;
-    }
-}
-static uint64_t csls_crc64(const void *data, size_t len) {
-    pthread_once(&g_crc64_once, csls_crc64_build);
-    const uint8_t *p = (const uint8_t *)data;
-    uint64_t crc = 0;
-    while (len--) crc = g_crc64_tab[(crc >> 56) ^ *p++] ^ (crc << 8);
-    return crc;
-}
 
 static inline uint64_t csls_sip_load64(const uint8_t *p) {
     return (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) |
@@ -251,15 +234,36 @@ static void csls_derive_k_hash(const SHA256_CTX *ictx0, const SHA256_CTX *octx0,
 // WAL write access but no sk cannot mint a lease with a lowered reserved_height
 // (Red Team P1). CRC-64 was dropped — unkeyed integrity is worthless against a
 // forger who recomputes it.
-static void csls_wal_fill_sector(csls_wal_sector_t *s, uint32_t seq, uint64_t reserved) {
+// Sector authenticity: hmac = HMAC-SHA256(sk, "CSLS_WAL_INTEGRITY_v1" || magic ||
+// sequence || reserved). Keyed by the agent's signing key: a local co-tenant with
+// WAL write access but no sk cannot mint a lease with a lowered reserved_height
+// (Red Team P1). CRC-64 was dropped — unkeyed integrity is worthless against a
+// forger who recomputes it.
+static void csls_wal_sector_hmac(const uint8_t sk[32], uint32_t magic, uint32_t seq,
+                                 uint64_t reserved, uint8_t out[32]) {
+    uint8_t msg[21 + 4 + 4 + 8];
+    memcpy(msg, "CSLS_WAL_INTEGRITY_v1", 21);
+    memcpy(msg + 21, &magic, 4);
+    memcpy(msg + 25, &seq, 4);
+    memcpy(msg + 29, &reserved, 8);
+    csls_hmac32(sk, msg, sizeof(msg), out);
+    OPENSSL_cleanse(msg, sizeof(msg));
+}
+static void csls_wal_fill_sector(csls_wal_sector_t *s, uint32_t seq, uint64_t reserved,
+                                 const uint8_t sk[32]) {
     memset(s, 0, sizeof(*s));
     s->magic = CSLS_WAL_MAGIC;
     s->sequence = seq;
     s->reserved_height = reserved;
-    s->crc64 = csls_crc64(s, 16); // CRC covers magic+sequence+reserved (NOT the crc field itself)
+    csls_wal_sector_hmac(sk, s->magic, seq, reserved, s->hmac);
 }
-static int csls_wal_sector_valid(const csls_wal_sector_t *s) {
-    return s->magic == CSLS_WAL_MAGIC && s->crc64 == csls_crc64(s, 16);
+static int csls_wal_sector_valid(const csls_wal_sector_t *s, const uint8_t sk[32]) {
+    if (s->magic != CSLS_WAL_MAGIC) return 0;
+    uint8_t want[32];
+    csls_wal_sector_hmac(sk, s->magic, s->sequence, s->reserved_height, want);
+    int ok = CRYPTO_memcmp(s->hmac, want, 32) == 0; // constant time
+    OPENSSL_cleanse(want, sizeof(want));
+    return ok;
 }
 // Durably extend the lease by one block. O_DSYNC makes the pwrite itself the
 // durability barrier; heights <= new reserved are safe to sign afterwards.
@@ -267,7 +271,7 @@ static int csls_wal_renew(csls_agent_ctx_t *a) {
     csls_wal_sector_t s;
     uint32_t seq = a->wal_sequence + 1;
     uint64_t reserved = a->wal_reserved + CSLS_WAL_BLOCK;
-    csls_wal_fill_sector(&s, seq, reserved);
+    csls_wal_fill_sector(&s, seq, reserved, a->sk);
     memset(a->wal_buf, 0, CSLS_WAL_SECTOR);
     memcpy(a->wal_buf, &s, sizeof(s));
     off_t off = (seq & 1) ? CSLS_WAL_SECTOR : 0;
@@ -514,9 +518,27 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
 
     if (wal_path && strlen(wal_path) > 0) {
         strncpy(agent->wal_path, wal_path, sizeof(agent->wal_path) - 1);
-        int fd = open(agent->wal_path, O_RDWR | O_CREAT | O_DSYNC | O_DIRECT, 0600);
-        if (fd < 0) fd = open(agent->wal_path, O_RDWR | O_CREAT | O_DSYNC, 0600);
+        // Fresh-lease rule (Red Team P1 ATTACK A): a brand-new lease is legitimate
+        // ONLY when the file did not exist before our open. An existing file that
+        // was wiped/truncated by a co-tenant is WAL FATAL — treating it as fresh
+        // would regress the boot height and enable nonce-reuse key extraction.
+        int fd = open(agent->wal_path, O_RDWR | O_DSYNC | O_DIRECT, 0600);
+        int fresh = 0;
+        if (fd < 0 && (errno == ENOENT || errno == EINVAL))
+            fd = open(agent->wal_path, O_RDWR | O_DSYNC, 0600);
+        if (fd < 0 && errno == ENOENT) {
+            fd = open(agent->wal_path, O_RDWR | O_CREAT | O_DSYNC | O_DIRECT, 0600);
+            if (fd < 0) fd = open(agent->wal_path, O_RDWR | O_CREAT | O_DSYNC, 0600);
+            fresh = (fd >= 0);
+        }
         if (fd < 0) return -6;
+        struct stat st;
+        if (fstat(fd, &st) != 0 || st.st_size < 0) { close(fd); return -6; }
+        if (!fresh && st.st_size != (off_t)(2 * CSLS_WAL_SECTOR)) {
+            // Truncated or grown by a co-tenant: fail-closed, never a fresh lease.
+            close(fd);
+            return -6;
+        }
         if (posix_memalign((void **)&agent->wal_buf, CSLS_WAL_SECTOR, CSLS_WAL_SECTOR) != 0) {
             close(fd);
             agent->wal_fd = -1;
@@ -529,8 +551,8 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
         if (ra == CSLS_WAL_SECTOR) memcpy(&sa, agent->wal_buf, sizeof(sa));
         ssize_t rb = pread(fd, agent->wal_buf, CSLS_WAL_SECTOR, CSLS_WAL_SECTOR);
         if (rb == CSLS_WAL_SECTOR) memcpy(&sb, agent->wal_buf, sizeof(sb));
-        int va = csls_wal_sector_valid(&sa);
-        int vb = csls_wal_sector_valid(&sb);
+        int va = csls_wal_sector_valid(&sa, agent->sk);
+        int vb = csls_wal_sector_valid(&sb, agent->sk);
         int fresh_a = (ra <= 0) || (sa.magic == 0 && sa.sequence == 0 && sa.reserved_height == 0);
         int fresh_b = (rb <= 0) || (sb.magic == 0 && sb.sequence == 0 && sb.reserved_height == 0);
         uint32_t seq = 0;
