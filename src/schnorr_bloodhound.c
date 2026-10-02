@@ -135,7 +135,7 @@ int csls_derive_eth_address(const uint8_t *sk32, uint8_t *out_address20) {
             }
         }
     }
-    if (sk) BN_free(sk);
+    if (sk) BN_clear_free(sk);
     if (pub) EC_POINT_free(pub);
     if (ctx) BN_CTX_free(ctx);
     EC_GROUP_free(group);
@@ -166,6 +166,8 @@ void bloodhound_init(bloodhound_ctx_t *ctx, const uint8_t *hunter_addr_20) {
     if (hunter_addr_20) {
         memcpy(ctx->hunter_address, hunter_addr_20, 20);
     }
+    atomic_init(&ctx->packets_inspected, 0);
+    atomic_init(&ctx->equivocations_captured, 0);
     // CSPRNG slot entropy; a wire attacker must not be able to compute the
     // index of its own evidence slot. Fallback mixes high-resolution clocks
     // and ASLR stack layout if the OS entropy source is unavailable.
@@ -203,7 +205,7 @@ int bloodhound_inspect_packet(bloodhound_ctx_t *ctx, const csls_cheque_pkt_t *pk
     if (!ctx || !pkt) return -1;
     if (pkt->magic != CSLS_MAGIC || pkt->type != CSLS_PKT_CHEQUE) return -1;
 
-    ctx->packets_inspected++;
+    atomic_fetch_add_explicit(&ctx->packets_inspected, 1, memory_order_relaxed);
 
     // Compute fast slot index from height, agent public key prefix, and vendor public key prefix
     uint32_t agent_hash = 0;
@@ -232,7 +234,7 @@ int bloodhound_inspect_packet(bloodhound_ctx_t *ctx, const csls_cheque_pkt_t *pk
             uint8_t extracted_sk[32];
             int rc = csls_extract_private_key(&c1, pkt, extracted_sk);
             if (rc == 0) {
-                ctx->equivocations_captured++;
+                atomic_fetch_add_explicit(&ctx->equivocations_captured, 1, memory_order_relaxed);
 
                 if (out_payload) {
                     memcpy(out_payload->extracted_sk, extracted_sk, 32);

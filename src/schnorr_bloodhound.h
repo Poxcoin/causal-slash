@@ -21,8 +21,8 @@ typedef struct {
 
 typedef struct {
     uint8_t hunter_address[20];
-    uint64_t packets_inspected;
-    uint64_t equivocations_captured;
+    _Atomic uint64_t packets_inspected;      // atomic: multi-feed watchtowers (H1)
+    _Atomic uint64_t equivocations_captured; // atomic: no lost updates under concurrency
     // Process-private slot entropy (SipHash-style). Prevents a double-spending
     // agent from computing the table index of its own evidence and destroying
     // it with crafted eviction packets. MUST NOT be logged or exported.
