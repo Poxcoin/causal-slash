@@ -573,8 +573,11 @@ contract SwarmDelegationVault is PerformanceCollateralVault {
         slashedNullifiers[args.leafHash] = true;
         slashedSubAgents[args.masterAgent][derivedSigner] = true;
 
-        // 5. Cascade Foreclosure: penalty = min(masterBond, subAgentQuota)
-        uint256 penalty = masterBond > args.subAgentQuota ? args.subAgentQuota : masterBond;
+        // 5. Cascade Foreclosure: penalty bounded by unallocated margin to protect active direct vendor collateral
+        uint256 freeMargin = masterBond > totalAllocatedExposure[args.masterAgent]
+            ? masterBond - totalAllocatedExposure[args.masterAgent]
+            : 0;
+        uint256 penalty = freeMargin > args.subAgentQuota ? args.subAgentQuota : freeMargin;
         if (penalty == 0) revert InsufficientCollateral();
 
         vault.collateralBond = masterBond - penalty;

@@ -539,6 +539,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         uint256 restitutionAllocation = remaining > totalReserved ? totalReserved : remaining;
         slashedRestitutionPool[args.maliciousAgent] = restitutionAllocation;
         remaining -= restitutionAllocation;
+        totalAllocatedExposure[args.maliciousAgent] = 0;
 
         // 3. Priority 3: Remainder split: 60% to Insurance Reserve, 40% to Protocol Treasury
         uint256 insuranceAmount = (remaining * 60) / 100;
@@ -579,7 +580,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     ) external nonReentrant {
         if (block.timestamp > deadline) revert ChequeExpired();
         AgentVault storage vault = vaults[maliciousAgent];
-        if (!vault.isSlashed) revert Unauthorized();
+        if (!vault.isSlashed && slashedRestitutionPool[maliciousAgent] == 0) revert Unauthorized();
 
         uint256 activeQuota = vendorExposure[maliciousAgent][msg.sender];
         if (activeQuota == 0) revert InsufficientCollateral();
@@ -609,6 +610,11 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
 
         settledAmounts[maliciousAgent][msg.sender] += delta;
         vendorExposure[maliciousAgent][msg.sender] -= delta;
+        if (delta > totalAllocatedExposure[maliciousAgent]) {
+            totalAllocatedExposure[maliciousAgent] = 0;
+        } else {
+            totalAllocatedExposure[maliciousAgent] -= delta;
+        }
         slashedRestitutionPool[maliciousAgent] -= delta;
 
         _ensureLiquidCash(delta);
@@ -621,7 +627,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
      */
     function sweepUnclaimedRestitution(address maliciousAgent) external nonReentrant {
         AgentVault storage vault = vaults[maliciousAgent];
-        if (!vault.isSlashed) revert Unauthorized();
+        if (!vault.isSlashed && slashTimestamps[maliciousAgent] == 0) revert Unauthorized();
         if (block.timestamp < slashTimestamps[maliciousAgent] + EMERGENCY_DISPUTE_PERIOD) {
             revert TimelockActive();
         }
