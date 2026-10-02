@@ -123,6 +123,9 @@ typedef struct {
     _Atomic uint64_t last_h[8];   // wire-observable last height per vendor ring
     _Atomic int live;
     bool is_victim;
+    bool has_session;
+    uint64_t last_cum;
+    uint64_t evict_h;
     pthread_spinlock_t iolock;
     char wal_path[160];
     // equiv pending state (single owner worker)
@@ -138,7 +141,7 @@ static csls_vendor_ctx_t *vendors[N_VENDORS];
 static bloodhound_ctx_t *hounds[N_HOUNDS];
 
 // ---- bounded queues --------------------------------------------------------
-typedef struct { csls_cheque_pkt_t pkt; int32_t src; } qe_t;
+typedef struct { csls_cheque_pkt_t pkt; uint8_t mac[16]; int32_t src; } qe_t;
 typedef struct {
     pthread_mutex_t mu;
     qe_t buf[QCAP];
@@ -153,14 +156,16 @@ static void q_init(pktq_t *q) {
     q->head = q->tail = 0;
     atomic_init(&q->cnt, 0);
 }
-static bool q_push(pktq_t *q, const csls_cheque_pkt_t *p, int32_t src) {
+static bool q_push(pktq_t *q, const csls_cheque_pkt_t *p, const uint8_t *mac, int32_t src) {
     pthread_mutex_lock(&q->mu);
     if (atomic_load_explicit(&q->cnt, memory_order_relaxed) >= QCAP) {
         pthread_mutex_unlock(&q->mu);
         return false;
     }
     qe_t *e = &q->buf[q->tail & (QCAP - 1)];
-    e->pkt = *p; e->src = src;
+    e->pkt = *p;
+    if (mac) memcpy(e->mac, mac, 16); else memset(e->mac, 0, 16);
+    e->src = src;
     q->tail++;
     atomic_fetch_add_explicit(&q->cnt, 1, memory_order_release);
     pthread_mutex_unlock(&q->mu);
@@ -188,11 +193,13 @@ typedef struct {
 } wq_t;
 static wq_t g_wire;
 static void wq_init(wq_t *q) { pthread_mutex_init(&q->mu, NULL); q->head = q->tail = 0; atomic_init(&q->cnt, 0); }
-static bool wq_push(wq_t *q, const csls_cheque_pkt_t *p, int32_t src) {
+static bool wq_push(wq_t *q, const csls_cheque_pkt_t *p, const uint8_t *mac, int32_t src) {
     pthread_mutex_lock(&q->mu);
     if (atomic_load_explicit(&q->cnt, memory_order_relaxed) >= WIRE_QCAP) { pthread_mutex_unlock(&q->mu); return false; }
     qe_t *e = &q->buf[q->tail & (WIRE_QCAP - 1)];
-    e->pkt = *p; e->src = src;
+    e->pkt = *p;
+    if (mac) memcpy(e->mac, mac, 16); else memset(e->mac, 0, 16);
+    e->src = src;
     q->tail++;
     atomic_fetch_add_explicit(&q->cnt, 1, memory_order_release);
     pthread_mutex_unlock(&q->mu);
@@ -234,18 +241,19 @@ static int32_t reg_lookup(const uint8_t *sk) {
 // ---- metrics ---------------------------------------------------------------
 static _Atomic uint64_t g_next_agent;
 static _Atomic int g_stop;
-static _Atomic uint64_t m_total, m_honest_sent, m_attack_sent, m_qdrops;
+static _Atomic uint64_t m_total, m_honest_sent, m_qdrops;
 static _Atomic uint64_t m_acc_honest, m_acc_forged, m_forged_rej;
 static _Atomic uint64_t m_fraud_true_v, m_fraud_false_v, m_phantom_v;
 static _Atomic uint64_t m_hound_true, m_hound_false, m_phantom_h;
 static _Atomic uint64_t m_arch_true, m_arch_false, m_phantom_a;
-static _Atomic uint64_t m_restarts, m_brick, m_equiv_fired, m_rc[26];
+static _Atomic uint64_t m_restarts, m_brick, m_equiv_fired, m_insider_acc, m_forged_rej_mac, m_rc[26];
+static _Atomic uint64_t strat_rc[4][27]; // per-strategy vendor rc attribution
 static _Atomic uint64_t m_sign_ns, m_sign_n, m_sign_s_n, m_sign_max, m_ver_ns, m_ver_n, m_ver_s_n, m_ver_max;
 
 // ---- helpers ---------------------------------------------------------------
-static inline void send_pkt(const csls_cheque_pkt_t *p, int vendor, int32_t src) {
-    if (!q_push(&vq[vendor], p, src)) atomic_fetch_add(&m_qdrops, 1);
-    if (!wq_push(&g_wire, p, src)) atomic_fetch_add(&m_qdrops, 1);
+static inline void send_pkt(const csls_cheque_pkt_t *p, const uint8_t *mac, int vendor, int32_t src) {
+    if (!q_push(&vq[vendor], p, mac, src)) atomic_fetch_add(&m_qdrops, 1);
+    if (!wq_push(&g_wire, p, mac, src)) atomic_fetch_add(&m_qdrops, 1);
 }
 
 static void arch_record(sw_agent_t *a, int ring_i, const csls_cheque_pkt_t *pkt) {
@@ -300,7 +308,8 @@ static void honest_tick(sw_agent_t *a) {
     bool sample = (atomic_fetch_add(&m_sign_n, 1) & 255) == 0;
     struct timespec ts0, ts1;
     if (sample) clock_gettime(CLOCK_MONOTONIC, &ts0);
-    int rc = csls_agent_sign_cheque(a->ctx, vendors[v]->pk, amt, &pkt);
+    uint8_t mac[16];
+    int rc = csls_agent_sign_cheque_mac(a->ctx, vendors[v]->pk, amt, &pkt, mac);
     if (sample) {
         clock_gettime(CLOCK_MONOTONIC, &ts1);
         uint64_t ns = (uint64_t)(ts1.tv_sec - ts0.tv_sec) * 1000000000ULL + (uint64_t)(ts1.tv_nsec - ts0.tv_nsec);
@@ -316,7 +325,7 @@ static void honest_tick(sw_agent_t *a) {
             arch_record(a, vi, &pkt);
         }
         atomic_store_explicit(&a->last_h[vi], pkt.height, memory_order_relaxed);
-        send_pkt(&pkt, v, a->id);
+        send_pkt(&pkt, mac, v, a->id);
     }
     if (victim) pthread_spin_unlock(&a->iolock);
 }
@@ -338,25 +347,26 @@ static void attack_tick(sw_agent_t *a) {
         // delayed double-sign: c1 now, c2 after a GLOBAL-tick laundering window
         uint64_t now = atomic_load_explicit(&m_total, memory_order_relaxed);
         if (a->pend_until != 0 && now >= a->pend_until) {
-            csls_channel_t *ch = csls_channel_get_or_create(&a->ctx->channels, vendors[a->pend_v]->pk);
-            if (ch) {
-                atomic_store(&ch->height, a->pend_h);
-                atomic_store(&a->ctx->height, 0);
-                csls_cheque_pkt_t c2;
-                if (csls_agent_sign_cheque(a->ctx, vendors[a->pend_v]->pk,
-                                           200000 + trnd() % 800000, &c2) == 0) {
-                    arch_check(a, 0, &c2, true);
-                    send_pkt(&c2, a->pend_v, a->id);
-                }
+            // malicious client regresses its GLOBAL in-memory height to re-sign h
+            atomic_store(&a->ctx->height, a->pend_h);
+            csls_cheque_pkt_t c2;
+            uint8_t mac2[16];
+            uint64_t amt2 = 10000 + trnd() % 40000; // delta; cumulative grows by delta
+            if (csls_agent_sign_cheque_mac(a->ctx, vendors[a->pend_v]->pk, amt2, &c2, mac2) == 0) {
+                a->last_cum = c2.cumulative_amt; // track the WIRE cumulative, not the delta
+                arch_check(a, 0, &c2, true);
+                send_pkt(&c2, mac2, a->pend_v, a->id);
             }
             a->pend_until = 0;
             atomic_fetch_add(&m_equiv_fired, 1);
         } else if (a->pend_until == 0 && (sm64(t ^ 0xABCD) % 16) == 0) {
             csls_cheque_pkt_t c1;
-            if (csls_agent_sign_cheque(a->ctx, vendors[a->vendor_idx[0]]->pk,
-                                       10000 + trnd() % 90000, &c1) == 0) {
+            uint8_t mac1[16];
+            uint64_t amt1 = 10000 + trnd() % 40000; // delta
+            if (csls_agent_sign_cheque_mac(a->ctx, vendors[a->vendor_idx[0]]->pk, amt1, &c1, mac1) == 0) {
+                a->last_cum = c1.cumulative_amt;
                 if (a->arch) arch_record(a, 0, &c1);
-                send_pkt(&c1, a->vendor_idx[0], a->id);
+                send_pkt(&c1, mac1, a->vendor_idx[0], a->id);
                 a->pend_v = a->vendor_idx[0];
                 a->pend_h = c1.height;
                 a->pend_until = now + 50 + trnd() % 4000; // laundering window
@@ -368,6 +378,7 @@ static void attack_tick(sw_agent_t *a) {
 
     int v = (int)(trnd() % N_VENDORS);
     csls_cheque_pkt_t f;
+    uint8_t mac[16];
     if (a->strat == ST_FRAME || a->strat == ST_PROBE) {
         int victim = (int)(trnd() % N_HONEST);
         sw_agent_t *va = &agents[victim];
@@ -385,14 +396,18 @@ static void attack_tick(sw_agent_t *a) {
         forge_base(&f, va->pk, v, h, cum);
         memset(f.sig_s, 0x01, 32);
         f.sig_s[0] ^= (uint8_t)trnd(); f.sig_s[31] ^= (uint8_t)trnd();
-    } else { // ST_EVICT: own identity, height flood
-        uint64_t h = trnd() % (1ULL << 40);
+        memset(mac, 0x5A, 16); // attacker has no session key -> stale garbage tag
+    } else { // ST_EVICT: registered insider with a REAL session (keyed noise)
+        v = a->vendor_idx[0]; // insider floods the vendor it holds a session with
+        uint64_t h = ++a->evict_h; // monotonic flood: packets ACCEPTED, slots overwritten
         forge_base(&f, a->pk, v, h, 1000);
         memset(f.sig_s, 0x02, 32);
         f.sig_s[0] ^= (uint8_t)trnd();
+        if (csls_agent_mac_packet(a->ctx, vendors[v]->pk, &f, mac) != 0)
+            memset(mac, 0, 16);
     }
     atomic_fetch_add(&a->attempts, 1);
-    send_pkt(&f, v, a->id);
+    send_pkt(&f, mac, v, a->id);
 }
 
 // ---- worker threads --------------------------------------------------------
@@ -423,7 +438,7 @@ static void *vendor_worker(void *arg) {
                 struct timespec ts0, ts1;
                 bool sample = (atomic_fetch_add(&m_ver_n, 1) & 255) == 0;
                 if (sample) clock_gettime(CLOCK_MONOTONIC, &ts0);
-                int rc = csls_vendor_process_cheque(vendors[v], &qe.pkt, &fraud);
+                int rc = csls_vendor_process_cheque_mac(vendors[v], &qe.pkt, qe.mac, &fraud);
                 if (sample) {
                     clock_gettime(CLOCK_MONOTONIC, &ts1);
                     uint64_t ns = (uint64_t)(ts1.tv_sec - ts0.tv_sec) * 1000000000ULL + (uint64_t)(ts1.tv_nsec - ts0.tv_nsec);
@@ -433,12 +448,15 @@ static void *vendor_worker(void *arg) {
                     while (ns > prev && !atomic_compare_exchange_weak(&m_ver_max, &prev, ns)) {}
                 }
                 if (rc == 0) {
-                    if (qe.src >= N_HONEST) atomic_fetch_add(&m_acc_forged, 1);
-                    else {
+                    if (qe.src >= N_HONEST && agents[qe.src].has_session)
+                        atomic_fetch_add(&m_insider_acc, 1);       // legit insider noise (EVICT)
+                    else if (qe.src >= N_HONEST)
+                        atomic_fetch_add(&m_acc_forged, 1);        // MUST stay 0 post-C2
+                    else
                         atomic_fetch_add(&m_acc_honest, 1);
-                        if ((atomic_fetch_add(&m_rc[0], 1) & 3) == 0)
-                            csls_vendor_advance_cleared(vendors[v], qe.pkt.agent_pk, qe.pkt.cumulative_amt);
-                    }
+                    // settlement cadence applies to every channel alike
+                    if ((atomic_fetch_add(&m_rc[0], 1) & 3) == 0)
+                        csls_vendor_advance_cleared(vendors[v], qe.pkt.agent_pk, qe.pkt.cumulative_amt);
                 } else if (rc == -20) {
                     int32_t id = reg_lookup(fraud.extracted_sk);
                     if (id < 0) atomic_fetch_add(&m_phantom_v, 1);
@@ -447,6 +465,11 @@ static void *vendor_worker(void *arg) {
                 } else {
                     int b = -rc; if (b > 25) b = 25;
                     atomic_fetch_add(&m_rc[b], 1);
+                    if (qe.src >= N_HONEST) {
+                        int st = agents[qe.src].strat;
+                        if (st < 0 || st > 3) st = 3;
+                        atomic_fetch_add(&strat_rc[st][b], 1);
+                    }
                     if (rc == -23 && qe.src >= N_HONEST) atomic_fetch_add(&m_forged_rej, 1);
                     if (rc == -22 && qe.src < N_VICTIMS) atomic_fetch_add(&m_brick, 1);
                 }
@@ -484,6 +507,20 @@ static void *chaos_worker(void *arg) {
         atomic_store_explicit(&a->live, 0, memory_order_release);
         csls_agent_free(a->ctx);
         a->ctx = csls_agent_new(a->sk, a->wal_path);
+        if (a->ctx) {
+            // re-establish MAC sessions with the new process-lifetime keys
+            for (int vi = 0; vi < a->n_vendors; vi++) {
+                csls_session_init_pkt_t init;
+                if (csls_agent_session_begin(a->ctx, vendors[a->vendor_idx[vi]]->pk, &init) == 0)
+                    csls_vendor_session_init(vendors[a->vendor_idx[vi]], &init);
+            }
+            // Proof-Carrying Restart Handshake: adopt the vendor's provable head
+            for (int vi = 0; vi < a->n_vendors; vi++) {
+                csls_cheque_pkt_t head;
+                if (csls_vendor_get_head_cheque(vendors[a->vendor_idx[vi]], a->pk, &head) == 0)
+                    csls_agent_restore_session(a->ctx, vendors[a->vendor_idx[vi]]->pk, &head);
+            }
+        }
         atomic_store_explicit(&a->live, 1, memory_order_release);
         pthread_spin_unlock(&a->iolock);
         atomic_fetch_add(&m_restarts, 1);
@@ -531,6 +568,7 @@ int main(int argc, char **argv) {
         uint8_t vsk[32]; RAND_bytes(vsk, 32);
         vendors[v] = csls_vendor_new(vsk, 100000000ULL); // $100 delta_v
         if (!vendors[v]) { fprintf(stderr, "vendor_new failed\n"); return 1; }
+        csls_vendor_enable_mac(vendors[v], 1); // C2 enforced fleet-wide
     }
 
     // honest agents
@@ -573,6 +611,15 @@ int main(int argc, char **argv) {
         if (!a->ctx) { fprintf(stderr, "agent_new failed at %d\n", i); return 1; }
         memcpy(a->pk, a->ctx->pk, 33);
         reg_insert(a->sk, i);
+        for (int vi = 0; vi < a->n_vendors; vi++) {
+            csls_session_init_pkt_t init;
+            if (csls_agent_session_begin(a->ctx, vendors[a->vendor_idx[vi]]->pk, &init) != 0 ||
+                csls_vendor_session_init(vendors[a->vendor_idx[vi]], &init) != 0) {
+                fprintf(stderr, "session setup failed at %d\n", i);
+                return 1;
+            }
+        }
+        a->has_session = true;
         counts[p]++;
     }
     for (int p = 0; p < 6; p++) printf("  profile %-12s : %zu agents\n", prof[p].name, counts[p]);
@@ -598,6 +645,17 @@ int main(int argc, char **argv) {
         if (a->strat == ST_EQUIV) {
             a->arch = calloc(1, sizeof(sw_arch_t));
             a->arch->n = 1;
+        }
+        // EQUIV and EVICT operate as registered insiders (real sessions);
+        // FRAME/PROBE stay sessionless outsiders (their packets must die on MAC)
+        if (a->strat == ST_EQUIV || a->strat == ST_EVICT) {
+            csls_session_init_pkt_t init;
+            if (csls_agent_session_begin(a->ctx, vendors[a->vendor_idx[0]]->pk, &init) != 0 ||
+                csls_vendor_session_init(vendors[a->vendor_idx[0]], &init) != 0) {
+                fprintf(stderr, "attacker session setup failed at %d\n", i);
+                return 1;
+            }
+            a->has_session = true;
         }
     }
     for (int i = 0; i < N_VICTIMS; i++) {
@@ -707,7 +765,23 @@ int main(int argc, char **argv) {
     printf("  honest-agent brick rejects (rc=-22 after restart): %llu\n",
            (unsigned long long)atomic_load(&m_brick));
 
+    printf("\n--- PER-STRATEGY VENDOR RC ATTRIBUTION ---\n");
+    for (int st = 0; st < 4; st++) {
+        printf("  strat %d (0=EQUIV 1=FRAME 2=PROBE 3=EVICT): ", st);
+        for (int b = 0; b <= 25; b++) {
+            uint64_t c = atomic_load(&strat_rc[st][b]);
+            if (c) printf("rc%s%d=%llu ", b == 0 ? "+" : "-", b, (unsigned long long)c);
+        }
+        printf("\n");
+    }
+
+    printf("\n--- INSIDER NOISE (EVICT, MAC-valid) ---\n");
+    printf("  insider packets accepted (eviction pressure): %llu\n",
+           (unsigned long long)atomic_load(&m_insider_acc));
+
     printf("\n--- FRAMING / FORGERY ---\n");
+    printf("  forged packets rejected at the MAC gate (-24): %llu\n",
+           (unsigned long long)atomic_load(&m_forged_rej_mac));
     printf("  FRAME attempts: %llu | PROBE attempts: %llu | EVICT packets: %llu\n",
            (unsigned long long)frame_attempts, (unsigned long long)probe_attempts,
            (unsigned long long)evict_attempts);
@@ -723,6 +797,22 @@ int main(int argc, char **argv) {
            (unsigned long long)atomic_load(&m_phantom_a));
     printf("=====================================================\n");
 
+    // ---- ZERO-TOLERANCE CI GATE (exit code is the verdict) ----
+    // PASS requires ALL of: arch_false == 0 && forged_accepted == 0 &&
+    // honest acceptance >= 99.9% (per-mille >= 999). Anything else => exit(1).
+    uint64_t acc_h = atomic_load(&m_acc_honest);
+    uint64_t sent_h = atomic_load(&m_honest_sent);
+    uint64_t permille = sent_h ? (acc_h * 1000ULL) / sent_h : 0ULL;
+    int gate_ok = (atomic_load(&m_arch_false) == 0) &&
+                  (atomic_load(&m_acc_forged) == 0) &&
+                  (permille >= 999);
+
+    printf("\n=== CI GATE: arch_false=%llu | forged_accepted=%llu | honest=%llu.%llu%% (>=99.9%% required) -> %s ===\n",
+           (unsigned long long)atomic_load(&m_arch_false),
+           (unsigned long long)atomic_load(&m_acc_forged),
+           (unsigned long long)(permille / 10), (unsigned long long)(permille % 10),
+           gate_ok ? "PASS" : "FAIL");
+
     // cleanup
     for (int i = 0; i < N_AGENTS; i++) {
         if (agents[i].ctx) csls_agent_free(agents[i].ctx);
@@ -732,5 +822,5 @@ int main(int argc, char **argv) {
     for (int v = 0; v < N_VENDORS; v++) csls_vendor_free(vendors[v]);
     for (int h = 0; h < N_HOUNDS; h++) bloodhound_free(hounds[h]);
     csls_crypto_global_cleanup();
-    return 0;
+    return gate_ok ? 0 : 1;
 }

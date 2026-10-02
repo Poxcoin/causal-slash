@@ -25,6 +25,7 @@
 #include <openssl/evp.h>
 #include <openssl/obj_mac.h>
 #include <openssl/rand.h>
+#include <openssl/crypto.h>
 
 // Global Cryptographic Contexts (secp256k1)
 static EC_GROUP *g_secp256k1_group = NULL;
@@ -120,6 +121,236 @@ static int csls_derive_pk(const uint8_t *sk_bytes, uint8_t *out_pk_compressed) {
 }
 
 // -----------------------------------------------------------------------------
+// Cryptographic Infrastructure: CRC-64/ECMA-182, SipHash-2-4 (128-bit), ECDH,
+// session KDF, and the Dual-Sector Ping-Pong Watermark WAL (C1 fix).
+// -----------------------------------------------------------------------------
+
+static uint64_t g_crc64_tab[256];
+static pthread_once_t g_crc64_once = PTHREAD_ONCE_INIT;
+static void csls_crc64_build(void) {
+    for (uint64_t i = 0; i < 256; i++) {
+        uint64_t c = i << 56;
+        for (int k = 0; k < 8; k++)
+            c = (c & 0x8000000000000000ULL) ? (c << 1) ^ 0x42F0E1EBA9EA3693ULL : (c << 1);
+        g_crc64_tab[i] = c;
+    }
+}
+static uint64_t csls_crc64(const void *data, size_t len) {
+    pthread_once(&g_crc64_once, csls_crc64_build);
+    const uint8_t *p = (const uint8_t *)data;
+    uint64_t crc = 0;
+    while (len--) crc = g_crc64_tab[(crc >> 56) ^ *p++] ^ (crc << 8);
+    return crc;
+}
+
+static inline uint64_t csls_sip_load64(const uint8_t *p) {
+    return (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) |
+           ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) | ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56);
+}
+#define CSLS_SIPROUND(v0,v1,v2,v3) do { \
+    v0 += v1; v1 = (v1 << 13) | (v1 >> 51); v1 ^= v0; v0 = (v0 << 32) | (v0 >> 32); \
+    v2 += v3; v3 = (v3 << 16) | (v3 >> 48); v3 ^= v2; \
+    v0 += v3; v3 = (v3 << 21) | (v3 >> 43); v3 ^= v0; \
+    v2 += v1; v1 = (v1 << 17) | (v1 >> 47); v1 ^= v2; v2 = (v2 << 32) | (v2 >> 32); \
+} while (0)
+
+// SipHash-2-4 with 128-bit output: second run uses the standard finalization xor.
+static uint64_t csls_siphash24(const uint8_t key[16], const uint8_t *m, size_t n, uint64_t fin_xor) {
+    uint64_t k0 = csls_sip_load64(key), k1 = csls_sip_load64(key + 8);
+    uint64_t v0 = 0x736f6d6570736575ULL ^ k0;
+    uint64_t v1 = 0x646f72616e646f6dULL ^ k1;
+    uint64_t v2 = 0x6c7967656e657261ULL ^ k0;
+    uint64_t v3 = 0x7465646279746573ULL ^ k1 ^ fin_xor;
+    size_t full = n & ~(size_t)7;
+    for (size_t off = 0; off < full; off += 8) {
+        uint64_t b = csls_sip_load64(m + off);
+        v3 ^= b; CSLS_SIPROUND(v0,v1,v2,v3); CSLS_SIPROUND(v0,v1,v2,v3); v0 ^= b;
+    }
+    uint64_t b = ((uint64_t)(n & 7)) << 56;
+    for (size_t i = 0; i < (n & 7); i++) b |= ((uint64_t)m[full + i]) << (8 * i);
+    v3 ^= b; CSLS_SIPROUND(v0,v1,v2,v3); CSLS_SIPROUND(v0,v1,v2,v3); v0 ^= b;
+    v2 ^= 0xff;
+    CSLS_SIPROUND(v0,v1,v2,v3); CSLS_SIPROUND(v0,v1,v2,v3);
+    CSLS_SIPROUND(v0,v1,v2,v3); CSLS_SIPROUND(v0,v1,v2,v3);
+    return v0 ^ v1 ^ v2 ^ v3;
+}
+
+// 128-bit session MAC over the raw 151-byte cheque
+static void csls_mac128(const uint8_t key[32], const void *data, size_t len, uint8_t out[16]) {
+    uint64_t a = csls_siphash24(key, (const uint8_t *)data, len, 0);
+    uint64_t b = csls_siphash24(key, (const uint8_t *)data, len, 0xee);
+    for (int i = 0; i < 8; i++) { out[i] = (uint8_t)(a >> (8 * i)); out[8 + i] = (uint8_t)(b >> (8 * i)); }
+}
+
+// Static-static ECDH on secp256k1: shared = sk * PK_peer, returns x-coordinate.
+// Both sides derive the identical secret from long-term identities; no new keys.
+static int csls_ecdh_x(const uint8_t sk32[32], const uint8_t peer_pk33[33], uint8_t out_x[32]) {
+    int ret = -1;
+    BN_CTX *ctx = BN_CTX_new();
+    EC_POINT *peer = EC_POINT_new(g_secp256k1_group);
+    EC_POINT *shared = EC_POINT_new(g_secp256k1_group);
+    BIGNUM *sk = BN_bin2bn(sk32, 32, NULL);
+    BIGNUM *x = BN_new();
+    if (ctx && peer && shared && sk && x &&
+        EC_POINT_oct2point(g_secp256k1_group, peer, peer_pk33, 33, ctx) == 1 &&
+        EC_POINT_is_on_curve(g_secp256k1_group, peer, ctx) == 1 &&
+        EC_POINT_mul(g_secp256k1_group, shared, NULL, peer, sk, ctx) == 1 &&
+        EC_POINT_get_affine_coordinates(g_secp256k1_group, shared, x, NULL, ctx) == 1) {
+        BN_bn2binpad(x, out_x, 32);
+        ret = 0;
+    }
+    if (sk) BN_free(sk);
+    if (x) BN_free(x);
+    if (shared) EC_POINT_free(shared);
+    if (peer) EC_POINT_free(peer);
+    if (ctx) BN_CTX_free(ctx);
+    return ret;
+}
+
+static void csls_hmac32(const uint8_t key[32], const uint8_t *data, size_t dlen, uint8_t out[32]) {
+    unsigned int olen = 32;
+    HMAC(EVP_sha256(), key, 32, data, dlen, out, &olen);
+}
+
+// session_key = HMAC-SHA256(ecdh_x, session_nonce || "CSLS-MAC-v1")
+static void csls_session_kdf(const uint8_t ecdh_x[32], uint64_t nonce, uint8_t out_key[32]) {
+    uint8_t buf[8 + 11];
+    for (int i = 0; i < 8; i++) buf[i] = (uint8_t)(nonce >> (56 - i * 8));
+    memcpy(buf + 8, "CSLS-MAC-v1", 11);
+    csls_hmac32(ecdh_x, buf, sizeof(buf), out_key);
+}
+
+// INIT authentication tag: proves the ECDH key belongs to the claimed agent_pk
+static void csls_session_auth(const uint8_t ecdh_x[32], const uint8_t agent_pk[33],
+                              const uint8_t vendor_pk[33], uint64_t nonce, uint8_t out_mac[16]) {
+    uint8_t buf[33 + 33 + 8], full[32];
+    memcpy(buf, agent_pk, 33);
+    memcpy(buf + 33, vendor_pk, 33);
+    for (int i = 0; i < 8; i++) buf[66 + i] = (uint8_t)(nonce >> (56 - i * 8));
+    csls_hmac32(ecdh_x, buf, sizeof(buf), full);
+    memcpy(out_mac, full, 16);
+    OPENSSL_cleanse(full, sizeof(full));
+}
+
+// Deterministic nonce hash via precomputed HMAC midstates (hot path: no heap,
+// no one-shot HMAC allocation): k_hash = SHA256(opad_state || SHA256(ipad_state || msg))
+static void csls_derive_k_hash(const SHA256_CTX *ictx0, const SHA256_CTX *octx0,
+                               const uint8_t pre[42], size_t plen, uint8_t out[32]) {
+    SHA256_CTX ic = *ictx0, oc = *octx0;
+    uint8_t inner[32];
+    SHA256_Update(&ic, pre, plen);
+    SHA256_Final(inner, &ic);
+    SHA256_Update(&oc, inner, 32);
+    SHA256_Final(out, &oc);
+    OPENSSL_cleanse(inner, sizeof(inner));
+}
+
+// --- Dual-Sector Ping-Pong Watermark WAL -------------------------------------
+// Sector authenticity: hmac = HMAC-SHA256(sk, "CSLS_WAL_INTEGRITY_v1" || magic ||
+// sequence || reserved). Keyed by the agent's signing key: a local co-tenant with
+// WAL write access but no sk cannot mint a lease with a lowered reserved_height
+// (Red Team P1). CRC-64 was dropped — unkeyed integrity is worthless against a
+// forger who recomputes it.
+static void csls_wal_fill_sector(csls_wal_sector_t *s, uint32_t seq, uint64_t reserved) {
+    memset(s, 0, sizeof(*s));
+    s->magic = CSLS_WAL_MAGIC;
+    s->sequence = seq;
+    s->reserved_height = reserved;
+    s->crc64 = csls_crc64(s, 16); // CRC covers magic+sequence+reserved (NOT the crc field itself)
+}
+static int csls_wal_sector_valid(const csls_wal_sector_t *s) {
+    return s->magic == CSLS_WAL_MAGIC && s->crc64 == csls_crc64(s, 16);
+}
+// Durably extend the lease by one block. O_DSYNC makes the pwrite itself the
+// durability barrier; heights <= new reserved are safe to sign afterwards.
+static int csls_wal_renew(csls_agent_ctx_t *a) {
+    csls_wal_sector_t s;
+    uint32_t seq = a->wal_sequence + 1;
+    uint64_t reserved = a->wal_reserved + CSLS_WAL_BLOCK;
+    csls_wal_fill_sector(&s, seq, reserved);
+    memset(a->wal_buf, 0, CSLS_WAL_SECTOR);
+    memcpy(a->wal_buf, &s, sizeof(s));
+    off_t off = (seq & 1) ? CSLS_WAL_SECTOR : 0;
+    ssize_t w = pwrite(a->wal_fd, a->wal_buf, CSLS_WAL_SECTOR, off);
+    if (w != CSLS_WAL_SECTOR) {
+        atomic_store_explicit(&a->wal_fatal, 1, memory_order_release);
+        pthread_mutex_lock(&a->lease_mu);
+        pthread_cond_broadcast(&a->lease_cv);
+        pthread_mutex_unlock(&a->lease_mu);
+        return -1;
+    }
+    a->wal_sequence = seq;
+    a->wal_reserved = reserved;
+    atomic_store_explicit(&a->watermark_boundary, reserved, memory_order_release);
+    pthread_mutex_lock(&a->lease_mu);
+    pthread_cond_broadcast(&a->lease_cv);
+    pthread_mutex_unlock(&a->lease_mu);
+    return 0;
+}
+
+// --- Singleton Refiller (work queue, ONE background thread per process) ------
+static struct {
+    pthread_mutex_t  mu;
+    pthread_cond_t   cv;
+    csls_agent_ctx_t *ring[CSLS_REFILLER_RING];
+    size_t           head, count;
+    pthread_t        thread;
+    bool             started;
+    _Atomic bool     stop;
+} g_refiller = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER, .stop = false };
+
+static void *csls_refiller_main(void *arg) {
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&g_refiller.mu);
+        while (g_refiller.count == 0 && !atomic_load_explicit(&g_refiller.stop, memory_order_relaxed))
+            pthread_cond_wait(&g_refiller.cv, &g_refiller.mu);
+        if (g_refiller.count == 0 && atomic_load_explicit(&g_refiller.stop, memory_order_relaxed)) {
+            pthread_mutex_unlock(&g_refiller.mu);
+            break;
+        }
+        csls_agent_ctx_t *a = g_refiller.ring[g_refiller.head];
+        g_refiller.ring[g_refiller.head] = NULL;
+        g_refiller.head = (g_refiller.head + 1) % (sizeof(g_refiller.ring) / sizeof(g_refiller.ring[0]));
+        g_refiller.count--;
+        // Hold mu for the whole renewal: serializes O_DSYNC writes and pins the
+        // agent against csls_agent_destroy for the duration (no use-after-free).
+        if (a) csls_wal_renew(a);
+        atomic_store_explicit(&a->renew_requested, 0, memory_order_relaxed);
+        pthread_mutex_unlock(&g_refiller.mu);
+    }
+    return NULL;
+}
+static void csls_refiller_start(void) {
+    pthread_mutex_lock(&g_refiller.mu);
+    if (!g_refiller.started) {
+        g_refiller.started = true;
+        pthread_create(&g_refiller.thread, NULL, csls_refiller_main, NULL);
+    }
+    pthread_mutex_unlock(&g_refiller.mu);
+}
+static bool csls_refiller_submit(csls_agent_ctx_t *a) {
+    bool ok = false;
+    pthread_mutex_lock(&g_refiller.mu);
+    if (g_refiller.count < (sizeof(g_refiller.ring) / sizeof(g_refiller.ring[0]))) {
+        g_refiller.ring[(g_refiller.head + g_refiller.count) % (sizeof(g_refiller.ring) / sizeof(g_refiller.ring[0]))] = a;
+        g_refiller.count++;
+        pthread_cond_signal(&g_refiller.cv);
+        ok = true;
+    }
+    pthread_mutex_unlock(&g_refiller.mu);
+    return ok; // false => caller must clear renew_requested or the lease deadlocks
+}
+static void csls_refiller_detach(csls_agent_ctx_t *a) {
+    pthread_mutex_lock(&g_refiller.mu);
+    size_t cap = sizeof(g_refiller.ring) / sizeof(g_refiller.ring[0]);
+    for (size_t i = 0; i < g_refiller.count; i++)
+        if (g_refiller.ring[(g_refiller.head + i) % cap] == a)
+            g_refiller.ring[(g_refiller.head + i) % cap] = NULL;
+    pthread_mutex_unlock(&g_refiller.mu);
+}
+
+// -----------------------------------------------------------------------------
 // Multi-Channel O(1) State Table Implementation
 // -----------------------------------------------------------------------------
 
@@ -193,16 +424,23 @@ csls_channel_t *csls_channel_get_or_create(csls_channel_table_t *table, const ui
     return NULL;
 }
 
+static csls_channel_t *csls_channel_find(csls_channel_table_t *table, const uint8_t *peer_pk) {
+    if (!table || !peer_pk) return NULL;
+    uint32_t start_slot = (uint32_t)(csls_hash_peer_pk(peer_pk) & CSLS_CHANNEL_MASK);
+    for (size_t step = 0; step < CSLS_MAX_CHANNELS; step++) {
+        csls_channel_t *chan = &table->channels[(start_slot + step) & CSLS_CHANNEL_MASK];
+        if (!chan->occupied) return NULL;
+        if (memcmp(chan->peer_pk, peer_pk, 33) == 0) return chan;
+    }
+    return NULL;
+}
+
 csls_agent_ctx_t *csls_agent_new(const uint8_t *sk_bytes, const char *wal_path) {
     csls_agent_ctx_t *agent = (csls_agent_ctx_t *)calloc(1, sizeof(csls_agent_ctx_t));
     if (!agent) return NULL;
     if (csls_agent_init(agent, sk_bytes, wal_path) != 0) {
         free(agent);
         return NULL;
-    }
-    uint64_t cur = atomic_load(&agent->height);
-    if (cur == 0) {
-        atomic_init(&agent->height, 1);
     }
     return agent;
 }
@@ -222,10 +460,31 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
     if (csls_derive_pk(agent->sk, agent->pk) != 0) return -1;
 
     csls_channel_table_init(&agent->channels);
-    atomic_init(&agent->height, 0);
+    atomic_init(&agent->height, 1);
+    atomic_init(&agent->watermark_boundary, UINT64_MAX);
+    atomic_init(&agent->wal_fatal, 0);
+    atomic_init(&agent->renew_requested, 0);
     agent->cumulative_sent = 0;
     agent->wal_fd = -1;
+    agent->n_sessions = 0;
     pthread_mutex_init(&agent->lock, NULL);
+    pthread_mutex_init(&agent->lease_mu, NULL);
+    pthread_cond_init(&agent->lease_cv, NULL);
+
+    // Precompute HMAC ipad/opad SHA-256 midstates once (key = sk is constant):
+    // hot-path nonce derivation costs two compressions instead of a 2 us one-shot.
+    {
+        uint8_t ipad[64], opad[64];
+        memset(ipad, 0x36, 64);
+        memset(opad, 0x5c, 64);
+        for (int i = 0; i < 32; i++) { ipad[i] ^= agent->sk[i]; opad[i] ^= agent->sk[i]; }
+        SHA256_Init(&agent->hmac_ictx0);
+        SHA256_Update(&agent->hmac_ictx0, ipad, 64);
+        SHA256_Init(&agent->hmac_octx0);
+        SHA256_Update(&agent->hmac_octx0, opad, 64);
+        OPENSSL_cleanse(ipad, sizeof(ipad));
+        OPENSSL_cleanse(opad, sizeof(opad));
+    }
 
     // Pre-allocate BIGNUM execution context to eliminate hot-loop heap allocation
     BN_CTX *ctx = BN_CTX_new();
@@ -255,37 +514,83 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
 
     if (wal_path && strlen(wal_path) > 0) {
         strncpy(agent->wal_path, wal_path, sizeof(agent->wal_path) - 1);
-        agent->wal_fd = open(agent->wal_path, O_RDWR | O_CREAT, 0600);
-        if (agent->wal_fd >= 0) {
-            csls_wal_record_t rec;
-            uint64_t max_wal_h = 0;
-            while (read(agent->wal_fd, &rec, sizeof(csls_wal_record_t)) == sizeof(csls_wal_record_t)) {
-                if (rec.height > 0) {
-                    csls_channel_t *ch = csls_channel_get_or_create(&agent->channels, rec.peer_pk);
-                    if (ch) {
-                        atomic_store(&ch->height, rec.height + 1);
-                        atomic_store(&ch->cumulative_sent, rec.cumulative_sent);
-                    }
-                    if (rec.height + 1 > max_wal_h) {
-                        max_wal_h = rec.height + 1;
-                    }
-                }
-            }
-            if (max_wal_h > 0) {
-                atomic_store(&agent->height, max_wal_h);
-            }
+        int fd = open(agent->wal_path, O_RDWR | O_CREAT | O_DSYNC | O_DIRECT, 0600);
+        if (fd < 0) fd = open(agent->wal_path, O_RDWR | O_CREAT | O_DSYNC, 0600);
+        if (fd < 0) return -6;
+        if (posix_memalign((void **)&agent->wal_buf, CSLS_WAL_SECTOR, CSLS_WAL_SECTOR) != 0) {
+            close(fd);
+            agent->wal_fd = -1;
+            return -6;
         }
+        csls_wal_sector_t sa, sb;
+        memset(&sa, 0, sizeof(sa));
+        memset(&sb, 0, sizeof(sb));
+        ssize_t ra = pread(fd, agent->wal_buf, CSLS_WAL_SECTOR, 0);
+        if (ra == CSLS_WAL_SECTOR) memcpy(&sa, agent->wal_buf, sizeof(sa));
+        ssize_t rb = pread(fd, agent->wal_buf, CSLS_WAL_SECTOR, CSLS_WAL_SECTOR);
+        if (rb == CSLS_WAL_SECTOR) memcpy(&sb, agent->wal_buf, sizeof(sb));
+        int va = csls_wal_sector_valid(&sa);
+        int vb = csls_wal_sector_valid(&sb);
+        int fresh_a = (ra <= 0) || (sa.magic == 0 && sa.sequence == 0 && sa.reserved_height == 0);
+        int fresh_b = (rb <= 0) || (sb.magic == 0 && sb.sequence == 0 && sb.reserved_height == 0);
+        uint32_t seq = 0;
+        uint64_t reserved = 0;
+        if (va && vb) {
+            if (sa.sequence >= sb.sequence) { seq = sa.sequence; reserved = sa.reserved_height; }
+            else                            { seq = sb.sequence; reserved = sb.reserved_height; }
+        } else if (va) {
+            seq = sa.sequence; reserved = sa.reserved_height;
+        } else if (vb) {
+            seq = sb.sequence; reserved = sb.reserved_height;
+        } else if (fresh_a && fresh_b) {
+            seq = 0; reserved = 0; // brand-new lease file
+        } else {
+            // Content present but integrity failed on both sides: fail-closed.
+            close(fd);
+            free(agent->wal_buf);
+            agent->wal_buf = NULL;
+            return -6;
+        }
+        agent->wal_fd = fd;
+        agent->wal_sequence = seq;
+        agent->wal_reserved = reserved;
+        // New life starts strictly ABOVE every height the previous life could
+        // have used (old lease top + 1), then the next block is leased durably
+        // BEFORE the first signature of this life.
+        uint64_t boot = reserved + 1;
+        if (csls_wal_renew(agent) != 0) {
+            close(fd);
+            free(agent->wal_buf);
+            agent->wal_buf = NULL;
+            agent->wal_fd = -1;
+            return -6;
+        }
+        atomic_store(&agent->height, boot);
+        atomic_store(&agent->watermark_boundary, agent->wal_reserved);
+        csls_refiller_start();
+    } else {
+        atomic_store(&agent->height, 1);
+        atomic_store(&agent->watermark_boundary, UINT64_MAX);
     }
     return 0;
 }
 
 void csls_agent_destroy(csls_agent_ctx_t *agent) {
     if (agent) {
+        csls_refiller_detach(agent);
         if (agent->wal_fd >= 0) {
             close(agent->wal_fd);
             agent->wal_fd = -1;
         }
+        if (agent->wal_buf) {
+            OPENSSL_cleanse(agent->wal_buf, CSLS_WAL_SECTOR);
+            free(agent->wal_buf);
+            agent->wal_buf = NULL;
+        }
+        OPENSSL_cleanse(agent->sk, sizeof(agent->sk));
         pthread_mutex_destroy(&agent->lock);
+        pthread_mutex_destroy(&agent->lease_mu);
+        pthread_cond_destroy(&agent->lease_cv);
         csls_channel_table_destroy(&agent->channels);
 
         if (agent->bn_ctx) {
@@ -300,8 +605,9 @@ void csls_agent_destroy(csls_agent_ctx_t *agent) {
     }
 }
 
-int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk, 
-                            uint64_t delta_micro_usdc, csls_cheque_pkt_t *out_pkt) {
+static int csls_agent_sign_common(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
+                                  uint64_t delta_micro_usdc, csls_cheque_pkt_t *out_pkt,
+                                  uint8_t *out_mac) {
     if (!agent || !vendor_pk || !out_pkt) return -1;
 
     pthread_mutex_lock(&agent->lock);
@@ -319,35 +625,37 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
         return -2; // OVERFLOW_ERROR
     }
 
-    uint64_t cur_h = atomic_load(&chan->height);
-    uint64_t agent_h = atomic_load(&agent->height);
-    if (agent_h > 0 && agent_h != cur_h) {
-        atomic_store(&chan->height, agent_h);
-        cur_h = agent_h;
-    } else if (cur_h == 0) {
-        uint64_t expected = 0;
-        atomic_compare_exchange_strong(&chan->height, &expected, 1);
-    }
-    uint64_t h = atomic_fetch_add(&chan->height, 1);
-    uint64_t cum_amt = atomic_fetch_add(&chan->cumulative_sent, delta_micro_usdc) + delta_micro_usdc;
-    if (agent_h > 0) {
-        atomic_store(&agent->height, h + 1);
-    }
-    agent->cumulative_sent += delta_micro_usdc;
+    // GLOBAL watermark-leased height: single source of truth. The per-channel
+    // counter below is a cache for diagnostics/handshake bookkeeping only.
+    uint64_t h = atomic_fetch_add_explicit(&agent->height, 1, memory_order_relaxed);
 
-    // Atomic Write-Ahead-Log sync for power-loss fault tolerance (per-channel offset)
+    // Durable-lease invariant: NEVER sign a height beyond the durable reservation.
+    // If the lease runs dry the hot path blocks until the refiller lands the next
+    // block — signing past the watermark would resurrect the C1 nonce-reuse leak.
     if (agent->wal_fd >= 0) {
-        csls_wal_record_t rec;
-        memcpy(rec.peer_pk, vendor_pk, 33);
-        rec.height = h;
-        rec.cumulative_sent = cum_amt;
-        int chan_idx = (int)(chan - agent->channels.channels);
-        off_t offset = (chan_idx >= 0 && chan_idx < CSLS_MAX_CHANNELS)
-            ? (off_t)(chan_idx * sizeof(csls_wal_record_t))
-            : 0;
-        ssize_t pw_res = pwrite(agent->wal_fd, &rec, sizeof(csls_wal_record_t), offset);
-        (void)pw_res;
+        for (;;) {
+            uint64_t b = atomic_load_explicit(&agent->watermark_boundary, memory_order_acquire);
+            if (h <= b) break;
+            if (atomic_load_explicit(&agent->wal_fatal, memory_order_acquire)) {
+                pthread_mutex_unlock(&agent->lock);
+                return CSLS_ERR_WAL_FATAL;
+            }
+            pthread_mutex_lock(&agent->lease_mu);
+            if (h > atomic_load_explicit(&agent->watermark_boundary, memory_order_acquire) &&
+                !atomic_load_explicit(&agent->wal_fatal, memory_order_acquire))
+                pthread_cond_wait(&agent->lease_cv, &agent->lease_mu);
+            pthread_mutex_unlock(&agent->lease_mu);
+        }
+        uint64_t b = atomic_load_explicit(&agent->watermark_boundary, memory_order_acquire);
+        if (b - h <= CSLS_WAL_REFILL_AT && !atomic_exchange(&agent->renew_requested, 1)) {
+            if (!csls_refiller_submit(agent))
+                atomic_store(&agent->renew_requested, 0); // queue full: retry on a later tick
+        }
     }
+
+    uint64_t cum_amt = atomic_fetch_add(&chan->cumulative_sent, delta_micro_usdc) + delta_micro_usdc;
+    atomic_store(&chan->height, h);
+    agent->cumulative_sent += delta_micro_usdc;
 
     out_pkt->magic = CSLS_MAGIC;
     out_pkt->type = CSLS_PKT_CHEQUE;
@@ -366,7 +674,6 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     k_preimage[41] = 0;
 
     uint8_t k_hash[32];
-    unsigned int k_len = 32;
 
     BN_CTX *ctx = (BN_CTX *)agent->bn_ctx;
     BIGNUM *k = (BIGNUM *)agent->bn_k;
@@ -375,9 +682,10 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     BIGNUM *s = (BIGNUM *)agent->bn_s;
     BIGNUM *tmp = (BIGNUM *)agent->bn_tmp;
 
-    // RFC 6979 Section 3.2 step H3: loop until non-zero scalar modulo q
+    // RFC 6979-style H3 counter loop via midstates (no heap, no one-shot HMAC)
     while (1) {
-        HMAC(EVP_sha256(), agent->sk, 32, k_preimage, (k_preimage[41] == 0 ? 41 : 42), k_hash, &k_len);
+        csls_derive_k_hash(&agent->hmac_ictx0, &agent->hmac_octx0, k_preimage,
+                           (k_preimage[41] == 0 ? 41 : 42), k_hash);
         BN_bin2bn(k_hash, 32, k);
         if (memcmp(k_hash, SECP256K1_Q_BE, 32) >= 0) {
             BN_nnmod(k, k, g_curve_order_q, ctx);
@@ -386,6 +694,10 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
             break;
         }
         k_preimage[41]++;
+        if (k_preimage[41] == 0) { // 1-byte counter exhausted: cryptographically impossible
+            pthread_mutex_unlock(&agent->lock);
+            return -1;
+        }
     }
 
 
@@ -416,6 +728,46 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     BN_mod_add(s, k, tmp, g_curve_order_q, ctx);
     BN_bn2binpad(s, out_pkt->sig_s, 32);
 
+    if (out_mac) {
+        // C2: session MAC over the raw 151-byte cheque (SipHash-2-4, 128-bit)
+        int chan_idx = (int)(chan - agent->channels.channels);
+        const uint8_t *skey = NULL;
+        for (int i = 0; i < agent->n_sessions; i++)
+            if (agent->sessions[i].chan_idx == chan_idx) { skey = agent->sessions[i].key; break; }
+        if (!skey) {
+            pthread_mutex_unlock(&agent->lock);
+            return CSLS_ERR_NO_SESSION;
+        }
+        csls_mac128(skey, out_pkt, sizeof(*out_pkt), out_mac);
+    }
+
+    pthread_mutex_unlock(&agent->lock);
+    return 0;
+}
+
+int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
+                           uint64_t delta_micro_usdc, csls_cheque_pkt_t *out_pkt) {
+    return csls_agent_sign_common(agent, vendor_pk, delta_micro_usdc, out_pkt, NULL);
+}
+
+int csls_agent_sign_cheque_mac(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
+                               uint64_t delta_micro_usdc, csls_cheque_pkt_t *out_pkt,
+                               uint8_t out_mac[16]) {
+    return csls_agent_sign_common(agent, vendor_pk, delta_micro_usdc, out_pkt, out_mac);
+}
+
+int csls_agent_mac_packet(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
+                          const csls_cheque_pkt_t *pkt, uint8_t out_mac[16]) {
+    if (!agent || !vendor_pk || !pkt || !out_mac) return -1;
+    pthread_mutex_lock(&agent->lock);
+    csls_channel_t *chan = csls_channel_get_or_create(&agent->channels, vendor_pk);
+    if (!chan) { pthread_mutex_unlock(&agent->lock); return -3; }
+    int chan_idx = (int)(chan - agent->channels.channels);
+    const uint8_t *skey = NULL;
+    for (int i = 0; i < agent->n_sessions; i++)
+        if (agent->sessions[i].chan_idx == chan_idx) { skey = agent->sessions[i].key; break; }
+    if (!skey) { pthread_mutex_unlock(&agent->lock); return CSLS_ERR_NO_SESSION; }
+    csls_mac128(skey, pkt, sizeof(*pkt), out_mac);
     pthread_mutex_unlock(&agent->lock);
     return 0;
 }
@@ -453,6 +805,7 @@ int csls_vendor_init(csls_vendor_ctx_t *vendor, const uint8_t *sk_bytes, uint64_
         clock_gettime(CLOCK_MONOTONIC, &ts);
         vendor->slot_seed = (uint64_t)ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 32) ^ 0xCAFEBABEDEADBEEFULL;
     }
+    vendor->enforce_mac = 0; // legacy mode by default; production paths opt in
 
     return 0;
 }
@@ -539,8 +892,8 @@ int csls_extract_private_key(const csls_cheque_pkt_t *c1, const csls_cheque_pkt_
  *    while forfeiting collateral bond B (Expected Payoff E[W] < 0, ROI <= -95%).
  */
 
-int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_t *pkt, 
-                                csls_fraud_pkt_t *out_fraud) {
+static int csls_vendor_process_common(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_t *pkt,
+                                      csls_fraud_pkt_t *out_fraud, const uint8_t *mac) {
     if (!vendor || !pkt) return -1;
 
     // 1. Framing & Protocol Magic
@@ -555,6 +908,23 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
     if (!chan) {
         pthread_mutex_unlock(&vendor->lock);
         return -15; // CHANNEL_TABLE_FULL
+    }
+    int chan_idx = (int)(chan - vendor->channels.channels);
+    csls_head_t *head = &vendor->heads[chan_idx];
+
+    // 1b. C2 Gate: session MAC. Outsiders cannot forge a single byte without the
+    // ECDH-derived session key; garbage-s packets from the wire die here.
+    if (vendor->enforce_mac) {
+        if (!mac || !head->mac_active) {
+            pthread_mutex_unlock(&vendor->lock);
+            return CSLS_ERR_BAD_MAC;
+        }
+        uint8_t tag[16];
+        csls_mac128(head->session_key, pkt, sizeof(*pkt), tag);
+        if (memcmp(tag, mac, 16) != 0) {
+            pthread_mutex_unlock(&vendor->lock);
+            return CSLS_ERR_BAD_MAC;
+        }
     }
 
     uint64_t accumulated = atomic_load(&chan->accumulated_amount);
@@ -651,13 +1021,15 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
         return -23; // FORGED_CHALLENGE_HASH
     }
 
-    // 5. Record new valid state
+    // 5. Record new valid state (history ring + head cheque for restart handshake)
     memcpy(entry->agent_pk, pkt->agent_pk, 33);
     entry->height = pkt->height;
     entry->amount = pkt->cumulative_amt;
     memcpy(entry->challenge_e, pkt->challenge_e, 32);
     memcpy(entry->sig_s, pkt->sig_s, 32);
     entry->occupied = true;
+    head->cheque = *pkt;
+    head->valid = true;
 
     atomic_store(&chan->height, pkt->height);
     atomic_store(&chan->accumulated_amount, pkt->cumulative_amt);
@@ -666,6 +1038,68 @@ int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_
 
     pthread_mutex_unlock(&vendor->lock);
     return 0; // ACCEPTED_OK
+}
+
+int csls_vendor_process_cheque(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_t *pkt,
+                               csls_fraud_pkt_t *out_fraud) {
+    return csls_vendor_process_common(vendor, pkt, out_fraud, NULL);
+}
+
+int csls_vendor_process_cheque_mac(csls_vendor_ctx_t *vendor, const csls_cheque_pkt_t *pkt,
+                                   const uint8_t mac[16], csls_fraud_pkt_t *out_fraud) {
+    return csls_vendor_process_common(vendor, pkt, out_fraud, mac);
+}
+
+int csls_vendor_enable_mac(csls_vendor_ctx_t *vendor, int enable) {
+    if (!vendor) return -1;
+    pthread_mutex_lock(&vendor->lock);
+    vendor->enforce_mac = enable ? 1 : 0;
+    pthread_mutex_unlock(&vendor->lock);
+    return 0;
+}
+
+int csls_vendor_session_init(csls_vendor_ctx_t *vendor, const csls_session_init_pkt_t *init) {
+    if (!vendor || !init) return -1;
+    if (init->magic != CSLS_MAGIC || init->type != CSLS_PKT_SESSION_INIT) return -10;
+    pthread_mutex_lock(&vendor->lock);
+    uint8_t x[32];
+    if (csls_ecdh_x(vendor->sk, init->agent_pk, x) != 0) {
+        pthread_mutex_unlock(&vendor->lock);
+        return -1;
+    }
+    uint8_t auth[16];
+    csls_session_auth(x, init->agent_pk, init->vendor_pk, init->session_nonce, auth);
+    if (memcmp(auth, init->auth_mac, 16) != 0) {
+        // Spoofed INIT: the attacker does not hold the claimed agent's key.
+        OPENSSL_cleanse(x, sizeof(x));
+        pthread_mutex_unlock(&vendor->lock);
+        return CSLS_ERR_BAD_MAC;
+    }
+    csls_channel_t *chan = csls_channel_get_or_create(&vendor->channels, init->agent_pk);
+    if (!chan) {
+        OPENSSL_cleanse(x, sizeof(x));
+        pthread_mutex_unlock(&vendor->lock);
+        return -15;
+    }
+    csls_head_t *hd = &vendor->heads[(int)(chan - vendor->channels.channels)];
+    csls_session_kdf(x, init->session_nonce, hd->session_key);
+    hd->mac_active = true;
+    OPENSSL_cleanse(x, sizeof(x));
+    pthread_mutex_unlock(&vendor->lock);
+    return 0;
+}
+
+int csls_vendor_get_head_cheque(csls_vendor_ctx_t *vendor, const uint8_t *agent_pk,
+                                csls_cheque_pkt_t *out_cheque) {
+    if (!vendor || !agent_pk || !out_cheque) return -1;
+    pthread_mutex_lock(&vendor->lock);
+    csls_channel_t *chan = csls_channel_find(&vendor->channels, agent_pk);
+    if (!chan) { pthread_mutex_unlock(&vendor->lock); return -14; }
+    csls_head_t *hd = &vendor->heads[(int)(chan - vendor->channels.channels)];
+    if (!hd->valid) { pthread_mutex_unlock(&vendor->lock); return -14; }
+    *out_cheque = hd->cheque;
+    pthread_mutex_unlock(&vendor->lock);
+    return 0;
 }
 
 int csls_vendor_advance_cleared(csls_vendor_ctx_t *vendor, const uint8_t *agent_pk, uint64_t cleared_amount) {
@@ -716,6 +1150,130 @@ int csls_agent_get_channel_state(csls_agent_ctx_t *agent, const uint8_t *vendor_
     }
     if (out_height) *out_height = atomic_load(&chan->height);
     if (out_cumulative) *out_cumulative = atomic_load(&chan->cumulative_sent);
+    pthread_mutex_unlock(&agent->lock);
+    return 0;
+}
+
+int csls_agent_session_begin(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
+                             csls_session_init_pkt_t *out_init) {
+    if (!agent || !vendor_pk || !out_init) return -1;
+    pthread_mutex_lock(&agent->lock);
+    csls_channel_t *chan = csls_channel_get_or_create(&agent->channels, vendor_pk);
+    if (!chan) { pthread_mutex_unlock(&agent->lock); return -3; }
+    int chan_idx = (int)(chan - agent->channels.channels);
+    uint8_t x[32];
+    if (csls_ecdh_x(agent->sk, vendor_pk, x) != 0) {
+        pthread_mutex_unlock(&agent->lock);
+        return -1;
+    }
+    uint64_t nonce = 0;
+    if (RAND_bytes((unsigned char *)&nonce, sizeof(nonce)) != 1) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        nonce = (uint64_t)ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)(uintptr_t)agent;
+    }
+    memset(out_init, 0, sizeof(*out_init));
+    out_init->magic = CSLS_MAGIC;
+    out_init->type = CSLS_PKT_SESSION_INIT;
+    memcpy(out_init->agent_pk, agent->pk, 33);
+    memcpy(out_init->vendor_pk, vendor_pk, 33);
+    out_init->session_nonce = nonce;
+    csls_session_auth(x, agent->pk, vendor_pk, nonce, out_init->auth_mac);
+    uint8_t key[32];
+    csls_session_kdf(x, nonce, key);
+    OPENSSL_cleanse(x, sizeof(x));
+    int slot = -1;
+    for (int i = 0; i < agent->n_sessions; i++)
+        if (agent->sessions[i].chan_idx == chan_idx) { slot = i; break; }
+    if (slot < 0 && agent->n_sessions < CSLS_MAX_SESSIONS) slot = agent->n_sessions++;
+    if (slot < 0) { pthread_mutex_unlock(&agent->lock); return -1; }
+    memcpy(agent->sessions[slot].key, key, 32);
+    agent->sessions[slot].chan_idx = chan_idx;
+    OPENSSL_cleanse(key, sizeof(key));
+    pthread_mutex_unlock(&agent->lock);
+    return 0;
+}
+
+// Proof-Carrying Restart Handshake: the vendor proves its claimed channel head
+// by presenting the agent's own last cheque. The agent verifies it WITHOUT any
+// elliptic-curve operation: e must equal SHA256(preimage) and s must equal
+// k + e*sk with k recomputed from the deterministic HMAC domain.
+int csls_agent_restore_session(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
+                               const csls_cheque_pkt_t *head) {
+    if (!agent || !vendor_pk || !head) return -1;
+    if (head->magic != CSLS_MAGIC || head->type != CSLS_PKT_CHEQUE) return -10;
+    if (memcmp(head->agent_pk, agent->pk, 33) != 0) return -6;
+    if (memcmp(head->vendor_pk, vendor_pk, 33) != 0) return -7;
+
+    uint8_t h_be[8];
+    for (int i = 0; i < 8; i++) h_be[i] = (uint8_t)((head->height >> (56 - i * 8)) & 0xFF);
+    uint8_t preimage[82];
+    memcpy(preimage, head->agent_pk, 33);
+    memcpy(preimage + 33, head->vendor_pk, 33);
+    memcpy(preimage + 66, h_be, 8);
+    for (int i = 0; i < 8; i++)
+        preimage[74 + i] = (uint8_t)((head->cumulative_amt >> (56 - i * 8)) & 0xFF);
+    uint8_t e_digest[32];
+    SHA256(preimage, sizeof(preimage), e_digest);
+    if (memcmp(e_digest, head->challenge_e, 32) != 0) {
+        // tolerate the (astronomically rare) >= q reduced challenge form
+        if (memcmp(e_digest, SECP256K1_Q_BE, 32) >= 0) {
+            BN_CTX *bctx = BN_CTX_new();
+            BIGNUM *e_red = BN_bin2bn(e_digest, 32, NULL);
+            uint8_t red[32];
+            if (e_red && bctx) {
+                BN_nnmod(e_red, e_red, g_curve_order_q, bctx);
+                BN_bn2binpad(e_red, red, 32);
+                if (memcmp(red, head->challenge_e, 32) != 0) {
+                    BN_free(e_red); BN_CTX_free(bctx); return -23;
+                }
+                BN_free(e_red); BN_CTX_free(bctx);
+            } else {
+                if (e_red) BN_free(e_red);
+                if (bctx) BN_CTX_free(bctx);
+                return -1;
+            }
+        } else {
+            return -23;
+        }
+    }
+
+    pthread_mutex_lock(&agent->lock);
+    BN_CTX *ctx = (BN_CTX *)agent->bn_ctx;
+    BIGNUM *e = (BIGNUM *)agent->bn_e;
+    BIGNUM *k = (BIGNUM *)agent->bn_k;
+    BIGNUM *sk = (BIGNUM *)agent->bn_sk;
+    BIGNUM *s = (BIGNUM *)agent->bn_s;
+    BIGNUM *tmp = (BIGNUM *)agent->bn_tmp;
+    BN_bin2bn(head->challenge_e, 32, e);
+    if (memcmp(head->challenge_e, SECP256K1_Q_BE, 32) >= 0)
+        BN_nnmod(e, e, g_curve_order_q, ctx);
+    int matched = 0;
+    uint8_t expect_s[32];
+    for (int ctr = 0; ctr < 256 && !matched; ctr++) {
+        uint8_t pre[42];
+        memcpy(pre, vendor_pk, 33);
+        memcpy(pre + 33, h_be, 8);
+        pre[41] = (uint8_t)ctr;
+        uint8_t k_hash[32];
+        csls_derive_k_hash(&agent->hmac_ictx0, &agent->hmac_octx0, pre, ctr ? 42 : 41, k_hash);
+        BN_bin2bn(k_hash, 32, k);
+        if (memcmp(k_hash, SECP256K1_Q_BE, 32) >= 0)
+            BN_nnmod(k, k, g_curve_order_q, ctx);
+        BN_mod_mul(tmp, e, sk, g_curve_order_q, ctx);
+        BN_mod_add(s, k, tmp, g_curve_order_q, ctx);
+        BN_bn2binpad(s, expect_s, 32);
+        if (memcmp(expect_s, head->sig_s, 32) == 0) matched = 1;
+    }
+    if (!matched) {
+        // Lying vendor: fabricated or stale cheque that the agent never signed
+        pthread_mutex_unlock(&agent->lock);
+        return -5;
+    }
+    csls_channel_t *chan = csls_channel_get_or_create(&agent->channels, vendor_pk);
+    if (!chan) { pthread_mutex_unlock(&agent->lock); return -3; }
+    atomic_store(&chan->cumulative_sent, head->cumulative_amt);
+    atomic_store(&chan->height, head->height);
     pthread_mutex_unlock(&agent->lock);
     return 0;
 }
@@ -792,9 +1350,10 @@ int csls_run_equivocation_test(void) {
 
     csls_agent_init(&agent, agent_sk, NULL);
 
-    // 1. Legitimate Cheque at height h = 1001
-    csls_channel_t *ch = csls_channel_get_or_create(&agent.channels, vendor->pk);
-    atomic_store(&ch->height, 1001);
+    // 1. Legitimate Cheque at height h = 1001. The malicious-client model
+    // regresses the agent's GLOBAL leased counter in memory (the vendor-side
+    // watermark cannot be regressed by a restart).
+    atomic_store(&agent.height, 1001);
     csls_cheque_pkt_t cheque1;
     csls_agent_sign_cheque(&agent, vendor->pk, 50000, &cheque1); // $0.05 at h=1001
 
@@ -802,8 +1361,8 @@ int csls_run_equivocation_test(void) {
     printf("  [1] Legitimate Cheque at h=1001 accepted: %s\n", (r1 == 0) ? "YES" : "NO");
 
     // 2. Forking/Double-Spending Attack: Sign a conflicting cheque at SAME height h = 1001
-    // Malicious agent resets its channel height back to 1001 to equivocate
-    atomic_store(&ch->height, 1001);
+    // Malicious agent regresses its global in-memory height back to 1001 to equivocate
+    atomic_store(&agent.height, 1001);
     csls_cheque_pkt_t cheque2;
     csls_agent_sign_cheque(&agent, vendor->pk, 70000, &cheque2); // $0.07 at h=1001 (conflicting cheque to same vendor)
 
