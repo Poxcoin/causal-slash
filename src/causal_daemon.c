@@ -234,11 +234,6 @@ static void csls_derive_k_hash(const SHA256_CTX *ictx0, const SHA256_CTX *octx0,
 // WAL write access but no sk cannot mint a lease with a lowered reserved_height
 // (Red Team P1). CRC-64 was dropped — unkeyed integrity is worthless against a
 // forger who recomputes it.
-// Sector authenticity: hmac = HMAC-SHA256(sk, "CSLS_WAL_INTEGRITY_v1" || magic ||
-// sequence || reserved). Keyed by the agent's signing key: a local co-tenant with
-// WAL write access but no sk cannot mint a lease with a lowered reserved_height
-// (Red Team P1). CRC-64 was dropped — unkeyed integrity is worthless against a
-// forger who recomputes it.
 static void csls_wal_sector_hmac(const uint8_t sk[32], uint32_t magic, uint32_t seq,
                                  uint64_t reserved, uint8_t out[32]) {
     uint8_t msg[21 + 4 + 4 + 8];
@@ -544,34 +539,33 @@ int csls_agent_init(csls_agent_ctx_t *agent, const uint8_t *sk_bytes, const char
             agent->wal_fd = -1;
             return -6;
         }
-        csls_wal_sector_t sa, sb;
-        memset(&sa, 0, sizeof(sa));
-        memset(&sb, 0, sizeof(sb));
-        ssize_t ra = pread(fd, agent->wal_buf, CSLS_WAL_SECTOR, 0);
-        if (ra == CSLS_WAL_SECTOR) memcpy(&sa, agent->wal_buf, sizeof(sa));
-        ssize_t rb = pread(fd, agent->wal_buf, CSLS_WAL_SECTOR, CSLS_WAL_SECTOR);
-        if (rb == CSLS_WAL_SECTOR) memcpy(&sb, agent->wal_buf, sizeof(sb));
-        int va = csls_wal_sector_valid(&sa, agent->sk);
-        int vb = csls_wal_sector_valid(&sb, agent->sk);
-        int fresh_a = (ra <= 0) || (sa.magic == 0 && sa.sequence == 0 && sa.reserved_height == 0);
-        int fresh_b = (rb <= 0) || (sb.magic == 0 && sb.sequence == 0 && sb.reserved_height == 0);
         uint32_t seq = 0;
         uint64_t reserved = 0;
-        if (va && vb) {
-            if (sa.sequence >= sb.sequence) { seq = sa.sequence; reserved = sa.reserved_height; }
-            else                            { seq = sb.sequence; reserved = sb.reserved_height; }
-        } else if (va) {
-            seq = sa.sequence; reserved = sa.reserved_height;
-        } else if (vb) {
-            seq = sb.sequence; reserved = sb.reserved_height;
-        } else if (fresh_a && fresh_b) {
-            seq = 0; reserved = 0; // brand-new lease file
-        } else {
-            // Content present but integrity failed on both sides: fail-closed.
-            close(fd);
-            free(agent->wal_buf);
-            agent->wal_buf = NULL;
-            return -6;
+        if (!fresh) {
+            csls_wal_sector_t sa, sb;
+            memset(&sa, 0, sizeof(sa));
+            memset(&sb, 0, sizeof(sb));
+            ssize_t ra = pread(fd, agent->wal_buf, CSLS_WAL_SECTOR, 0);
+            if (ra == CSLS_WAL_SECTOR) memcpy(&sa, agent->wal_buf, sizeof(sa));
+            ssize_t rb = pread(fd, agent->wal_buf, CSLS_WAL_SECTOR, CSLS_WAL_SECTOR);
+            if (rb == CSLS_WAL_SECTOR) memcpy(&sb, agent->wal_buf, sizeof(sb));
+            int va = csls_wal_sector_valid(&sa, agent->sk);
+            int vb = csls_wal_sector_valid(&sb, agent->sk);
+            if (va && vb) {
+                if (sa.sequence >= sb.sequence) { seq = sa.sequence; reserved = sa.reserved_height; }
+                else                            { seq = sb.sequence; reserved = sb.reserved_height; }
+            } else if (va) {
+                seq = sa.sequence; reserved = sa.reserved_height;
+            } else if (vb) {
+                seq = sb.sequence; reserved = sb.reserved_height;
+            } else {
+                // Both sectors present but unauthenticated (forged/corrupt/alien key):
+                // fail-closed. Never a fresh lease for an existing file.
+                close(fd);
+                free(agent->wal_buf);
+                agent->wal_buf = NULL;
+                return -6;
+            }
         }
         agent->wal_fd = fd;
         agent->wal_sequence = seq;
@@ -943,35 +937,34 @@ static int csls_vendor_process_common(csls_vendor_ctx_t *vendor, const csls_cheq
         }
         uint8_t tag[16];
         csls_mac128(head->session_key, pkt, sizeof(*pkt), tag);
-        if (memcmp(tag, mac, 16) != 0) {
+        if (CRYPTO_memcmp(tag, mac, 16) != 0) { // constant time
             pthread_mutex_unlock(&vendor->lock);
             return CSLS_ERR_BAD_MAC;
         }
     }
 
-    uint64_t accumulated = atomic_load(&chan->accumulated_amount);
-    uint64_t cleared = atomic_load(&chan->cleared_amount);
-
-    // 2. Exposure Buffer Invariant: unconfirmed delta <= delta_v per channel
-    if (pkt->cumulative_amt < accumulated) {
-        pthread_mutex_unlock(&vendor->lock);
-        return -11; // DECREASING_AMOUNT_ATTACK
-    }
-    uint64_t unconfirmed_exposure = (pkt->cumulative_amt >= cleared) ? (pkt->cumulative_amt - cleared) : 0;
-    if (unconfirmed_exposure > vendor->max_exposure_delta_v) {
-        pthread_mutex_unlock(&vendor->lock);
-        return -12; // EXPOSURE_BUFFER_EXCEEDED (Halt streaming)
-    }
-
-    // 3. Monotonicity and Equivocation Trap (O(1) Circular History Table with splitmix mixing)
+    // 2. Equivocation Trap FIRST (O(1) Circular History Table with splitmix mixing).
+    // The trap MUST run before the exposure gate: a double-sign hidden behind an
+    // intentionally oversized cheque would otherwise evade detection (owner directive).
     uint32_t slot = csls_vendor_slot(pkt->height, pkt->agent_pk, pkt->vendor_pk, vendor->slot_seed);
     csls_history_entry_t *entry = &vendor->history[slot];
 
     if (entry->occupied && entry->height == pkt->height && memcmp(entry->agent_pk, pkt->agent_pk, 33) == 0) {
         // Height collision detected for this specific agent! Check challenge scalar
         if (memcmp(entry->challenge_e, pkt->challenge_e, 32) != 0) {
+            // Fraud was already extracted for this (agent, height): fast -20 with
+            // no re-extraction. Turns same-height trap-spam into a ~40 ns branch
+            // (rate limit; the first proof already carries the full payload).
+            if (entry->disputed) {
+                pthread_mutex_unlock(&vendor->lock);
+                return -20; // FRAUD_EQUIVOCATION_DETECTED (proven earlier)
+            }
+            entry->disputed = true; // mark while we still hold the lock
             // CRITICAL: Potential EQUIVOCATION (DOUBLE-SPEND) DETECTED!
-            // Reconstruct previous cheque from history
+            // Snapshot the evidence and DROP THE LOCK: extraction is ~330 us of
+            // bignum math; holding the vendor mutex that long lets one insider
+            // starve every honest agent (insider lock-DoS, Red Team P2). The
+            // snapshot is self-contained — nothing re-reads entry afterwards.
             csls_cheque_pkt_t c1;
             c1.magic = CSLS_MAGIC;
             c1.type = CSLS_PKT_CHEQUE;
@@ -981,13 +974,11 @@ static int csls_vendor_process_common(csls_vendor_ctx_t *vendor, const csls_cheq
             c1.cumulative_amt = entry->amount;
             memcpy(c1.challenge_e, entry->challenge_e, 32);
             memcpy(c1.sig_s, entry->sig_s, 32);
+            pthread_mutex_unlock(&vendor->lock);
 
             uint8_t extracted_sk[32];
             int ext_rc = csls_extract_private_key(&c1, pkt, extracted_sk);
-            if (ext_rc != 0) {
-                pthread_mutex_unlock(&vendor->lock);
-                return -23; // FORGED_CHALLENGE_HASH
-            }
+            if (ext_rc != 0) return -23; // FORGED_CHALLENGE_HASH (snapshot is garbage)
 
             if (out_fraud) {
                 out_fraud->magic = CSLS_MAGIC;
@@ -998,11 +989,23 @@ static int csls_vendor_process_common(csls_vendor_ctx_t *vendor, const csls_cheq
                 out_fraud->cheque2 = *pkt;
                 memcpy(out_fraud->extracted_sk, extracted_sk, 32);
             }
-            pthread_mutex_unlock(&vendor->lock);
             return -20; // FRAUD_EQUIVOCATION_DETECTED
         }
         pthread_mutex_unlock(&vendor->lock);
         return -21; // REPLAY_PACKET_IGNORED
+    }
+
+    // 3. Exposure Buffer Invariant: unconfirmed delta <= delta_v per channel
+    uint64_t accumulated = atomic_load(&chan->accumulated_amount);
+    uint64_t cleared = atomic_load(&chan->cleared_amount);
+    if (pkt->cumulative_amt < accumulated) {
+        pthread_mutex_unlock(&vendor->lock);
+        return -11; // DECREASING_AMOUNT_ATTACK
+    }
+    uint64_t unconfirmed_exposure = (pkt->cumulative_amt >= cleared) ? (pkt->cumulative_amt - cleared) : 0;
+    if (unconfirmed_exposure > vendor->max_exposure_delta_v) {
+        pthread_mutex_unlock(&vendor->lock);
+        return -12; // EXPOSURE_BUFFER_EXCEEDED (Halt streaming)
     }
 
     uint64_t last_h = atomic_load(&chan->height);
@@ -1050,6 +1053,7 @@ static int csls_vendor_process_common(csls_vendor_ctx_t *vendor, const csls_cheq
     memcpy(entry->challenge_e, pkt->challenge_e, 32);
     memcpy(entry->sig_s, pkt->sig_s, 32);
     entry->occupied = true;
+    entry->disputed = false;
     head->cheque = *pkt;
     head->valid = true;
 

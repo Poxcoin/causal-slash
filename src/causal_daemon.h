@@ -142,6 +142,8 @@ typedef struct {
     uint8_t  challenge_e[32];
     uint8_t  sig_s[32];
     bool     occupied;
+    bool     disputed;   // fraud already proven for this (agent, height): fast -20,
+                         // no re-extraction (trap-spam rate limit, Red Team P2)
 } csls_history_entry_t;
 
 // Multi-Channel O(1) State Table
