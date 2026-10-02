@@ -88,5 +88,5 @@ bloodhound_daemon:
 	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -DBLOODHOUND_MAIN src/schnorr_bloodhound.c src/causal_daemon.c $(LDFLAGS) -o bloodhound_daemon
 
 clean:
-	rm -f causal_daemon sdk/libcausal_slash.so libcausal_slash.so causal_daemon_asan test_concurrency test_state_bloat test_competitor_griefing test_redteam_exploit test_reliability_audit test_schnorr_bloodhound *.o
+	rm -f causal_daemon bloodhound_daemon sdk/libcausal_slash.so sdk/libbloodhound.so libcausal_slash.so causal_daemon_asan test_* *.o
 

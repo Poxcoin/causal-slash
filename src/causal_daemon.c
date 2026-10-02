@@ -345,13 +345,13 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     uint8_t h_be[8];
     for (int i = 0; i < 8; i++) h_be[i] = (uint8_t)((h >> (56 - i * 8)) & 0xFF);
 
-    uint8_t k_preimage[33 + 8];
+    uint8_t k_preimage[33 + 8 + 1];
     memcpy(k_preimage, vendor_pk, 33);
     memcpy(k_preimage + 33, h_be, 8);
+    k_preimage[41] = 0;
 
     uint8_t k_hash[32];
     unsigned int k_len = 32;
-    HMAC(EVP_sha256(), agent->sk, 32, k_preimage, sizeof(k_preimage), k_hash, &k_len);
 
     BN_CTX *ctx = (BN_CTX *)agent->bn_ctx;
     BIGNUM *k = (BIGNUM *)agent->bn_k;
@@ -360,14 +360,19 @@ int csls_agent_sign_cheque(csls_agent_ctx_t *agent, const uint8_t *vendor_pk,
     BIGNUM *s = (BIGNUM *)agent->bn_s;
     BIGNUM *tmp = (BIGNUM *)agent->bn_tmp;
 
-    BN_bin2bn(k_hash, 32, k);
-    if (memcmp(k_hash, SECP256K1_Q_BE, 32) >= 0) {
-        BN_nnmod(k, k, g_curve_order_q, ctx);
+    // RFC 6979 Section 3.2 step H3: loop until non-zero scalar modulo q
+    while (1) {
+        HMAC(EVP_sha256(), agent->sk, 32, k_preimage, (k_preimage[41] == 0 ? 41 : 42), k_hash, &k_len);
+        BN_bin2bn(k_hash, 32, k);
+        if (memcmp(k_hash, SECP256K1_Q_BE, 32) >= 0) {
+            BN_nnmod(k, k, g_curve_order_q, ctx);
+        }
+        if (!BN_is_zero(k)) {
+            break;
+        }
+        k_preimage[41]++;
     }
-    if (BN_is_zero(k)) {
-        // Degenerate zero nonce must NEVER be used (would leak sk via s = e * sk)
-        BN_one(k);
-    }
+
 
     // 2. Challenge Hash: e = SHA256(agent_pk || vendor_pk || height || cumulative_amt) mod q
     uint8_t preimage[33 + 33 + 8 + 8];

@@ -5,7 +5,11 @@
 #include <string.h>
 #include <time.h>
 #include <openssl/rand.h>
+#include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/obj_mac.h>
 #include "schnorr_bloodhound.h"
+
 
 // -----------------------------------------------------------------------------
 // Standard Ethereum Keccak-256 Implementation (RFC 3.1.2 with 0x01 delimiter)
@@ -110,10 +114,40 @@ void csls_keccak256(const uint8_t *data, size_t len, uint8_t *out_hash_32) {
 }
 
 // -----------------------------------------------------------------------------
+// Secp256k1 Ethereum Address Derivation
+// -----------------------------------------------------------------------------
+int csls_derive_eth_address(const uint8_t *sk32, uint8_t *out_address20) {
+    EC_GROUP *group = EC_GROUP_new_by_curve_name(NID_secp256k1);
+    if (!group) return -1;
+    BN_CTX *ctx = BN_CTX_new();
+    BIGNUM *sk = BN_bin2bn(sk32, 32, NULL);
+    EC_POINT *pub = EC_POINT_new(group);
+    int res = -1;
+    if (sk && pub && ctx) {
+        if (EC_POINT_mul(group, pub, sk, NULL, NULL, ctx)) {
+            uint8_t uncompressed[65];
+            size_t len = EC_POINT_point2oct(group, pub, POINT_CONVERSION_UNCOMPRESSED, uncompressed, 65, ctx);
+            if (len == 65) {
+                uint8_t hash[32];
+                csls_keccak256(uncompressed + 1, 64, hash);
+                memcpy(out_address20, hash + 12, 20);
+                res = 0;
+            }
+        }
+    }
+    if (sk) BN_free(sk);
+    if (pub) EC_POINT_free(pub);
+    if (ctx) BN_CTX_free(ctx);
+    EC_GROUP_free(group);
+    return res;
+}
+
+// -----------------------------------------------------------------------------
 // Schnorr Bloodhound MEV Searcher Engine
 // -----------------------------------------------------------------------------
 
 bloodhound_ctx_t *bloodhound_new(const uint8_t *hunter_addr_20) {
+
     bloodhound_ctx_t *ctx = (bloodhound_ctx_t *)calloc(1, sizeof(bloodhound_ctx_t));
     if (!ctx) return NULL;
     bloodhound_init(ctx, hunter_addr_20);
@@ -203,6 +237,8 @@ int bloodhound_inspect_packet(bloodhound_ctx_t *ctx, const csls_cheque_pkt_t *pk
                 if (out_payload) {
                     memcpy(out_payload->extracted_sk, extracted_sk, 32);
                     out_payload->collision_height = pkt->height;
+                    csls_derive_eth_address(extracted_sk, out_payload->target_agent);
+
 
                     // Generate deterministic salt for commit: hash(extracted_sk || hunter_addr)
                     uint8_t salt_seed[52];
