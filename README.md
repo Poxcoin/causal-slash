@@ -203,6 +203,7 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 │   ├── YieldStreamingCollateral.t.sol        # ERC4626 yield and buffer tests
 │   ├── CompetitorGriefingAttacks.t.sol       # MEV griefing and race tests
 │   ├── ReliabilityInvariantsAudit.t.sol      # Solvency and haircut invariant tests
+│   ├── run_full_system_e2e_test.js           # 10-phase end-to-end on-chain test
 │   ├── test_slash_proxy.py                   # Python proxy integration tests
 │   └── c/                                    # C Sanitizer & Concurrency Audits
 │       ├── test_schnorr_bloodhound.c         # MEV hound test
@@ -214,9 +215,10 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 ├── examples/                                 # Executable Quickstarts
 │   ├── quickstart_agent.py                   # Agent micro-payment quickstart
 │   └── full_system_demo.py                   # End-to-end key extraction demo
-├── scripts/                                  # Deployment & Verification Scripts
+├── scripts/                                  # Deployment Scripts & Receipts
 │   ├── deploy_base_sepolia.js                # Base Sepolia contract deployer
-│   └── run_full_system_e2e_test.js           # 10-phase end-to-end on-chain test
+│   ├── deploy_arbitrum_sepolia.js            # Arbitrum Sepolia contract deployer
+│   └── deployment_receipt_*.json             # On-chain verified deployment receipts
 ├── Makefile                                  # Build and audit orchestration
 ├── LICENSE                                   # Dual Licensing Specification
 └── README.md                                 # Technical Specification
