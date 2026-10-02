@@ -4,10 +4,10 @@ import sys
 
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_TEST_DIR)
-sys.path.insert(0, os.path.join(_PROJECT_ROOT, "examples"))
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, "scripts"))
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "sdk"))
 
-import e2e_full_stack_live as e2e
+import showcase_live_demo as e2e
 
 
 def test_full_stack_e2e_all_stages():

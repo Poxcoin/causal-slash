@@ -75,8 +75,7 @@ def run_system_demo():
 
     # Step B: Conflicting cheque on same height h=1
     attacker._ctx.height = legit_c.height
-    rogue_vendor_pk = b"\x02" + (b"\x99" * 32)
-    conflicting_c = attacker.sign_cheque(rogue_vendor_pk, amount_usdc=0.02)
+    conflicting_c = attacker.sign_cheque(audit_vendor.public_key, amount_usdc=0.02)
 
     res_fraud = audit_vendor.process_cheque(conflicting_c)
     print(f"  cheque h=1 (conflicting): rejected (code {res_fraud.status_code}: EQUIVOCATION)")

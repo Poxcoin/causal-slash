@@ -44,7 +44,8 @@ int main(void) {
     csls_cheque_pkt_t cheques[NUM_VENDORS];
 
     for (int i = 0; i < NUM_VENDORS; i++) {
-        // Each channel starts at height 1
+        // Test signing at height 1 across all 5 vendors
+        atomic_store(&agent.height, 1);
         int sign_rc = csls_agent_sign_cheque(&agent, vendors[i]->pk, 10000, &cheques[i]);
         assert(sign_rc == 0);
         assert(cheques[i].height == 1);
@@ -103,7 +104,7 @@ int main(void) {
     // Rogue agent attempts double spend by resetting channel height to 1 for Vendor 0
     csls_channel_t *ch0 = csls_channel_get_or_create(&agent.channels, vendors[0]->pk);
     assert(ch0 != NULL);
-    ch0->height = 1;
+    atomic_store(&agent.height, 1);
 
     csls_cheque_pkt_t conflicting_cheque;
     assert(csls_agent_sign_cheque(&agent, vendors[0]->pk, 25000, &conflicting_cheque) == 0);

@@ -45,8 +45,7 @@ def run_agent_workflow():
     v2.process_cheque(c1)
 
     attacker._ctx.height = 1
-    fake_pk = b"\x02" + (b"\x88" * 32)
-    c2 = attacker.sign_cheque(fake_pk, amount_usdc=0.02)
+    c2 = attacker.sign_cheque(v2.public_key, amount_usdc=0.02)
 
     fraud_res = v2.process_cheque(c2)
     assert not fraud_res.accepted

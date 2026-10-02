@@ -68,12 +68,15 @@ int main() {
     csls_channel_t *chan = csls_channel_get_or_create(&g_agent.channels, g_vendor_pk);
     assert(chan != NULL);
 
-    printf("Final Agent Height: %lu (Expected: %lu)\n", 
-           (unsigned long)chan->height, (unsigned long)(expected_total_cheques + 1));
+    printf("Final Channel Height: %lu (Expected: %lu)\n", 
+           (unsigned long)chan->height, (unsigned long)expected_total_cheques);
+    printf("Final Global Agent Height: %lu (Expected: %lu)\n", 
+           (unsigned long)atomic_load(&g_agent.height), (unsigned long)(expected_total_cheques + 1));
     printf("Final Cumulative Sent: %lu micro-USDC (Expected: %lu)\n", 
            (unsigned long)chan->cumulative_sent, (unsigned long)expected_cumulative);
 
-    assert(chan->height == expected_total_cheques + 1);
+    assert(chan->height == expected_total_cheques);
+    assert(atomic_load(&g_agent.height) == expected_total_cheques + 1);
     assert(chan->cumulative_sent == expected_cumulative);
 
     csls_agent_destroy(&g_agent);

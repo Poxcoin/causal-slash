@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "causal-slash-sdk"
+version = "0.3.0"
+description = "Crash-Proof High-Performance Agentic Micro-Payment SDK for Causal-Slash Protocol on Base L2"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Causal-Slash Protocol Developers", email = "dev@causal-slash.io" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+    "Framework :: AsyncIO",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+langchain = [
+    "langchain-core>=0.1.0",
+]
+
+[project.scripts]
+causal-proxy = "sdk.slash_proxy:main"
+
+[project.urls]
+Homepage = "https://causal-slash.io"
+Documentation = "https://docs.causal-slash.io"
+Repository = "https://github.com/causal-slash/causal-slash-protocol"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sdk*"]
+
+[tool.setuptools.package-data]
+sdk = ["py.typed", "libcausal_slash.so"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "sdk"]

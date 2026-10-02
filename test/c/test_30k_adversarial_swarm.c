@@ -127,10 +127,7 @@ void* swarm_worker(void* arg) {
             atomic_fetch_add(&g_total_cheques_processed, 1);
 
             // Re-sign at SAME height to trigger equivocation
-            csls_channel_t *ch = csls_channel_get_or_create(&agent.channels, vendor->pk);
-            if (ch) {
-                atomic_store(&ch->height, pkt1.height);
-            }
+            atomic_store(&agent.height, pkt1.height);
             csls_cheque_pkt_t pkt2;
             csls_agent_sign_cheque(&agent, vendor->pk, 800ULL, &pkt2);
             int v_rc = csls_vendor_process_cheque(vendor, &pkt2, &fraud);

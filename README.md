@@ -2,10 +2,10 @@
 
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![Client SDK: Apache-2.0](https://img.shields.io/badge/SDK-Apache--2.0-green.svg)](LICENSE)
-[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-38%2F38_Passing-brightgreen?logo=solidity)](test/PerformanceCollateralVault.t.sol)
+[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-77%2F77_Passing-brightgreen?logo=solidity)](test/PerformanceCollateralVault.t.sol)
 [![Base Sepolia](https://img.shields.io/badge/Base_Sepolia-0x33BD...775c-success?logo=ethereum)](https://sepolia.basescan.org/address/0x33BD2908a372cf6A533B75e79D3cAa754da8775c#code)
-[![C11 Engine Latency](https://img.shields.io/badge/C11_Latency-2.52_%C2%B5s-blue)](src/causal_daemon.c)
-[![Throughput](https://img.shields.io/badge/Throughput-396k_ops%2Fsec-orange)](src/causal_daemon.c)
+[![C11 Engine Latency](https://img.shields.io/badge/C11_Latency-1.62_%C2%B5s-blue)](src/causal_daemon.c)
+[![Throughput](https://img.shields.io/badge/Throughput-596k_ops%2Fsec-orange)](src/causal_daemon.c)
 
 > Sovereign high-frequency machine-to-machine streaming settlement on Base L2. Single shared bond, zero gas per request, sub-microsecond wire latency, ERC4626 yield-bearing collateral, and game-theoretic $O(1)$ Schnorr slashing.
 
@@ -24,7 +24,7 @@ In typical multi-agent architectures, an agent communicating with 50 external ve
 
 ### The Solution: Single Shared Bond with Yield Streaming
 Causal-Slash replaces fragmented deposits with a **single performance collateral bond on Base L2**:
-1. **Zero-Gas Streaming:** The agent streams signed 151-byte binary micro-cheques peer-to-peer over raw TCP/QUIC sockets at ~2.5 µs local cryptographic latency.
+1. **Zero-Gas Streaming:** The agent streams signed 151-byte binary micro-cheques peer-to-peer over raw TCP/QUIC sockets at ~1.6 µs local cryptographic latency.
 2. **Yield-Streaming Collateral (ERC4626):** Unallocated margin in `PerformanceCollateralVault.sol` automatically generates yield in yield-bearing vaults (e.g. Morpho / Aave on Base) while maintaining an automated 20% liquid cash buffer for instant, zero-second unbonding.
 3. **Economic Deterrence ($O(1)$ Slashing):** Equivocation (signing two conflicting cheques at the identical sequence height) algebraically reveals the agent's private key. Anyone can submit this mathematical proof to Base L2 to foreclose the bond, making double-spend attacks strictly negative-EV ($\mathbb{E}[\text{Payoff}] < 0$, $\text{ROI} \le -95\%$).
 
@@ -53,7 +53,7 @@ flowchart TD
     Vault <-->|Auto-Rebalance & Harvest| YieldPool
     Vault -->|Anchors Collateral| AgentWallet
     AgentWallet -->|Local HTTP Requests| SlashProxy
-    SlashProxy -->|151-Byte Binary Stream (~2.5 µs)| Vendor
+    SlashProxy -->|151-Byte Binary Stream (~1.6 µs)| Vendor
     SlashProxy -.->|Broadcast / Wire Tap| Bloodhound
     Bloodhound -->|Commit & Reveal Fraud Proof| SlashingEngine
     SlashingEngine -->|15% Guaranteed Finder Bounty| Bloodhound
@@ -63,8 +63,8 @@ flowchart TD
 ### 2.1 Cryptographic Key Derivation & Challenge Formula
 Let $\mathbb{G}$ be secp256k1 of prime order $q$ with base generator $G$. An agent locks collateral $B$ in `PerformanceCollateralVault.sol` on Base L2 and registers public key $PK = sk \cdot G$.
 
-For sequential operational heights $h \in \mathbb{N}$:
-$$k_h = \text{HMAC-SHA256}(sk, h) \pmod q$$
+For sequential operational heights $h \in \mathbb{N}$ and counterparty vendor $PK_{\text{vendor}}$:
+$$k_h = \text{HMAC-SHA256}(sk, PK_{\text{vendor}} \parallel h) \pmod q$$
 
 To stream a payment cheque for sequence height $h$ binding vendor, height, and cumulative micro-USDC:
 $$e_h = \text{SHA256}(PK_{\text{agent}} \parallel PK_{\text{vendor}} \parallel h \parallel \text{cumAmount}) \pmod q$$
@@ -163,22 +163,27 @@ End-to-End Cryptographic Throughput: 85,341 ops/sec (Python FFI) / 396,825 ops/s
 
 The protocol is validated through a comprehensive multi-tier test suite with 100% pass rate:
 
-### 1. Foundry Test Suites (38/38 Passing):
+### 1. Foundry Test Suites (77/77 Passing):
 * `test/PerformanceCollateralVault.t.sol`: 20 unit, state-machine, and fuzzing invariant tests.
 * `test/AdversarialExploits.t.sol`: 5 adversarial exploit tests (signature malleability, replay, self-slashing economics).
 * `test/YieldStreamingCollateral.t.sol`: 4 ERC4626 yield-bearing collateral and liquidity buffer tests.
 * `test/CompetitorGriefingAttacks.t.sol`: 5 MEV frontrunning and DoS griefing resistance tests.
 * `test/ReliabilityInvariantsAudit.t.sol`: 4 unbonding race and haircut solvency tests.
+* `test/invariants/ProtocolInvariants.t.sol`: 5 comprehensive stateful invariant suites (16,384 calls across runs, 0 reverts).
+* `test/invariants/HalmosProtocolInvariants.t.sol`: 12 formal SMT mathematical theorems proven.
+* `test/SwarmDelegationVault.t.sol`: 22 multi-agent delegation, Merkle tree quota, and restitution tests.
 
-### 2. C Core Memory & Concurrency Audits (ASan & UBSan):
-* `make test`: High-frequency cryptographic engine, equivocation trap, and TCP loopback tests.
+### 2. C Core Memory & Concurrency Audits (ASan, TSan & UBSan):
+* `make test`: High-frequency cryptographic engine, equivocation trap, and TCP loopback tests (1.62 µs latency, 596k ops/sec).
 * `make test-asan`: Full memory sanitizer check ensuring zero memory leaks or buffer overflows.
-* `make test-bloodhound`: MEV searcher Keccak-256 vector verification and equivocation extraction test.
-* `make test-redteam`: Integer overflow, height wraparound, and packet corruption fuzzing.
+* `make test-tsan`: ThreadSanitizer data-race check across multi-threaded agent and refiller threads (0 races).
+* `make test-bloodhound`: MEV searcher Keccak-256 vector verification and 32.5 ns equivocation extraction test.
+* `poc_identity_theft`: 0/4 exploits successful (watermark lease prevents nonce reuse, fail-closed WAL, session MAC enforced).
+* `test_swarm_simulation`: 5.4M+ cheque high-concurrency swarm simulation (0 false positives, 100% fraud intercepted).
 
-### 3. Python SDK & Integration Tests:
-* `python3 test/test_slash_proxy.py`: Verification of HTTP proxy sidecar and token accounting.
-* `python3 benchmarks/slashbench.py`: Empirical p50, p95, and p99 profiling.
+### 3. Python SDK & Integration Tests (28/28 Passing):
+* `pytest -v`: 28/28 passing tests covering SQLite WAL `ChannelStore`, AsyncIO Actor Queue, secp256k1 honest PK, and Circuit Breaker.
+* `python3 examples/e2e_full_stack_live.py`: Complete 7-stage end-to-end integration (1,711 cheques, 99.93% netting compression in RAM).
 
 ---
 

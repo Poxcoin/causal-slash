@@ -242,14 +242,14 @@ int main() {
     csls_cheque_pkt_t pkt_legit;
     csls_channel_t *chan = csls_channel_get_or_create(&agent.channels, vendor->pk);
     assert(chan != NULL);
-    chan->height = 1;
+    atomic_store(&agent.height, 1);
     chan->cumulative_sent = 0;
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 1000, &pkt_legit) == 0);
     assert(csls_vendor_process_cheque(vendor, &pkt_legit, &fraud_dummy) == 0);
 
     // Now send cheque with height = 1 + 65536 = 65537 (same ring buffer slot: 65537 & 65535 == 1)
     csls_cheque_pkt_t pkt_wrap;
-    chan->height = 65537;
+    atomic_store(&agent.height, 65537);
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 1000, &pkt_wrap) == 0);
     // Because height is monotonically advancing (65537 > 1), vendor updates the slot cleanly without false equivocation
     int res_wrap = csls_vendor_process_cheque(vendor, &pkt_wrap, &fraud_dummy);
@@ -257,7 +257,7 @@ int main() {
 
     // Now send an out-of-order replay of an older height (height = 100 <= 65537)
     csls_cheque_pkt_t pkt_old;
-    chan->height = 100;
+    atomic_store(&agent.height, 100);
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 1000, &pkt_old) == 0);
     int res_old = csls_vendor_process_cheque(vendor, &pkt_old, &fraud_dummy);
     assert(res_old == -22); // OUT_OF_ORDER_OR_OLD_REPLAY strictly rejected

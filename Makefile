@@ -19,6 +19,7 @@ causal_daemon: $(SRCS)
 
 libcausal_slash.so: $(SRCS)
 	$(CC) $(CFLAGS) -shared src/causal_daemon.c $(LDFLAGS) -o sdk/libcausal_slash.so
+	cp -f sdk/libcausal_slash.so libcausal_slash.so
 
 test: causal_daemon
 	./causal_daemon --all
@@ -26,6 +27,12 @@ test: causal_daemon
 
 demo: libcausal_slash.so
 	python3 examples/quickstart_agent.py
+
+demo-live-real: libcausal_slash.so
+	python3 scripts/live_real_network_test.py
+
+stress-heavy-real: libcausal_slash.so
+	python3 scripts/live_heavy_swarm_stress.py
 
 test-asan:
 	$(CC) -O3 -fsanitize=address,undefined -g -Wall -Wextra -pthread -Isrc src/causal_daemon.c $(LDFLAGS) -o causal_daemon_asan
@@ -88,8 +95,7 @@ bloodhound_daemon:
 	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -DBLOODHOUND_MAIN src/schnorr_bloodhound.c src/causal_daemon.c $(LDFLAGS) -o bloodhound_daemon
 
 clean:
-	rm -f causal_daemon bloodhound_daemon sdk/libcausal_slash.so sdk/libbloodhound.so libcausal_slash.so causal_daemon_asan test_* *.o
-
+	rm -f causal_daemon bloodhound_daemon sdk/libcausal_slash.so sdk/libbloodhound.so libcausal_slash.so causal_daemon_asan causal_daemon_tsan test_* *.o
 
 # ThreadSanitizer gate (H1: data races; ASan does NOT catch races)
 # setarch -R disables ASLR for the process: TSan is incompatible with

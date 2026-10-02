@@ -2,7 +2,7 @@
 """
 Causal-Slash Sidecar Reverse Proxy (SlashProxy)
 Acts as a zero-configuration local reverse proxy for AI multi-agent swarms.
-Intercepts LLM requests (OpenAI / Anthropic / Groq compatible), attaches CSLS micro-cheques
+Intercepts M2M completions for P2P vendor nodes (vLLM / Ollama / local inference), attaches CSLS micro-cheques
 over L4 raw socket, and eliminates cyclic reciprocal debts in-memory via DebtCycleMesh
 before broadcasting residual settlements to external network sockets.
 """
@@ -11,10 +11,14 @@ from __future__ import annotations
 import http.server
 import json
 import logging
+import os
 import socket
 import struct
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import concurrent.futures
 from typing import Optional, Tuple, Union, Dict, List, Callable
 
@@ -29,6 +33,13 @@ try:
         CSLS_MAGIC,
         CSLS_OK,
     )
+    from .swarm_subagent import (
+        SwarmDelegationVault,
+        SubagentSession,
+        SubagentQuotaExceededError,
+        SpendRateLimitExceededError,
+    )
+    from .guardrails import EdgeSafetyGuardrail
 except ImportError:
     from causal_slash import (
         CausalAgentWallet,
@@ -40,6 +51,13 @@ except ImportError:
         CSLS_MAGIC,
         CSLS_OK,
     )
+    from swarm_subagent import (
+        SwarmDelegationVault,
+        SubagentSession,
+        SubagentQuotaExceededError,
+        SpendRateLimitExceededError,
+    )
+    from guardrails import EdgeSafetyGuardrail
 
 
 class SlashSidecarProxy:
@@ -61,6 +79,12 @@ class SlashSidecarProxy:
         upstream_socket_address: Optional[Tuple[str, int]] = None,
         auto_resolve_cycles: bool = True,
         custom_network_transport: Optional[Callable[[bytes], None]] = None,
+        delegation_vault: Optional[SwarmDelegationVault] = None,
+        upstream_url: Optional[str] = None,
+        vendor_node: Optional[CausalVendorNode] = None,
+        spend_rate_per_sec_usdc: float = 0.0001,
+        guardrail: Optional[EdgeSafetyGuardrail] = None,
+        enable_guardrail: bool = True,
     ):
         self.wallet = agent_wallet
         self.vendor_pk = vendor_public_key
@@ -70,6 +94,16 @@ class SlashSidecarProxy:
         self.upstream_addr = upstream_socket_address
         self.auto_resolve_cycles = auto_resolve_cycles
         self.custom_transport = custom_network_transport
+        self.delegation_vault = delegation_vault
+        self.upstream_url = upstream_url or os.environ.get("CAUSAL_UPSTREAM_URL")
+        self.vendor_node = vendor_node
+        self.spend_rate_per_sec_usdc = spend_rate_per_sec_usdc
+        if guardrail is not None:
+            self.guardrail: Optional[EdgeSafetyGuardrail] = guardrail
+        elif enable_guardrail:
+            self.guardrail = EdgeSafetyGuardrail()
+        else:
+            self.guardrail = None
 
         # In-memory Debt Graph & Kirchhoff cycle reduction engine
         self.mesh: DebtCycleMesh = mesh if mesh is not None else DebtCycleMesh(auto_bilateral_netting=True)
@@ -213,6 +247,9 @@ class SlashSidecarProxy:
         proxy_self = self
 
         class ProxyHandler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            close_connection = True
+
             def log_message(self, format, *args):
                 return  # Suppress default console logging for maximum throughput
 
@@ -298,7 +335,198 @@ class SlashSidecarProxy:
                         pass
                     return
 
-                # Route C: LLM Chat Completions (OpenAI / Groq / Anthropic compatible)
+                # Route C: M2M Vendor Completions (P2P Vendor Nodes / vLLM / Ollama)
+                # Check for incoming client payment cheque (e.g. from autonomous agent)
+                incoming_cheque_hdr = self.headers.get("X-Causal-Cheque")
+                if incoming_cheque_hdr:
+                    # 1. Verify cheque if vendor_node is active on proxy
+                    if proxy_self.vendor_node is not None:
+                        try:
+                            raw_cheque = bytes.fromhex(incoming_cheque_hdr.replace("0x", ""))
+                            proc_res = proxy_self.vendor_node.process_cheque(raw_cheque)
+                            if not proc_res.accepted:
+                                err_payload = json.dumps({
+                                    "error": f"Payment cheque rejected: {proc_res.error_message}",
+                                    "status_code": proc_res.status_code
+                                }).encode("utf-8")
+                                self.send_response(402)
+                                self.send_header("Content-Type", "application/json")
+                                self.send_header("Content-Length", str(len(err_payload)))
+                                self.end_headers()
+                                try:
+                                    self.wfile.write(err_payload)
+                                except (BrokenPipeError, ConnectionResetError):
+                                    pass
+                                return
+                        except Exception as e:
+                            err_payload = json.dumps({"error": f"Malformed X-Causal-Cheque: {e}"}).encode("utf-8")
+                            self.send_response(400)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(err_payload)))
+                            self.end_headers()
+                            try:
+                                self.wfile.write(err_payload)
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                            return
+
+                    # 2. Edge Safety Guardrail inspection before upstream forwarding
+                    if proxy_self.guardrail is not None and req_body:
+                        is_safe, reason = proxy_self.guardrail.inspect_request(req_body)
+                        if not is_safe:
+                            err_payload = json.dumps({
+                                "error": "PROMPT_SAFETY_VIOLATION",
+                                "reason": reason or "Malicious prompt pattern detected"
+                            }).encode("utf-8")
+                            self.send_response(400)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(err_payload)))
+                            self.end_headers()
+                            try:
+                                self.wfile.write(err_payload)
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                            return
+
+                    # 3. Honest streaming forward to upstream Vendor Node (vLLM / Ollama / Local M2M)
+                    target_upstream = (
+                        proxy_self.upstream_url
+                        or self.headers.get("X-Causal-Upstream-Url")
+                        or os.environ.get("CAUSAL_UPSTREAM_URL")
+                    )
+
+                    if target_upstream:
+                        target_endpoint = target_upstream.rstrip("/") + self.path
+                        fwd_headers = {}
+                        for h, v in self.headers.items():
+                            if h.lower() not in ("host", "content-length", "x-causal-cheque"):
+                                fwd_headers[h] = v
+                        fwd_headers["Host"] = urllib.parse.urlparse(target_upstream).netloc or "localhost"
+                        fwd_headers["Connection"] = "close"
+
+                        u_req = urllib.request.Request(
+                            target_endpoint,
+                            data=req_body if req_body else None,
+                            headers=fwd_headers,
+                            method=self.command,
+                        )
+                        try:
+                            with urllib.request.urlopen(u_req, timeout=30.0) as u_resp:
+                                self.send_response(u_resp.status)
+                                for h, v in u_resp.getheaders():
+                                    if h.lower() not in ("content-length", "transfer-encoding", "connection"):
+                                        self.send_header(h, v)
+                                self.send_header("Connection", "close")
+                                self.send_header("X-Causal-Proxy-Mode", "streaming-forward")
+                                self.end_headers()
+
+                                t_start = time.time()
+                                last_meter_sec = int(t_start)
+                                while True:
+                                    chunk = u_resp.read(512)
+                                    if not chunk:
+                                        break
+                                    try:
+                                        self.wfile.write(chunk)
+                                        self.wfile.flush()
+                                    except (BrokenPipeError, ConnectionResetError):
+                                        break
+
+                                    curr_sec = int(time.time())
+                                    if curr_sec > last_meter_sec:
+                                        delta_sec = curr_sec - last_meter_sec
+                                        last_meter_sec = curr_sec
+                                        with proxy_self._lock:
+                                            proxy_self.total_settled_usdc += delta_sec * proxy_self.spend_rate_per_sec_usdc
+                            return
+                        except urllib.error.HTTPError as e:
+                            err_data = e.read()
+                            self.send_response(e.code)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(err_data)))
+                            self.end_headers()
+                            try:
+                                self.wfile.write(err_data)
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                            return
+                        except Exception as e:
+                            err_data = json.dumps({"error": f"Upstream forward failed: {e}"}).encode("utf-8")
+                            self.send_response(502)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(err_data)))
+                            self.end_headers()
+                            try:
+                                self.wfile.write(err_data)
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                            return
+                    else:
+                        # Fallback simulated streaming forward with per-second micro-USDC metering
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/event-stream")
+                        self.send_header("Cache-Control", "no-cache")
+                        self.send_header("Connection", "keep-alive")
+                        self.send_header("X-Causal-Proxy-Mode", "simulated-streaming-forward")
+                        self.end_headers()
+
+                        stream_chunks = [
+                            "Streaming", " compute", " verified", " via", " CSLS", " micro-cheque."
+                        ]
+                        t_start = time.time()
+                        last_meter_sec = int(t_start)
+
+                        for i, token in enumerate(stream_chunks):
+                            payload = {
+                                "id": f"chatcmpl-stream-{i}",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": "causal-slash-routed-llm",
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": token},
+                                    "finish_reason": None if i < len(stream_chunks) - 1 else "stop"
+                                }]
+                            }
+                            line = f"data: {json.dumps(payload)}\n\n".encode("utf-8")
+                            try:
+                                self.wfile.write(line)
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError):
+                                break
+                            time.sleep(0.01)
+                            curr_sec = int(time.time())
+                            if curr_sec > last_meter_sec:
+                                delta_sec = curr_sec - last_meter_sec
+                                last_meter_sec = curr_sec
+                                with proxy_self._lock:
+                                    proxy_self.total_settled_usdc += delta_sec * proxy_self.spend_rate_per_sec_usdc
+
+                        try:
+                            self.wfile.write(b"data: [DONE]\n\n")
+                            self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+                        return
+
+                # Edge Safety Guardrail check for outgoing requests
+                if proxy_self.guardrail is not None and req_body:
+                    is_safe, reason = proxy_self.guardrail.inspect_request(req_body)
+                    if not is_safe:
+                        err_payload = json.dumps({
+                            "error": "PROMPT_SAFETY_VIOLATION",
+                            "reason": reason or "Malicious prompt pattern detected"
+                        }).encode("utf-8")
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(err_payload)))
+                        self.end_headers()
+                        try:
+                            self.wfile.write(err_payload)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+                        return
+
                 # Check if incoming request carries a peer vendor PK override
                 vendor_pk = proxy_self.vendor_pk
                 vendor_hdr = self.headers.get("X-Causal-Slash-Vendor-Pk")
@@ -308,11 +536,53 @@ class SlashSidecarProxy:
                     except ValueError:
                         pass
 
+                # Check for subagent delegation header
+                subagent_id = self.headers.get("X-Causal-Subagent-Id")
+                subagent_session = None
+
+                if subagent_id and proxy_self.delegation_vault is not None:
+                    subagent_session = proxy_self.delegation_vault.get_session(subagent_id)
+                    if subagent_session is None:
+                        error_resp = json.dumps({
+                            "error": f"Subagent '{subagent_id}' not found in delegation vault"
+                        }).encode("utf-8")
+                        self.send_response(404)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(error_resp)))
+                        self.end_headers()
+                        try:
+                            self.wfile.write(error_resp)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+                        return
+
+                    # Validate subagent quota and Circuit Breaker spend rate
+                    amount_micro = int(round(proxy_self.price_per_req * 1e6))
+                    try:
+                        subagent_session.check_and_reserve(amount_micro)
+                        subagent_session.check_spend_rate(amount_micro)
+                    except (SubagentQuotaExceededError, SpendRateLimitExceededError) as e:
+                        error_resp = json.dumps({"error": str(e)}).encode("utf-8")
+                        self.send_response(429)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(error_resp)))
+                        self.end_headers()
+                        try:
+                            self.wfile.write(error_resp)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+                        return
+
                 # Sign CSLS streaming micro-cheque and ingest into in-memory mesh
                 cheque = proxy_self.sign_and_ingest_outgoing(
                     vendor_pk=vendor_pk,
                     amount_usdc=proxy_self.price_per_req
                 )
+
+                # If subagent session is active, commit the spend to the session
+                if subagent_session is not None:
+                    amount_micro = int(round(proxy_self.price_per_req * 1e6))
+                    subagent_session.commit_spend(amount_micro)
 
                 summary = proxy_self.mesh.get_summary()
 
@@ -342,6 +612,7 @@ class SlashSidecarProxy:
                         "cycles_eliminated": summary.cycles_eliminated_count,
                         "cleared_in_memory_usdc": summary.total_cleared_micro_usdc / 1e6,
                         "network_packet_reduction": f"{proxy_self.packet_reduction_ratio * 100:.2f}%",
+                        "subagent_id": subagent_id if subagent_session else None,
                     }
                 }
 
@@ -351,6 +622,8 @@ class SlashSidecarProxy:
                 self.send_header("X-Causal-Slash-Cheque-Height", str(cheque.height))
                 self.send_header("X-Causal-Slash-Settled-USDC", f"{cheque.cumulative_amount_usdc:.6f}")
                 self.send_header("X-Causal-Slash-Packet-Reduction", f"{proxy_self.packet_reduction_ratio * 100:.2f}%")
+                if subagent_session:
+                    self.send_header("X-Causal-Subagent-Id", subagent_id)
                 self.send_header("Content-Length", str(len(resp_bytes)))
                 self.end_headers()
                 try:
@@ -366,6 +639,8 @@ class SlashSidecarProxy:
             if self._server is not None:
                 return
             self._server = http.server.ThreadingHTTPServer((self.host, self.port), self._make_handler())
+            self._server.daemon_threads = True
+            self._server.block_on_close = False
             self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
             self._thread.start()
 
@@ -389,7 +664,7 @@ class SlashSidecarProxy:
         self._network_executor.shutdown(wait=False, cancel_futures=True)
 
 
-if __name__ == "__main__":
+def main():
     import argparse
     parser = argparse.ArgumentParser(description="Causal-Slash Sidecar Reverse Proxy")
     parser.add_argument("--port", type=int, default=8999, help="Port to bind the proxy to")
@@ -408,11 +683,15 @@ if __name__ == "__main__":
         bind_port=args.port,
     )
     proxy.start()
-    print(f"SlashSidecarProxy running on http://{args.host}:{args.port}")
-    print(f"Metering requests at ${args.price:.6f} USDC per completion.")
+    logger.info("SlashSidecarProxy running on http://%s:%d", args.host, args.port)
+    logger.info("Metering requests at $%.6f USDC per completion.", args.price)
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\nStopping proxy...")
+        logger.info("Stopping proxy...")
         proxy.stop()
+
+
+if __name__ == "__main__":
+    main()

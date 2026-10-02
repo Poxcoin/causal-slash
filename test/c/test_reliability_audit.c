@@ -121,14 +121,14 @@ static void test_audit_ring_buffer_wrap_missed_equivocation(void) {
     csls_cheque_pkt_t c_h1;
     csls_channel_t *chan3 = csls_channel_get_or_create(&agent.channels, vendor->pk);
     assert(chan3 != NULL);
-    chan3->height = 1;
+    atomic_store(&agent.height, 1);
     chan3->cumulative_sent = 0;
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 1000, &c_h1) == 0);
     assert(csls_vendor_process_cheque(vendor, &c_h1, &fraud) == 0);
 
     // Advance height to 65537 (same ring slot: 65537 & 65535 = 1)
     csls_cheque_pkt_t c_h65537;
-    chan3->height = 65537;
+    atomic_store(&agent.height, 65537);
     chan3->cumulative_sent = 1000;
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 1000, &c_h65537) == 0);
     assert(csls_vendor_process_cheque(vendor, &c_h65537, &fraud) == 0);
@@ -139,7 +139,7 @@ static void test_audit_ring_buffer_wrap_missed_equivocation(void) {
 
     // Create a conflicting double-spend cheque at height 1
     csls_cheque_pkt_t c_conflict;
-    chan3->height = 1;
+    atomic_store(&agent.height, 1);
     chan3->cumulative_sent = 5000;
     assert(csls_agent_sign_cheque(&agent, vendor->pk, 500, &c_conflict) == 0);
 

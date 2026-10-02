@@ -70,6 +70,12 @@ class NettingCancellationCertificate:
         return self.digest == expected_digest
 
 
+# Aliases for on-chain/clearing terminology alignment (Mutual Close Acts)
+MutualCloseAct = NettingCancellationCertificate
+MutualCloseReceipt = NettingCancellationCertificate
+MutualCloseCertificate = NettingCancellationCertificate
+
+
 def _sign_commitment(sk: Optional[bytes], digest: bytes, role_tag: bytes) -> bytes:
     if sk is not None and len(sk) == 32:
         return hmac.new(sk, role_tag + digest, hashlib.sha256).digest()
@@ -93,6 +99,10 @@ class NettingSummary:
         if self.gross_volume_micro <= 0:
             return 0.0
         return 1.0 - self.residual_volume_micro / self.gross_volume_micro
+
+    @property
+    def mutual_close_acts(self) -> List[NettingCancellationCertificate]:
+        return self.certificates
 
 
 class DebtCycleMesh:
@@ -135,6 +145,11 @@ class DebtCycleMesh:
 
     @property
     def certificates(self) -> List[NettingCancellationCertificate]:
+        return list(self._certificates)
+
+    @property
+    def mutual_close_acts(self) -> List[NettingCancellationCertificate]:
+        """Cryptographic MutualClose acts generated prior to debt cancellation to prevent on-chain replay attacks."""
         return list(self._certificates)
 
     # ------------------------------------------------------------------ ledger
@@ -363,6 +378,8 @@ class DebtCycleMesh:
             share = base + (1 if i < remainder else 0)
             if share == 0:
                 continue
+            if node == self.treasury_node:
+                continue
             key = self._key(node, self.treasury_node)
             self._edges[key] = self._edges.get(key, 0) + share
             self._gross_volume += share
@@ -473,3 +490,24 @@ class DebtCycleMesh:
             conservation_ok=True,
             certificates=list(self._certificates),
         )
+
+    def record_cheque(self, cheque: Any) -> None:
+        """Records an outgoing or incoming cheque into the mesh edge obligations."""
+        payer = getattr(cheque, "agent_pk", None)
+        payee = getattr(cheque, "vendor_pk", None)
+        amt_micro = getattr(cheque, "cumulative_amt", None)
+        if payer is not None and payee is not None and amt_micro is not None and amt_micro > 0:
+            key = self._key(payer, payee)
+            prev_cum = self._edge_cleared_cumulative.get(key, 0)
+            delta = amt_micro - prev_cum
+            if delta > 0:
+                self.add_obligation(payer, payee, delta)
+                self._edge_cleared_cumulative[key] = amt_micro
+
+    def reduce_kirchhoff_cycles(self) -> NettingSummary:
+        """Alias for net_all() to provide uniform API across legacy and v3 interfaces."""
+        return self.net_all()
+
+    def resolve_cycles(self) -> NettingSummary:
+        """Alias for net_all() to provide uniform API across legacy and v3 interfaces."""
+        return self.net_all()

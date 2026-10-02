@@ -7,6 +7,7 @@ All internal settlement is denominated strictly in USD / USDC (6 decimal places:
 """
 
 from __future__ import annotations
+import atexit
 import ctypes
 import logging
 import math
@@ -24,6 +25,8 @@ CSLS_MAGIC = 0x43534C53
 CSLS_PKT_CHEQUE = 0x01
 CSLS_PKT_ACK = 0x02
 CSLS_PKT_FRAUD = 0x03
+CSLS_PKT_HALT = 0x04
+CSLS_PKT_SESSION_INIT = 0x05
 
 CSLS_OK = 0
 CSLS_ERR_EXPOSURE_CAP = -12
@@ -31,6 +34,9 @@ CSLS_ERR_FRAUD = -20
 CSLS_ERR_REPLAY = -21
 CSLS_ERR_OUT_OF_ORDER = -22
 CSLS_ERR_FORGED_HASH = -23
+CSLS_ERR_BAD_MAC = -24
+CSLS_ERR_NO_SESSION = -25
+CSLS_ERR_WAL_FATAL = -27
 
 # Locate / compile shared C library
 _SDK_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -77,22 +83,30 @@ class _CslsFraudPkt(ctypes.Structure):
         ("cheque2", _CslsChequePkt),
     ]
 
+class _CslsSessionInitPkt(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("magic", ctypes.c_uint32),
+        ("type", ctypes.c_uint8),
+        ("agent_pk", ctypes.c_uint8 * 33),
+        ("vendor_pk", ctypes.c_uint8 * 33),
+        ("session_nonce", ctypes.c_uint64),
+        ("auth_mac", ctypes.c_uint8 * 16),
+    ]
+
 class _CslsAgentCtx(ctypes.Structure):
     _fields_ = [
         ("sk", ctypes.c_uint8 * 32),
         ("pk", ctypes.c_uint8 * 33),
+        ("_pad", ctypes.c_uint8 * 7),
         ("height", ctypes.c_uint64),
+        ("watermark_boundary", ctypes.c_uint64),
+        ("wal_fatal", ctypes.c_int),
+        ("renew_requested", ctypes.c_int),
         ("cumulative_sent", ctypes.c_uint64),
+        ("channels", ctypes.c_byte * 128),
         ("wal_path", ctypes.c_char * 256),
         ("wal_fd", ctypes.c_int),
-        ("__padding", ctypes.c_int),
-        ("lock", ctypes.c_byte * 40),
-        ("bn_ctx", ctypes.c_void_p),
-        ("bn_sk", ctypes.c_void_p),
-        ("bn_k", ctypes.c_void_p),
-        ("bn_e", ctypes.c_void_p),
-        ("bn_s", ctypes.c_void_p),
-        ("bn_tmp", ctypes.c_void_p),
     ]
 
 class _CslsHistoryEntry(ctypes.Structure):
@@ -109,12 +123,14 @@ class _CslsVendorCtx(ctypes.Structure):
     _fields_ = [
         ("sk", ctypes.c_uint8 * 32),
         ("pk", ctypes.c_uint8 * 33),
+        ("_pad", ctypes.c_uint8 * 7),
         ("last_height", ctypes.c_uint64),
         ("cleared_amount", ctypes.c_uint64),
         ("accumulated_amount", ctypes.c_uint64),
         ("max_exposure_delta_v", ctypes.c_uint64),
-        ("lock", ctypes.c_byte * 40),
-        ("history", _CslsHistoryEntry * 65536),
+        ("slot_seed", ctypes.c_uint64),
+        ("enforce_mac", ctypes.c_int),
+        ("channels", ctypes.c_byte * 128),
     ]
 
 # Multi-Channel State Isolation Structures
@@ -156,12 +172,12 @@ class _AgentCtxHandle(ctypes.c_void_p):
     def cumulative_sent(self) -> int:
         if not self.value:
             return 0
-        return ctypes.c_uint64.from_address(self.value + 80).value
+        return ctypes.c_uint64.from_address(self.value + 96).value
 
     @cumulative_sent.setter
     def cumulative_sent(self, val: int) -> None:
         if self.value:
-            ctypes.c_uint64.from_address(self.value + 80).value = val
+            ctypes.c_uint64.from_address(self.value + 96).value = val
 
     @property
     def sk(self) -> bytes:
@@ -317,33 +333,88 @@ _LIB.csls_agent_get_channel_state.argtypes = [
     ctypes.POINTER(ctypes.c_uint64),
 ]
 
-# Ensure global crypto is initialized once
+# Session MAC C bindings
+_LIB.csls_agent_session_begin.restype = ctypes.c_int
+_LIB.csls_agent_session_begin.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint8 * 33),
+    ctypes.POINTER(_CslsSessionInitPkt),
+]
+
+_LIB.csls_agent_sign_cheque_mac.restype = ctypes.c_int
+_LIB.csls_agent_sign_cheque_mac.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint8 * 33),
+    ctypes.c_uint64,
+    ctypes.POINTER(_CslsChequePkt),
+    ctypes.POINTER(ctypes.c_uint8 * 16),
+]
+
+_LIB.csls_vendor_enable_mac.restype = ctypes.c_int
+_LIB.csls_vendor_enable_mac.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_int,
+]
+
+_LIB.csls_vendor_session_init.restype = ctypes.c_int
+_LIB.csls_vendor_session_init.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(_CslsSessionInitPkt),
+]
+
+_LIB.csls_vendor_process_cheque_mac.restype = ctypes.c_int
+_LIB.csls_vendor_process_cheque_mac.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(_CslsChequePkt),
+    ctypes.POINTER(ctypes.c_uint8 * 16),
+    ctypes.POINTER(_CslsFraudPkt),
+]
+
+# Ensure global crypto is initialized once and cleaned up on Python exit
 if _LIB.csls_crypto_global_init() != 0:
     raise RuntimeError("Failed to initialize Causal-Slash OpenSSL secp256k1 crypto engine")
+atexit.register(_LIB.csls_crypto_global_cleanup)
 
 
 @dataclass(frozen=True)
 class Cheque:
-    """Immutable micro-payment cheque representation."""
+    """Immutable micro-payment cheque representation (151B legacy or 167B with Session MAC)."""
     agent_pk: bytes
     vendor_pk: bytes
     height: int
     cumulative_amount_usdc: float
     raw_packet: bytes
+    mac: Optional[bytes] = None
 
     @classmethod
-    def from_c_pkt(cls, pkt: _CslsChequePkt) -> Cheque:
+    def from_c_pkt(cls, pkt: _CslsChequePkt, mac: Optional[bytes] = None) -> Cheque:
+        raw = bytes(pkt)
+        if mac is not None:
+            raw = raw + mac
         return cls(
             agent_pk=bytes(pkt.agent_pk),
             vendor_pk=bytes(pkt.vendor_pk),
             height=pkt.height,
             cumulative_amount_usdc=pkt.cumulative_amt / 1e6,
-            raw_packet=bytes(pkt),
+            raw_packet=raw,
+            mac=mac,
         )
 
     @property
     def cumulative_amt(self) -> int:
         return int(round(self.cumulative_amount_usdc * 1e6))
+
+    @property
+    def challenge_e(self) -> bytes:
+        if len(self.raw_packet) >= 151:
+            return self.raw_packet[87:119]
+        return b""
+
+    @property
+    def sig_s(self) -> bytes:
+        if len(self.raw_packet) >= 151:
+            return self.raw_packet[119:151]
+        return b""
 
 
 # Alias for formal protocol specification naming
@@ -452,10 +523,25 @@ class CausalAgentWallet:
                 return cum.value
             return 0
 
-    def sign_cheque(self, vendor_pk: Union[str, bytes], amount_usdc: float) -> Cheque:
+    def create_session(self, vendor_pk: Union[str, bytes]) -> bytes:
+        """
+        Begins a Session MAC handshake with a vendor.
+        Returns a 95-byte session_init packet containing ECDH authentication tag.
+        """
+        v_bytes = _parse_bytes(vendor_pk, 33)
+        v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
+        init_pkt = _CslsSessionInitPkt()
+        with self._lock:
+            rc = _LIB.csls_agent_session_begin(self._ctx, v_arr, ctypes.byref(init_pkt))
+            if rc != 0:
+                raise RuntimeError(f"csls_agent_session_begin failed with code {rc}")
+            return bytes(init_pkt)
+
+    def sign_cheque(self, vendor_pk: Union[str, bytes], amount_usdc: float, session_mac: bool = False) -> Cheque:
         """
         Signs a micro-payment cheque for `amount_usdc` isolated to vendor_pk channel.
         Tracks per-vendor sequence numbers and cumulative amounts via csls_channel_table_t.
+        If session_mac=True, produces a 167-byte wire packet with 16-byte SipHash-2-4 MAC tag.
         Execution takes ~3-5 microseconds in native C.
         """
         if not isinstance(amount_usdc, (int, float)):
@@ -473,13 +559,63 @@ class CausalAgentWallet:
 
         with self._lock:
             c_pkt = _CslsChequePkt()
-            res = _LIB.csls_agent_sign_cheque(
-                self._ctx, v_arr, delta_micro, ctypes.byref(c_pkt)
-            )
-            if res != 0:
-                raise RuntimeError(f"csls_agent_sign_cheque failed with code {res}")
+            if session_mac:
+                mac_arr = (ctypes.c_uint8 * 16)()
+                res = _LIB.csls_agent_sign_cheque_mac(
+                    self._ctx, v_arr, delta_micro, ctypes.byref(c_pkt), mac_arr
+                )
+                if res != 0:
+                    raise RuntimeError(f"csls_agent_sign_cheque_mac failed with code {res}")
+                return Cheque.from_c_pkt(c_pkt, mac=bytes(mac_arr))
+            else:
+                res = _LIB.csls_agent_sign_cheque(
+                    self._ctx, v_arr, delta_micro, ctypes.byref(c_pkt)
+                )
+                if res != 0:
+                    raise RuntimeError(f"csls_agent_sign_cheque failed with code {res}")
+                return Cheque.from_c_pkt(c_pkt)
 
-            return Cheque.from_c_pkt(c_pkt)
+    def session(
+        self,
+        vendor_pk: Union[str, bytes],
+        budget_usdc: float = 10.0,
+        price_per_call: float = 0.0005,
+        subagent_session: Optional[Any] = None,
+        mesh: Optional[Any] = None,
+        session_mac: bool = False,
+    ):
+        """Creates a Pythonic synchronous context manager for streaming micropayments."""
+        from .session import CausalSession
+        return CausalSession(
+            wallet=self,
+            vendor_pk=vendor_pk,
+            budget_usdc=budget_usdc,
+            price_per_call=price_per_call,
+            subagent_session=subagent_session,
+            mesh=mesh,
+            session_mac=session_mac,
+        )
+
+    def async_session(
+        self,
+        vendor_pk: Union[str, bytes],
+        budget_usdc: float = 10.0,
+        price_per_call: float = 0.0005,
+        subagent_session: Optional[Any] = None,
+        mesh: Optional[Any] = None,
+        session_mac: bool = False,
+    ):
+        """Creates a Pythonic asynchronous context manager for streaming micropayments."""
+        from .session import AsyncCausalSession
+        return AsyncCausalSession(
+            wallet=self,
+            vendor_pk=vendor_pk,
+            budget_usdc=budget_usdc,
+            price_per_call=price_per_call,
+            subagent_session=subagent_session,
+            mesh=mesh,
+            session_mac=session_mac,
+        )
 
     def __enter__(self) -> CausalAgentWallet:
         return self
@@ -514,6 +650,7 @@ class CausalVendorNode:
         secret_key: Optional[Union[str, bytes]] = None,
         delta_v_usdc: float = 1.0,
         max_channels: int = 65536,
+        enforce_mac: bool = False,
     ):
         if not isinstance(delta_v_usdc, (int, float)):
             raise TypeError(f"delta_v_usdc must be numeric, got {type(delta_v_usdc).__name__}")
@@ -525,6 +662,7 @@ class CausalVendorNode:
         self._lock = threading.RLock()
         self._closed = False
         self._max_channels = max_channels
+        self._enforce_mac = enforce_mac
         if secret_key is None:
             self._sk_bytes = os.urandom(32)
         else:
@@ -538,6 +676,9 @@ class CausalVendorNode:
         self._ctx = _VendorCtxHandle(raw_ctx)
         self._master_ctx = self._ctx
         self._channel_accumulated: Dict[bytes, int] = {}
+
+        if enforce_mac:
+            _LIB.csls_vendor_enable_mac(self._ctx, 1)
 
     @property
     def public_key(self) -> bytes:
@@ -563,6 +704,29 @@ class CausalVendorNode:
     def last_height(self) -> int:
         with self._lock:
             return self._ctx.last_height
+
+    def enable_mac(self, enable: bool = True) -> None:
+        """Enables or disables mandatory Session MAC enforcement (C2 gate)."""
+        with self._lock:
+            self._enforce_mac = enable
+            rc = _LIB.csls_vendor_enable_mac(self._ctx, 1 if enable else 0)
+            if rc != 0:
+                raise RuntimeError(f"csls_vendor_enable_mac failed with code {rc}")
+
+    def init_session(self, session_init_pkt: Union[bytes, _CslsSessionInitPkt]) -> bool:
+        """
+        Initializes an authenticated Session MAC session with an agent from a 95-byte session_init packet.
+        """
+        if isinstance(session_init_pkt, bytes):
+            if len(session_init_pkt) != ctypes.sizeof(_CslsSessionInitPkt):
+                raise ValueError(f"Expected {ctypes.sizeof(_CslsSessionInitPkt)} bytes, got {len(session_init_pkt)}")
+            c_init = _CslsSessionInitPkt.from_buffer_copy(session_init_pkt)
+        else:
+            c_init = session_init_pkt
+
+        with self._lock:
+            rc = _LIB.csls_vendor_session_init(self._ctx, ctypes.byref(c_init))
+            return rc == 0
 
     def get_channel_accumulated(self, agent_pk: Union[str, bytes]) -> int:
         a_bytes = _parse_bytes(agent_pk, 33)
@@ -626,21 +790,26 @@ class CausalVendorNode:
         Processes an incoming streaming micro-cheque using isolated per-agent channel context.
         Validates protocol framing, monotonic height progression, and enforces local credit
         exposure buffer (delta_v USDC) per agent channel.
+        Supports both 151-byte legacy packets and 167-byte Session MAC packets.
         """
         if isinstance(cheque, Cheque):
             raw = cheque.raw_packet
         else:
             raw = cheque
 
-        if len(raw) != ctypes.sizeof(_CslsChequePkt):
+        pkt_len = len(raw)
+        expected_plain = ctypes.sizeof(_CslsChequePkt)
+        expected_mac = expected_plain + 16
+
+        if pkt_len != expected_plain and pkt_len != expected_mac:
             return ProcessResult(
                 status_code=-1,
                 accepted=False,
                 accumulated_usdc=self.accumulated_usdc,
-                error_message=f"Invalid packet size: expected {ctypes.sizeof(_CslsChequePkt)}, got {len(raw)}",
+                error_message=f"Invalid packet size: expected {expected_plain} or {expected_mac} bytes, got {pkt_len}",
             )
 
-        c_pkt = _CslsChequePkt.from_buffer_copy(raw)
+        c_pkt = _CslsChequePkt.from_buffer_copy(raw[:expected_plain])
         c_fraud = _CslsFraudPkt()
         agent_pk = bytes(c_pkt.agent_pk)
 
@@ -654,9 +823,16 @@ class CausalVendorNode:
                         error_message="MAX_CHANNELS_CAPACITY_REACHED: Vendor channel table full",
                     )
 
-            res = _LIB.csls_vendor_process_cheque(
-                self._ctx, ctypes.byref(c_pkt), ctypes.byref(c_fraud)
-            )
+            if pkt_len == expected_mac:
+                mac_bytes = raw[expected_plain:expected_mac]
+                mac_arr = (ctypes.c_uint8 * 16)(*mac_bytes)
+                res = _LIB.csls_vendor_process_cheque_mac(
+                    self._ctx, ctypes.byref(c_pkt), mac_arr, ctypes.byref(c_fraud)
+                )
+            else:
+                res = _LIB.csls_vendor_process_cheque(
+                    self._ctx, ctypes.byref(c_pkt), ctypes.byref(c_fraud)
+                )
 
             if res == CSLS_OK:
                 self._channel_accumulated[agent_pk] = c_pkt.cumulative_amt
@@ -686,6 +862,9 @@ class CausalVendorNode:
                 CSLS_ERR_REPLAY: "REPLAY_PACKET_IGNORED",
                 CSLS_ERR_OUT_OF_ORDER: "OUT_OF_ORDER_OR_OLD_HEIGHT",
                 CSLS_ERR_FORGED_HASH: "FORGED_CHALLENGE_HASH",
+                CSLS_ERR_BAD_MAC: "INVALID_OR_MISSING_SESSION_MAC",
+                CSLS_ERR_NO_SESSION: "NO_ACTIVE_MAC_SESSION",
+                CSLS_ERR_WAL_FATAL: "WAL_CORRUPT_FAIL_CLOSED",
                 -11: "DECREASING_AMOUNT_ATTACK",
             }
             msg = error_map.get(res, f"UNKNOWN_ERROR_{res}")
