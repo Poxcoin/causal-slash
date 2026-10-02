@@ -47,6 +47,12 @@ from .swarm_subagent import (
     SubagentQuotaExceededError,
     SpendRateLimitExceededError,
 )
+from .onchain_settler import (
+    BaseOnChainSettler,
+    OnChainSettlementError,
+    TransactionRevertedError,
+    TransactionTimeoutError,
+)
 from .async_causal import (
     AsyncChannelActor,
     AsyncCausalClient,
@@ -95,6 +101,10 @@ __all__ = [
     "SubagentSession",
     "SubagentQuotaExceededError",
     "SpendRateLimitExceededError",
+    "BaseOnChainSettler",
+    "OnChainSettlementError",
+    "TransactionRevertedError",
+    "TransactionTimeoutError",
     "AsyncChannelActor",
     "AsyncCausalClient",
     "CausalQueueFullError",

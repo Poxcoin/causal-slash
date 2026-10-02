@@ -359,3 +359,167 @@ def merkle_verify(leaf: bytes, proof: Iterable[bytes], index: int, root: bytes) 
             node = _hash_pair(node, sibling)
         index >>= 1
     return node == root
+
+
+# ---------------------------------------------------------------------------
+# SwarmDelegationVault calldata builders & helpers (Base L2)
+# ---------------------------------------------------------------------------
+
+SIG_SETTLE_SWARM_CHEQUE = "settleSwarmCheque(address,uint64,uint64,bytes32[],bytes)"
+SIG_SLASH_SWARM_SUBAGENT = "slashSwarmSubAgent((address,bytes32,bytes32[],uint256,uint256,uint256,bytes32,uint256))"
+SWARM_CHEQUE_TYPEHASH = keccak256(b"SwarmCheque(address agent,address vendor,uint64 channelHeight,uint64 cumulativeAmount)")
+EIP712_DOMAIN_TYPEHASH = keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+
+
+def encode_bytes32_array(arr: Sequence[bytes]) -> bytes:
+    head = abi_encode_uint256(len(arr))
+    items = b"".join(abi_encode_bytes32(x) for x in arr)
+    return head + items
+
+
+def encode_dynamic_bytes(data: bytes) -> bytes:
+    head = abi_encode_uint256(len(data))
+    pad = (32 - (len(data) % 32)) % 32
+    return head + data + (b"\x00" * pad)
+
+
+def encode_settle_swarm_cheque(
+    agent: bytes,
+    channel_height: int,
+    cumulative_amount: int,
+    merkle_proof: Sequence[bytes],
+    signature: bytes
+) -> bytes:
+    """
+    Calldata builder for SwarmDelegationVault.settleSwarmCheque:
+    (address agent, uint64 channelHeight, uint64 cumulativeAmount, bytes32[] merkleProof, bytes signature)
+    """
+    selector = function_selector(SIG_SETTLE_SWARM_CHEQUE)
+    head_len = 5 * 32
+    enc_proof = encode_bytes32_array(merkle_proof)
+    offset_proof = head_len
+    offset_sig = head_len + len(enc_proof)
+    enc_sig = encode_dynamic_bytes(signature)
+
+    head = (
+        abi_encode_address(agent) +
+        abi_encode_uint256(channel_height) +
+        abi_encode_uint256(cumulative_amount) +
+        abi_encode_uint256(offset_proof) +
+        abi_encode_uint256(offset_sig)
+    )
+    return selector + head + enc_proof + enc_sig
+
+
+def encode_slash_swarm_subagent(
+    master_agent: bytes,
+    leaf_hash: bytes,
+    merkle_proof: Sequence[bytes],
+    leaf_index: int,
+    extracted_sk: int,
+    subagent_quota: int,
+    nonce_root: bytes,
+    expiry: int
+) -> bytes:
+    """
+    Calldata builder for SwarmDelegationVault.slashSwarmSubAgent(SwarmSlashArgs).
+    Tuple: (address,bytes32,bytes32[],uint256,uint256,uint256,bytes32,uint256)
+    """
+    selector = function_selector(SIG_SLASH_SWARM_SUBAGENT)
+    head_offset = abi_encode_uint256(32)
+    enc_proof = encode_bytes32_array(merkle_proof)
+    offset_proof = 8 * 32  # 8 words in tuple head
+
+    tuple_head = (
+        abi_encode_address(master_agent) +
+        abi_encode_bytes32(leaf_hash) +
+        abi_encode_uint256(offset_proof) +
+        abi_encode_uint256(leaf_index) +
+        abi_encode_uint256(extracted_sk) +
+        abi_encode_uint256(subagent_quota) +
+        abi_encode_bytes32(nonce_root) +
+        abi_encode_uint256(expiry)
+    )
+    return selector + head_offset + tuple_head + enc_proof
+
+
+def compute_subagent_leaf(
+    subagent_address: bytes,
+    quota_usdc: int,
+    nonce_root: bytes,
+    expiry: int,
+    leaf_index: int
+) -> bytes:
+    """
+    Mirrors SwarmDelegationVault.computeSubAgentLeaf:
+    keccak256(abi.encodePacked(subAgentAddress, quotaUSDC, nonceRoot, expiry, leafIndex))
+    """
+    if len(subagent_address) != 20:
+        raise ValueError("subagent_address must be 20 bytes")
+    if len(nonce_root) != 32:
+        raise ValueError("nonce_root must be 32 bytes")
+    packed = (
+        subagent_address +
+        quota_usdc.to_bytes(32, "big") +
+        nonce_root +
+        expiry.to_bytes(32, "big") +
+        leaf_index.to_bytes(32, "big")
+    )
+    return keccak256(packed)
+
+
+def compute_eip712_domain_separator(
+    verifying_contract: bytes,
+    chain_id: int = 84532,
+    name: str = "CausalSlashVault",
+    version: str = "2.0"
+) -> bytes:
+    """
+    Computes EIP-712 domain separator matching OpenZeppelin EIP712("CausalSlashVault", "2.0").
+    """
+    name_hash = keccak256(name.encode("utf-8"))
+    version_hash = keccak256(version.encode("utf-8"))
+    data = (
+        EIP712_DOMAIN_TYPEHASH +
+        name_hash +
+        version_hash +
+        abi_encode_uint256(chain_id) +
+        abi_encode_address(verifying_contract)
+    )
+    return keccak256(data)
+
+
+def compute_swarm_cheque_struct_hash(
+    master_agent: bytes,
+    vendor_address: bytes,
+    channel_height: int,
+    cumulative_amount: int
+) -> bytes:
+    """
+    Mirrors SwarmDelegationVault structHash for EIP-712 SwarmCheque.
+    """
+    data = (
+        SWARM_CHEQUE_TYPEHASH +
+        abi_encode_address(master_agent) +
+        abi_encode_address(vendor_address) +
+        abi_encode_uint256(channel_height) +
+        abi_encode_uint256(cumulative_amount)
+    )
+    return keccak256(data)
+
+
+def compute_swarm_cheque_digest(
+    master_agent: bytes,
+    vendor_address: bytes,
+    channel_height: int,
+    cumulative_amount: int,
+    verifying_contract: bytes,
+    chain_id: int = 84532
+) -> bytes:
+    """
+    Computes final EIP-712 typed data digest (_hashTypedDataV4) for SwarmCheque.
+    """
+    domain_sep = compute_eip712_domain_separator(verifying_contract, chain_id)
+    struct_hash = compute_swarm_cheque_struct_hash(master_agent, vendor_address, channel_height, cumulative_amount)
+    return keccak256(b"\x19\x01" + domain_sep + struct_hash)
+
