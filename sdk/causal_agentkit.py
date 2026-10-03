@@ -151,6 +151,12 @@ class CausalAgentKit:
         self._receive_nodes[node.public_key] = CausalVendorNode(
             secret_key=self._master_sk_bytes,
             delta_v_usdc=max(self.bond_micro / 1e6, 10.0))
+        # Authenticated Session MAC channels (C2 gate) for both settlement
+        # directions: master -> provider node, and provider wallet -> the
+        # master-side receiving node. Vendors mandate Session MAC by default
+        # because wire cheques omit the Schnorr point R.
+        self.master.open_secure_session(node)
+        vendor_wallet.open_secure_session(self._receive_nodes[node.public_key])
         self._channels.setdefault(node.public_key, ChannelState())
         return node.public_key
 
@@ -163,7 +169,7 @@ class CausalAgentKit:
         amount_micro = int(round(amount_usdc * 1e6))
         receive_node = self._receive_nodes[prov["pk"]]
         cheque = prov["wallet"].sign_cheque(self.master.public_key,
-                                            amount_micro / 1e6)
+                                            amount_micro / 1e6, session_mac=True)
         result = receive_node.process_cheque(cheque)
         if not result.accepted:
             raise RuntimeError(f"provider payout rejected: {result.error_message}")
@@ -195,7 +201,11 @@ class CausalAgentKit:
                 f"({self._lifetime_sent_micro} micro) past this provider node's "
                 f"delta_v ({provider['delta_v_micro']} micro) - engine -12 lifetime cap")
 
-        cheque = self.master.sign_cheque(vendor_pk, amount_micro / 1e6)
+        # Local providers settle over an authenticated Session MAC channel;
+        # remote vendors receive a legacy 151-byte offline instrument relayed
+        # over CSLS TCP (their own MAC policy governs acceptance).
+        cheque = self.master.sign_cheque(vendor_pk, amount_micro / 1e6,
+                                         session_mac=(provider is not None))
         st = self._channels.setdefault(vendor_pk, ChannelState())
         st.cheques_sent += 1
         st.last_height = cheque.height
@@ -281,7 +291,7 @@ class CausalAgentKit:
             if owed > 0:
                 # Master owes the provider.
                 node = self._providers[pk_to_name[counterparty]]["node"]
-                cheque = self.master.sign_cheque(counterparty, owed / 1e6)
+                cheque = self.master.sign_cheque(counterparty, owed / 1e6, session_mac=True)
                 result = node.process_cheque(cheque)
                 if not result.accepted:
                     raise RuntimeError(f"net settlement rejected: {result.error_message}")
@@ -289,7 +299,7 @@ class CausalAgentKit:
                 # Provider owes the master.
                 receive_node = self._receive_nodes[counterparty]
                 prov_wallet = self._providers[pk_to_name[counterparty]]["wallet"]
-                cheque = prov_wallet.sign_cheque(self.master.public_key, -owed / 1e6)
+                cheque = prov_wallet.sign_cheque(self.master.public_key, -owed / 1e6, session_mac=True)
                 result = receive_node.process_cheque(cheque)
                 if not result.accepted:
                     raise RuntimeError(f"net settlement rejected: {result.error_message}")

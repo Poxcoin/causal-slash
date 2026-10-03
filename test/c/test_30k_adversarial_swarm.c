@@ -230,6 +230,7 @@ int main(void) {
         v_sk[1] = (uint8_t)i;
         v_sk[31] = 0xEE;
         g_vendors[i] = csls_vendor_new(v_sk, v_delta_v);
+        csls_vendor_enable_mac(g_vendors[i], 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
         assert(g_vendors[i] != NULL);
     }
     printf("      Created %d Shards (Total Exposure Backing: $64,000 USDC)\n\n", NUM_VENDORS);

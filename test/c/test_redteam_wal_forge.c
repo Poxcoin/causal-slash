@@ -67,6 +67,7 @@ int main(void) {
     memset(sk, 0x71, 32); memset(vsk, 0x22, 32);
     unlink(WAL);
     csls_vendor_ctx_t *vendor = csls_vendor_new(vsk, 100000000ULL);
+    csls_vendor_enable_mac(vendor, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     memcpy(vpk_buf, vendor->pk, 33);
     const uint8_t *vpk = vendor->pk;
 

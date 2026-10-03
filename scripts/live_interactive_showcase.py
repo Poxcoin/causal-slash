@@ -66,7 +66,7 @@ class MockUpstreamHandler(http.server.BaseHTTPRequestHandler):
 
 def run_showcase():
     print("=" * 80)
-    print("🚀 CAUSAL-SLASH PROTOCOL: LIVE CROSS-TERMINAL SHOWCASE (PHASE 4)")
+    print("CAUSAL-SLASH PROTOCOL: LIVE CROSS-TERMINAL SHOWCASE (PHASE 4)")
     print("   Canonical Base L2 Ecosystem Fund ($500,000 Grant Demonstration)")
     print("=" * 80)
 
@@ -80,6 +80,9 @@ def run_showcase():
     agent_wallet = CausalAgentWallet()
     vendor_node = CausalVendorNode(delta_v_usdc=50.0)
     guardrail = EdgeSafetyGuardrail()
+    # Authenticated Session MAC channel (C2 gate): the vendor mandates Session
+    # MAC by default (wire cheques omit the Schnorr point R).
+    assert vendor_node.init_session(agent_wallet.create_session(vendor_node.public_key))
 
     # 3. Start SlashSidecarProxy on :8999
     proxy = SlashSidecarProxy(
@@ -163,18 +166,19 @@ def run_showcase():
         bad_sk = bytes([0x66] * 32)
         bad_wallet = CausalAgentWallet(bad_sk)
         target_vendor = CausalVendorNode(delta_v_usdc=10.0)
+        assert target_vendor.init_session(bad_wallet.create_session(target_vendor.public_key))
 
         # Cheque 1: legitimate
-        c1 = bad_wallet.sign_cheque(target_vendor.public_key, amount_usdc=0.01)
+        c1 = bad_wallet.sign_cheque(target_vendor.public_key, amount_usdc=0.01, session_mac=True)
         r1 = target_vendor.process_cheque(c1)
-        hound.inspect(c1.raw_packet)
+        hound.inspect(c1.raw_packet[:151])
         assert r1.accepted
 
         # Cheque 2: double-sign at same height
         bad_wallet._ctx.height = 1
-        c2 = bad_wallet.sign_cheque(target_vendor.public_key, amount_usdc=0.02)
+        c2 = bad_wallet.sign_cheque(target_vendor.public_key, amount_usdc=0.02, session_mac=True)
         r2 = target_vendor.process_cheque(c2)
-        hound_res = hound.inspect(c2.raw_packet)
+        hound_res = hound.inspect(c2.raw_packet[:151])
 
         assert not r2.accepted
         assert r2.status_code == -20  # EQUIVOCATION
@@ -188,7 +192,7 @@ def run_showcase():
         print(f"  > L2 Slash Ready  : PerformanceCollateralVault.sol (Base Sepolia)")
 
         print("\n" + "=" * 80)
-        print("🎉 PHASE 4 LIVE SHOWCASE COMPLETE: ALL SYSTEMS GREEN!")
+        print("PHASE 4 LIVE SHOWCASE COMPLETE: ALL SYSTEMS GREEN!")
         print("   - Wire Speed: 1.45 µs / cheque (691,525 ops/sec in C11)")
         print("   - Proxy SLA : < 0.05 ms Guardrail overhead")
         print("   - Gas Drag  : 0 wei on intermediate transfers (100% off-chain in RAM)")

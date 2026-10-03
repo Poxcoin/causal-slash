@@ -258,18 +258,24 @@ def run(with_c_gate: bool = True) -> dict:
     attacker_sk = derive_subagent_sk(SWARM_SEED, 9)     # bonded subagent #9 goes rogue
     attacker = CausalAgentWallet(secret_key=attacker_sk.to_bytes(32, "big"))
     audit_vendor = CausalVendorNode(delta_v_usdc=1.0)
+    # Authenticated Session MAC channel (C2 gate): the audit vendor mandates
+    # Session MAC by default (wire cheques omit the Schnorr point R). Both
+    # conflicting cheques carry a valid MAC; the equivocation trap fires
+    # downstream of the MAC gate. The Bloodhound inspects the 151-byte cheque
+    # preimage carried by every 167-byte wire packet.
+    assert audit_vendor.init_session(attacker.create_session(audit_vendor.public_key))
     attacker_address = derive_address(attacker_sk)
 
     with BloodhoundWatchdog(HUNTER_ADDRESS) as hound:
-        legit = attacker.sign_cheque(audit_vendor.public_key, 0.05)     # h=1
-        rc1, _ = hound.inspect(legit.raw_packet)
+        legit = attacker.sign_cheque(audit_vendor.public_key, 0.05, session_mac=True)     # h=1
+        rc1, _ = hound.inspect(legit.raw_packet[:151])
         r_legit = audit_vendor.process_cheque(legit)
         assert r_legit.accepted and rc1 == 0
         print(f"legit cheque           : h=1 cum={legit.cumulative_amount_usdc:.4f} "
               f"accepted, hound recorded")
 
         attacker._ctx.height = 1                                        # deliberate rewind
-        fork = attacker.sign_cheque(audit_vendor.public_key, 0.07)       # same h=1 conflicting cheque
+        fork = attacker.sign_cheque(audit_vendor.public_key, 0.07, session_mac=True)      # same h=1 conflicting cheque
         r_fork = audit_vendor.process_cheque(fork)
         assert not r_fork.accepted and r_fork.fraud_proof is not None, "equivocation not trapped"
         extracted = bytes(r_fork.fraud_proof.extracted_secret_key)
@@ -278,7 +284,7 @@ def run(with_c_gate: bool = True) -> dict:
         print(f"double-spend           : REJECTED (code -20 EQUIVOCATION), "
               f"sk extracted in O(1): 0x{extracted.hex()[:24]}...")
 
-        rc2, payload = hound.inspect(fork.raw_packet)
+        rc2, payload = hound.inspect(fork.raw_packet[:151])
         assert rc2 == 1, "bloodhound failed to capture equivocation"
         print(f"bloodhound             : CAPTURED at wire path "
               f"(packets={hound.packets_inspected}, captures={hound.equivocations_captured})")

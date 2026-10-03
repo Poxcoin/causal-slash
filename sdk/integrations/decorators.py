@@ -47,6 +47,8 @@ def causal_paid(
     """
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         price_micro = int(round(price_usdc * 1e6))
+        # (wallet id, vendor node id) pairs with an established Session MAC channel
+        secure_channels: set = set()
 
         def _execute_payment(
             active_wallet: Optional[CausalAgentWallet],
@@ -69,12 +71,24 @@ def causal_paid(
                 active_subagent.check_spend_rate(price_micro)
                 active_subagent.check_and_reserve(price_micro)
 
-            # 2. Sign cryptographic cheque
+            # 2. Sign cryptographic cheque. Peer-to-peer delivery to a locally
+            # attached vendor node always uses the authenticated Session MAC
+            # channel (C2 gate): vendors mandate the MAC by default because
+            # wire cheques omit the Schnorr point R. Remote vendor_pk-only
+            # payments have no in-process transport for the handshake and stay
+            # legacy unless the caller opted into session_mac explicitly.
+            session_mac_effective = bool(session_mac)
+            if active_vendor_node is not None:
+                channel_key = (id(active_wallet), id(active_vendor_node))
+                if channel_key not in secure_channels:
+                    active_wallet.open_secure_session(active_vendor_node)
+                    secure_channels.add(channel_key)
+                session_mac_effective = True
             try:
                 cheque = active_wallet.sign_cheque(
                     v_pk,
                     amount_usdc=price_usdc,
-                    session_mac=session_mac,
+                    session_mac=session_mac_effective,
                 )
             except Exception:
                 if active_subagent is not None:

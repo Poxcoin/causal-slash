@@ -157,6 +157,16 @@ class CausalSlashActionProvider(ActionProvider):
         self._owns_wallet = agent_wallet is None
         self._owns_vendor = vendor_node is None
 
+        # Authenticated Session MAC channel between the provider's own agent
+        # wallet and its vendor node (C2 gate). Vendors mandate the Session MAC
+        # by default because wire cheques omit the Schnorr point R; the
+        # loopback sign/verify pair must therefore complete the handshake.
+        self._secure_channel_ready = False
+        try:
+            self._secure_channel_ready = self._agent_wallet.open_secure_session(self._vendor_node)
+        except Exception as e:
+            logging.warning("Session MAC handshake failed (fail-closed): %s", e)
+
         # Base L2 On-Chain Configuration
         self._vault_address = vault_address
         self._rpc_url = rpc_url or os.environ.get("BASE_RPC_URL", "http://127.0.0.1:8545")
@@ -280,7 +290,18 @@ class CausalSlashActionProvider(ActionProvider):
                 raise RuntimeError("CausalSlashActionProvider is closed")
 
             v_pk = self._normalize_vendor_pk(vendor_address)
-            cheque = self._agent_wallet.sign_cheque(v_pk, amount_usdc)
+            # Prefer the authenticated Session MAC instrument (C2 gate). When no
+            # session exists with the target vendor (no in-process transport to
+            # deliver the session_init packet), fall back to the legacy
+            # 151-byte instrument: a MAC-mandating vendor rejects it at the
+            # gate, so the fallback can never bypass authentication.
+            try:
+                cheque = self._agent_wallet.sign_cheque(v_pk, amount_usdc, session_mac=True)
+            except RuntimeError as e:
+                if "-25" in str(e):  # CSLS_ERR_NO_SESSION
+                    cheque = self._agent_wallet.sign_cheque(v_pk, amount_usdc)
+                else:
+                    raise
 
             result = {
                 "status": "SIGNED",

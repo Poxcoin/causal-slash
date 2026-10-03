@@ -55,6 +55,7 @@ int main(void) {
     csls_crypto_global_init();
     uint8_t vsk[32]; memset(vsk, 0x22, 32);
     csls_vendor_ctx_t *V = csls_vendor_new(vsk, 1000000ULL);
+    csls_vendor_enable_mac(V, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     G_VPK = V->pk;
     g_hound = bloodhound_new((const uint8_t *)"\x11\x22\x33");
 

@@ -90,8 +90,11 @@ def test_session_mac_167_byte_wire_protocol_end_to_end():
 
 def test_session_mac_backwards_compatibility_151_byte():
     wallet = CausalAgentWallet()
-    vendor = CausalVendorNode(delta_v_usdc=10.0)
-    # Vendor MAC enforcement is disabled by default (legacy mode)
+    # Legacy 151-byte acceptance now requires an EXPLICIT opt-out: the secure
+    # default mandates Session MAC enforcement because wire cheques omit the
+    # Schnorr point R (sig_s can never be verified at ingestion time).
+    vendor = CausalVendorNode(delta_v_usdc=10.0, enforce_mac=False)
+    assert vendor._enforce_mac is False
 
     cheque = wallet.sign_cheque(vendor.public_key, amount_usdc=0.002, session_mac=False)
     assert cheque.mac is None
@@ -407,6 +410,9 @@ def test_slash_proxy_streaming_http_forward_and_cheque_verification():
 
     agent = CausalAgentWallet()
     vendor = CausalVendorNode(delta_v_usdc=10.0)
+    # Authenticated Session MAC channel (C2 gate): the proxy's vendor node
+    # mandates Session MAC by default (wire cheques omit the Schnorr point R).
+    assert vendor.init_session(agent.create_session(vendor.public_key))
 
     proxy = SlashSidecarProxy(
         agent_wallet=agent,
@@ -420,8 +426,8 @@ def test_slash_proxy_streaming_http_forward_and_cheque_verification():
     proxy.start()
 
     try:
-        # A. Sign a valid cheque
-        valid_cheque = agent.sign_cheque(vendor.public_key, amount_usdc=0.01)
+        # A. Sign a valid authenticated cheque
+        valid_cheque = agent.sign_cheque(vendor.public_key, amount_usdc=0.01, session_mac=True)
         req_data = json.dumps({"model": "mock-llama", "messages": [{"role": "user", "content": "hi"}]}).encode()
 
         req = urllib.request.Request(

@@ -408,7 +408,9 @@ contract SwarmDelegationVault is PerformanceCollateralVault {
         AgentVault storage vault = vaults[agent];
         if (vault.collateralBond == 0) revert InsufficientCollateral();
         if (vault.isSlashed) revert AlreadySlashed();
-        if (block.number <= disputeLocks[agent]) revert TimelockActive();
+        // NOTE: disputeLocks is deliberately NOT enforced here (same rationale as
+        // settleCheque): third-party fraud commitments must never freeze honest
+        // vendor settlements. The lock governs agent withdrawal and root rotation.
         // VULN-06: Merkle Proof Length Bounds
         if (merkleProof.length > swarmTreeDepths[agent]) revert DepthExceeded();
 

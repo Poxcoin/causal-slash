@@ -667,7 +667,7 @@ contract PerformanceCollateralVaultTest is Test {
         assertEq(remainingBond, 2 * 1e6);
     }
 
-    function test_SettleChequeBlockedDuringDispute() public {
+    function test_VendorSettlementLiveDuringDispute_AgentWithdrawalStillLocked() public {
         vm.startPrank(agentOwner);
         vault.depositCollateral(10 * 1e6, keccak256("root"), agentSigner);
         vault.allocateSessionExposure(vendor, 5 * 1e6);
@@ -681,15 +681,27 @@ contract PerformanceCollateralVaultTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(agentSigningPk, digest);
         bytes memory sig = abi.encodePacked(r, s, v);
 
-        // Commit fraud proof against agent
+        // Third party commits a fraud proof against the agent
         bytes32 commitHash = keccak256("fraud_commit_hash");
         vm.prank(finder);
         vault.commitFraudProof(agentOwner, commitHash);
 
-        // Attempt to drain collateral via settleCheque during dispute window
+        // A valid signature presented by the honest vendor must NEVER be frozen
+        // by a third-party commitment (liveness freeze DoS remediation).
         vm.prank(vendor);
-        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
         vault.settleCheque(agentOwner, 4 * 1e6, 1, block.timestamp + 1000, sig);
+        assertEq(usdc.balanceOf(vendor), 4 * 1e6);
+
+        // The dispute lock retains its architectural purpose: the agent cannot
+        // pull collateral out via instantWithdraw during the active commitment.
+        vm.prank(agentOwner);
+        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
+        vault.instantWithdraw(1 * 1e6);
+
+        // Agent-side exposure allocation stays locked as well.
+        vm.prank(agentOwner);
+        vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
+        vault.allocateSessionExposure(address(0x999), 1 * 1e6);
     }
 
     function test_SweepUnclaimedRestitution_RequiresEmergencyDisputePeriod() public {

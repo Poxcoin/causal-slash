@@ -22,6 +22,9 @@ def run_system_demo():
     # 1. Native C Engine Setup
     agent = CausalAgentWallet()
     vendor = CausalVendorNode(delta_v_usdc=10.0)
+    # Authenticated Session MAC channel (C2 gate): vendors mandate Session MAC
+    # by default because wire cheques omit the Schnorr point R.
+    assert vendor.init_session(agent.create_session(vendor.public_key))
 
     collateral_bond_usdc = 10.00
     session_exposure_usdc = 1.00
@@ -43,7 +46,7 @@ def run_system_demo():
     t_start = time.perf_counter()
 
     for h in range(1, stream_count + 1):
-        cheque = agent.sign_cheque(vendor.public_key, amount_usdc=price_per_chunk)
+        cheque = agent.sign_cheque(vendor.public_key, amount_usdc=price_per_chunk, session_mac=True)
         res = vendor.process_cheque(cheque)
         if not res.accepted:
             raise RuntimeError(f"Cheque {h} rejected: {res.error_message}")
@@ -66,16 +69,17 @@ def run_system_demo():
     print(f"\n[security] simulating double-signing attack (conflicting sequence h=1)...")
     attacker = CausalAgentWallet()
     audit_vendor = CausalVendorNode(delta_v_usdc=1.0)
+    assert audit_vendor.init_session(attacker.create_session(audit_vendor.public_key))
 
     # Step A: Legitimate cheque at h=1
-    legit_c = attacker.sign_cheque(audit_vendor.public_key, amount_usdc=0.01)
+    legit_c = attacker.sign_cheque(audit_vendor.public_key, amount_usdc=0.01, session_mac=True)
     res_legit = audit_vendor.process_cheque(legit_c)
     assert res_legit.accepted
     print(f"  cheque h=1 (legit):       accepted")
 
     # Step B: Conflicting cheque on same height h=1
     attacker._ctx.height = legit_c.height
-    conflicting_c = attacker.sign_cheque(audit_vendor.public_key, amount_usdc=0.02)
+    conflicting_c = attacker.sign_cheque(audit_vendor.public_key, amount_usdc=0.02, session_mac=True)
 
     res_fraud = audit_vendor.process_cheque(conflicting_c)
     print(f"  cheque h=1 (conflicting): rejected (code {res_fraud.status_code}: EQUIVOCATION)")

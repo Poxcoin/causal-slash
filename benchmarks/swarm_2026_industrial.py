@@ -95,6 +95,13 @@ def run_industrial_swarm_benchmark(
     # Shared Mesh Netting Router (Thread-safe Kirchhoff engine)
     mesh = DebtCycleMesh()
 
+    # Authenticated Session MAC channels (C2 gate): every agent establishes one
+    # session per vendor it streams to (CSLS_MAX_SESSIONS = 16 >= 6 vendors).
+    # Vendors mandate Session MAC by default (wire cheques omit point R).
+    for agent in agents:
+        for spec in vendors.values():
+            assert spec.vendor_node.init_session(agent.create_session(spec.vendor_node.public_key))
+
     # Telemetry metrics
     stats_lock = threading.Lock()
     total_processed = 0
@@ -149,8 +156,8 @@ def run_industrial_swarm_benchmark(
             if simulate_chaos and random.random() < 0.05:
                 time.sleep(random.uniform(0.001, 0.005))
 
-            # Sign zero-gas cheque in native C engine (3-5 microseconds)
-            cheque = agent.sign_cheque(target_spec.vendor_node.public_key, amount_usdc=price)
+            # Sign zero-gas authenticated cheque in native C engine (3-5 microseconds)
+            cheque = agent.sign_cheque(target_spec.vendor_node.public_key, amount_usdc=price, session_mac=True)
 
             # Simulated network drop: 1% dropped and retried
             if simulate_chaos and random.random() < 0.01:
@@ -177,12 +184,15 @@ def run_industrial_swarm_benchmark(
 
             # In-flight Adversarial Double-Sign Attack Simulation
             if is_rogue and step == 33:
-                # Rogue agent signs conflicting cheque on same height to another vendor
-                rogue_target = vendors["Vendor_Claude_Opus_5_5"]
-                # Save and replay sequence height
+                # Rogue agent rewinds its height and signs a CONFLICTING cheque
+                # in the SAME vendor channel: same (agent, vendor, height), a
+                # different cumulative => different challenge e. The MAC stays
+                # valid (the attacker owns its session key), so the forgery
+                # reaches the equivocation trap and the key is extracted.
                 saved_height = agent._ctx.height
                 agent._ctx.height = cheque.height
-                fraud_cheque = agent.sign_cheque(rogue_target.vendor_node.public_key, amount_usdc=price * 2)
+                fraud_cheque = agent.sign_cheque(target_spec.vendor_node.public_key,
+                                                 amount_usdc=price * 2, session_mac=True)
                 agent._ctx.height = saved_height
 
                 fraud_res = target_spec.vendor_node.process_cheque(fraud_cheque)

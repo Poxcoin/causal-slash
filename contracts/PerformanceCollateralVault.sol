@@ -108,7 +108,7 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     mapping(address => mapping(address => uint256)) public vendorExposure;     // agent => vendor => active quota
     mapping(address => uint256) public totalAllocatedExposure;                 // agent => sum of active reserved session buffers
     mapping(address => uint256) public slashedRestitutionPool;                 // agent => restitution pool for active vendors
-    mapping(address => uint256) public disputeLocks;                           // agent => block number until which instantWithdraw is locked
+    mapping(address => uint256) public disputeLocks;                          // agent => block number until which agent withdrawal and root modification are locked; NEVER blocks vendor settlements
     mapping(address => uint256) public activeDisputeCount;                     // agent => number of concurrent active optimistic disputes
     mapping(address => uint256) public slashTimestamps;                        // agent => timestamp when slashed
 
@@ -392,7 +392,10 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         AgentVault storage vault = vaults[agent];
         if (vault.signingAddress == address(0)) revert InvalidKey();
         if (vault.isSlashed) revert AlreadySlashed();
-        if (block.number <= disputeLocks[agent]) revert TimelockActive();
+        // NOTE: disputeLocks is deliberately NOT enforced here. Honest vendors
+        // presenting valid signatures must never be blocked by third-party
+        // fraud commitments (liveness freeze DoS). The lock governs agent-side
+        // withdrawal and root modification paths only.
 
         if (sessionNonce <= lastSessionNonces[agent][msg.sender]) revert InvalidSessionNonce();
         lastSessionNonces[agent][msg.sender] = sessionNonce;
@@ -877,7 +880,9 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
     /**
      * @notice Finalizes optimistic Schnorr cheque after 4-hour dispute period (or immediately by agent).
      * Pays out earned USDC to vendor and refunds 1 USDC COMMIT_BOND.
-     * Insolvency-resilient: if collateral is deficient, pays remaining bond and ALWAYS refunds COMMIT_BOND.
+     * Quota Isolation: the payout is strictly capped at the vendor's active quota plus the
+     * agent's unreserved free margin, so an optimistic settlement can never cannibalize
+     * collateral contractually reserved for other vendors.
      */
     function finalizeSchnorrCheque(address agent, address vendor) external nonReentrant {
         OptimisticChequeCommit storage commit = optimisticCheques[agent][vendor];
@@ -897,7 +902,17 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         if (cumulativeAmountUSDC <= settledAmounts[agent][vendor]) revert NothingToSettle();
 
         uint256 delta = cumulativeAmountUSDC - settledAmounts[agent][vendor];
-        uint256 payableDelta = delta > vault.collateralBond ? vault.collateralBond : delta;
+
+        // Quota Isolation: an optimistic settlement must NEVER consume collateral
+        // reserved for other vendors. The vendor can only draw against its own
+        // active quota plus the agent's unreserved free margin.
+        uint256 activeQuota = vendorExposure[agent][vendor];
+        uint256 freeMargin = vault.collateralBond > totalAllocatedExposure[agent]
+            ? vault.collateralBond - totalAllocatedExposure[agent]
+            : 0;
+        uint256 maxPayable = activeQuota + freeMargin;
+        uint256 payableDelta = delta > maxPayable ? maxPayable : delta;
+        if (payableDelta == 0) revert InsufficientCollateral();
 
         // Update settled state
         settledAmounts[agent][vendor] = cumulativeAmountUSDC;
@@ -907,7 +922,6 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         vault.collateralBond -= payableDelta;
 
         // Dynamic quota relief: deduct from active vendor exposure and total exposure
-        uint256 activeQuota = vendorExposure[agent][vendor];
         uint256 exposureToRelieve = payableDelta > activeQuota ? activeQuota : payableDelta;
         if (exposureToRelieve > 0) {
             vendorExposure[agent][vendor] -= exposureToRelieve;
@@ -919,11 +933,11 @@ contract PerformanceCollateralVault is EIP712, ReentrancyGuard {
         }
 
         // Dynamic clamping of pending emergency withdrawal
-        uint256 freeMargin = vault.collateralBond > totalAllocatedExposure[agent]
+        uint256 remainingFreeMargin = vault.collateralBond > totalAllocatedExposure[agent]
             ? vault.collateralBond - totalAllocatedExposure[agent]
             : 0;
-        if (vault.pendingWithdrawal > freeMargin) {
-            vault.pendingWithdrawal = freeMargin;
+        if (vault.pendingWithdrawal > remainingFreeMargin) {
+            vault.pendingWithdrawal = remainingFreeMargin;
         }
 
         // Release dispute locks if no active optimistic disputes remain

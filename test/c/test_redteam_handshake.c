@@ -21,6 +21,7 @@ int main(void) {
     uint8_t ask[32], vsk[32], v2sk[32];
     memset(ask, 0x51, 32); memset(vsk, 0x22, 32); memset(v2sk, 0x23, 32);
     csls_vendor_ctx_t *V = csls_vendor_new(vsk, 100000000ULL);
+    csls_vendor_enable_mac(V, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     csls_agent_ctx_t *A = csls_agent_new(ask, NULL);
     const uint8_t *vpk = V->pk;
 
@@ -50,6 +51,7 @@ int main(void) {
     csls_cheque_pkt_t foreign = ch[2], forged = ch[2];
     uint8_t v2pk[33];
     csls_vendor_ctx_t *V2 = csls_vendor_new(v2sk, 100000000ULL);
+    csls_vendor_enable_mac(V2, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     memcpy(v2pk, V2->pk, 33);
     memcpy(foreign.vendor_pk, v2pk, 33);
     printf("[control] foreign head (other vendor pk): rc=%d (expect -7)\n",

@@ -49,6 +49,7 @@ class StreamCoordinator:
     ledger: Dict[Tuple[bytes, bytes], int] = field(default_factory=dict)
     channel_stats: Dict[Tuple[bytes, bytes], ChannelStats] = field(default_factory=dict)
     _last_cum_by_payer: Dict[bytes, int] = field(default_factory=dict)
+    _secure_sessions: set = field(default_factory=set)  # (payer_pk, payee_pk) pairs with an active Session MAC channel
     next_height: int = 1
     total_streamed_micro: int = 0
     total_cheques: int = 0
@@ -99,7 +100,16 @@ class StreamCoordinator:
         # Engine post-increments: parking the counter at `height` makes the
         # next fetch_add return exactly `height`.
         payer_wallet._ctx.height = height
-        cheque = payer_wallet.sign_cheque(payee_node.public_key, amount_micro / 1e6)
+        # Authenticated Session MAC channel (C2 gate), established lazily per
+        # (payer, payee) pair: vendors mandate Session MAC by default because
+        # wire cheques omit the Schnorr point R.
+        pair = (payer_wallet.public_key, payee_node.public_key)
+        if pair not in self._secure_sessions:
+            if not payer_wallet.open_secure_session(payee_node):
+                raise ChequeStatusError(
+                    "Session MAC handshake failed with payee node")
+            self._secure_sessions.add(pair)
+        cheque = payer_wallet.sign_cheque(payee_node.public_key, amount_micro / 1e6, session_mac=True)
         if cheque.height != height:
             raise AssertionError(f"engine signed height {cheque.height}, expected {height}")
 
@@ -136,6 +146,12 @@ class StreamCoordinator:
         Signs a cheque at an explicit height WITHOUT delivering it (offline
         signature path, e.g. for wire-level capture demos). Advances the
         coordinator's global lane so the height can never be reused.
+
+        The offline instrument is a legacy 151-byte cheque: no Session MAC
+        channel can exist at signing time because the payee node is not part
+        of the transaction. Delivering it to a payee node that mandates
+        Session MAC (the secure default) therefore requires the payee to have
+        MAC enforcement explicitly disabled, or an out-of-band handshake.
         """
         if lane_height < self.next_height:
             raise ValueError("lane height violates global monotonicity")

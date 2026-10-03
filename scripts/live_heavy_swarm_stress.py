@@ -48,7 +48,7 @@ def get_gpu_vram():
 
 def main():
     print("=" * 85)
-    print("🚀 CAUSAL-SLASH PROTOCOL: HEAVY MULTI-AGENT SWARM REAL-WORLD STRESS TEST")
+    print("CAUSAL-SLASH PROTOCOL: HEAVY MULTI-AGENT SWARM REAL-WORLD STRESS TEST")
     print("   Real GPU Neural Network + C11 Core + Kirchhoff Netting + Adversarial Defense")
     print("=" * 85)
 
@@ -92,10 +92,14 @@ def main():
         ]
 
         agent_wallets = {name: CausalAgentWallet() for name, _ in agent_tasks}
+        # Authenticated Session MAC channels (C2 gate): the vendor mandates
+        # Session MAC by default (wire cheques omit the Schnorr point R).
+        for wallet in agent_wallets.values():
+            assert vendor.init_session(wallet.create_session(vendor.public_key))
 
         def execute_agent_query(name, prompt):
             wallet = agent_wallets[name]
-            cheque = wallet.sign_cheque(vendor.public_key, amount_usdc=0.0005)
+            cheque = wallet.sign_cheque(vendor.public_key, amount_usdc=0.0005, session_mac=True)
             payload = json.dumps({
                 "model": "qwen2.5:3b",
                 "messages": [{"role": "user", "content": prompt}],
@@ -125,7 +129,7 @@ def main():
             futures = [executor.submit(execute_agent_query, name, prompt) for name, prompt in agent_tasks]
             for f in concurrent.futures.as_completed(futures):
                 name, prompt, reply, latency_ms, tokens, height = f.result()
-                print(f"\n  [✔ {name}] Latency: {latency_ms:.1f}ms | Tokens: {tokens} | Height: {height} | Gas: 0 wei")
+                print(f"\n  [{name}] Latency: {latency_ms:.1f}ms | Tokens: {tokens} | Height: {height} | Gas: 0 wei")
                 print(f"      Prompt: \"{prompt}\"")
                 print(f"      GPU AI: \"{reply[:90]}...\"" if len(reply) > 90 else f"      GPU AI: \"{reply}\"")
 
@@ -203,10 +207,11 @@ def main():
         ]
 
         rogue_agent = CausalAgentWallet()
+        assert vendor.init_session(rogue_agent.create_session(vendor.public_key))
         blocked_count = 0
 
         def send_attack(cat, payload_text):
-            chk = rogue_agent.sign_cheque(vendor.public_key, amount_usdc=0.0005)
+            chk = rogue_agent.sign_cheque(vendor.public_key, amount_usdc=0.0005, session_mac=True)
             body = json.dumps({
                 "model": "qwen2.5:3b",
                 "messages": [{"role": "user", "content": payload_text}],
@@ -234,7 +239,7 @@ def main():
                 cat, blocked, dt_us, code = f.result()
                 if blocked:
                     blocked_count += 1
-                    print(f"  [🛡️ INTERCEPTED] {cat:22s} | HTTP {code} | Latency: {dt_us:6.1f} µs | GPU Protected: 100%")
+                    print(f"  [INTERCEPTED] {cat:22s} | HTTP {code} | Latency: {dt_us:6.1f} µs | GPU Protected: 100%")
                 else:
                     print(f"  [FAILED TO INTERCEPT] {cat}")
 
@@ -247,10 +252,11 @@ def main():
         print("=" * 85)
 
         double_signer = CausalAgentWallet()
+        assert vendor.init_session(double_signer.create_session(vendor.public_key))
         print(f"  Offender Public Key: {double_signer.public_key_hex}")
 
-        c1 = double_signer.sign_cheque(vendor.public_key, amount_usdc=0.0100)
-        c2 = double_signer.sign_cheque(vendor.public_key, amount_usdc=0.0200)
+        c1 = double_signer.sign_cheque(vendor.public_key, amount_usdc=0.0100, session_mac=True)
+        c2 = double_signer.sign_cheque(vendor.public_key, amount_usdc=0.0200, session_mac=True)
 
         # Force conflicting nonce on height 1
         res1 = vendor.process_cheque(c1.raw_packet)
@@ -265,7 +271,7 @@ def main():
         # 7. Final Telemetry
         final_vram = get_gpu_vram()
         print("\n" + "=" * 85)
-        print("🏆 HEAVY INDUSTRIAL STRESS TEST SUMMARY")
+        print("HEAVY INDUSTRIAL STRESS TEST SUMMARY")
         print("=" * 85)
         print(f"  • Real GPU Inferences Handled : 5 concurrent agent workflows (0 failures)")
         print(f"  • High-Frequency Cheque Flood : 10,000 cheques processed at {tps:,.0f} ops/sec")

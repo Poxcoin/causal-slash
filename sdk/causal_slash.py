@@ -537,6 +537,15 @@ class CausalAgentWallet:
                 raise RuntimeError(f"csls_agent_session_begin failed with code {rc}")
             return bytes(init_pkt)
 
+    def open_secure_session(self, vendor_node: "CausalVendorNode") -> bool:
+        """
+        Establishes an authenticated Session MAC channel with a locally running
+        vendor node (C2 gate). Wire cheques omit the Schnorr point R, so vendors
+        that mandate Session MAC (the secure default) reject every cheque from a
+        channel that has not completed this handshake. Returns True on success.
+        """
+        return vendor_node.init_session(self.create_session(vendor_node.public_key))
+
     def sign_cheque(self, vendor_pk: Union[str, bytes], amount_usdc: float, session_mac: bool = False) -> Cheque:
         """
         Signs a micro-payment cheque for `amount_usdc` isolated to vendor_pk channel.
@@ -650,8 +659,19 @@ class CausalVendorNode:
         secret_key: Optional[Union[str, bytes]] = None,
         delta_v_usdc: float = 1.0,
         max_channels: int = 65536,
-        enforce_mac: bool = False,
+        enforce_mac: bool = True,
     ):
+        """
+        Args:
+            enforce_mac: Mandates the authenticated Session MAC gate (C2) on every
+                processed cheque. Because wire cheques omit the Schnorr point R,
+                the signature scalar sig_s can never be verified against the agent
+                public key at ingestion time; without the Session MAC gate the
+                vendor would accept arbitrary garbage in sig_s, enabling full
+                impersonation of any agent from public data alone. The secure
+                default is therefore True; legacy 151-byte operation is a
+                deliberate, explicit opt-out (enforce_mac=False).
+        """
         if not isinstance(delta_v_usdc, (int, float)):
             raise TypeError(f"delta_v_usdc must be numeric, got {type(delta_v_usdc).__name__}")
         if math.isnan(delta_v_usdc) or math.isinf(delta_v_usdc):
@@ -1313,6 +1333,9 @@ if __name__ == "__main__":
     # 1. Initialize
     agent = CausalAgentWallet()
     vendor = CausalVendorNode(delta_v_usdc=1000.0) # High buffer for benchmark
+    # Authenticated Session MAC channel (C2 gate): vendors mandate Session MAC
+    # by default because wire cheques omit the Schnorr point R.
+    assert vendor.init_session(agent.create_session(vendor.public_key))
 
     print(f"Agent PK:  {agent.public_key_hex[:18]}...")
     print(f"Vendor PK: {vendor.public_key_hex[:18]}...")
@@ -1322,7 +1345,7 @@ if __name__ == "__main__":
     print(f"\n[1] Streaming {n:,} micro-cheques from Python through native C engine...")
     t0 = time.perf_counter()
     for _ in range(n):
-        c = agent.sign_cheque(vendor.public_key, amount_usdc=0.0001)
+        c = agent.sign_cheque(vendor.public_key, amount_usdc=0.0001, session_mac=True)
         r = vendor.process_cheque(c)
         assert r.accepted
 
@@ -1340,7 +1363,8 @@ if __name__ == "__main__":
     print("\n[2] Testing Equivocation Trap from Python...")
     attacker_agent = CausalAgentWallet()
     v2 = CausalVendorNode(delta_v_usdc=1.0)
-    legit_cheque = attacker_agent.sign_cheque(v2.public_key, amount_usdc=0.05)
+    assert v2.init_session(attacker_agent.create_session(v2.public_key))
+    legit_cheque = attacker_agent.sign_cheque(v2.public_key, amount_usdc=0.05, session_mac=True)
     r1 = v2.process_cheque(legit_cheque)
     assert r1.accepted, f"Legitimate cheque failed: {r1.error_message}"
     print(f"  Legitimate cheque at height h={legit_cheque.height} accepted: True")
@@ -1348,7 +1372,7 @@ if __name__ == "__main__":
     # Tamper height back to duplicate for double-spending attack
     attacker_agent._ctx.height = legit_cheque.height
     fake_pk = b"\x02" + (b"\x77" * 32)
-    fork_cheque = attacker_agent.sign_cheque(fake_pk, amount_usdc=0.07)
+    fork_cheque = attacker_agent.sign_cheque(fake_pk, amount_usdc=0.07, session_mac=True)
 
     r2 = v2.process_cheque(fork_cheque)
     assert not r2.accepted

@@ -821,7 +821,13 @@ int csls_vendor_init(csls_vendor_ctx_t *vendor, const uint8_t *sk_bytes, uint64_
         clock_gettime(CLOCK_MONOTONIC, &ts);
         vendor->slot_seed = (uint64_t)ts.tv_nsec ^ ((uint64_t)ts.tv_sec << 32) ^ 0xCAFEBABEDEADBEEFULL;
     }
-    vendor->enforce_mac = 0; // legacy mode by default; production paths opt in
+    // Secure-by-default: wire cheques omit the Schnorr point R, so sig_s can
+    // never be verified against the agent public key at ingestion time. Without
+    // the Session MAC gate the vendor accepts arbitrary garbage in sig_s,
+    // enabling full impersonation of any agent from public data alone. Legacy
+    // 151-byte operation is a deliberate explicit opt-out via
+    // csls_vendor_enable_mac(vendor, 0).
+    vendor->enforce_mac = 1;
 
     return 0;
 }
@@ -1326,17 +1332,29 @@ int csls_run_benchmark(uint32_t num_cheques) {
         return -1;
     }
 
+    // Authenticated Session MAC channel (C2 gate): the secure vendor default
+    // mandates the MAC because the wire omits the Schnorr point R.
+    csls_session_init_pkt_t session_init;
+    if (csls_agent_session_begin(&agent, vendor->pk, &session_init) != 0 ||
+        csls_vendor_session_init(vendor, &session_init) != 0) {
+        printf("Session MAC handshake failed!\n");
+        csls_agent_destroy(&agent);
+        csls_vendor_free(vendor);
+        return -1;
+    }
+
     printf("Executing %u sequential micro-cheques on single CPU core...\n", num_cheques);
 
     csls_cheque_pkt_t pkt;
+    uint8_t mac[16];
     uint64_t t_start = csls_time_ns();
 
     for (uint32_t i = 0; i < num_cheques; i++) {
-        // Sign micro-cheque for $0.01 (10,000 micro-USDC)
-        csls_agent_sign_cheque(&agent, vendor->pk, 10000, &pkt);
+        // Sign micro-cheque for $0.01 (10,000 micro-USDC), authenticated
+        csls_agent_sign_cheque_mac(&agent, vendor->pk, 10000, &pkt, mac);
 
         // Vendor verification
-        int res = csls_vendor_process_cheque(vendor, &pkt, NULL);
+        int res = csls_vendor_process_cheque_mac(vendor, &pkt, mac, NULL);
         if (res != 0) {
             printf("Verification failed at %u: code %d\n", i, res);
             csls_agent_destroy(&agent);
@@ -1376,21 +1394,35 @@ int csls_run_equivocation_test(void) {
 
     csls_agent_init(&agent, agent_sk, NULL);
 
+    // Authenticated Session MAC channel (C2 gate): both conflicting cheques are
+    // validly MACed by the agent's own session key; the equivocation trap still
+    // fires on the (height, challenge_e) collision downstream of the MAC gate.
+    csls_session_init_pkt_t session_init;
+    if (csls_agent_session_begin(&agent, vendor->pk, &session_init) != 0 ||
+        csls_vendor_session_init(vendor, &session_init) != 0) {
+        printf("Session MAC handshake failed!\n");
+        csls_agent_destroy(&agent);
+        csls_vendor_free(vendor);
+        return -1;
+    }
+
     // 1. Legitimate Cheque at height h = 1001. The malicious-client model
     // regresses the agent's GLOBAL leased counter in memory (the vendor-side
     // watermark cannot be regressed by a restart).
     atomic_store(&agent.height, 1001);
     csls_cheque_pkt_t cheque1;
-    csls_agent_sign_cheque(&agent, vendor->pk, 50000, &cheque1); // $0.05 at h=1001
+    uint8_t mac1[16];
+    csls_agent_sign_cheque_mac(&agent, vendor->pk, 50000, &cheque1, mac1); // $0.05 at h=1001
 
-    int r1 = csls_vendor_process_cheque(vendor, &cheque1, NULL);
+    int r1 = csls_vendor_process_cheque_mac(vendor, &cheque1, mac1, NULL);
     printf("  [1] Legitimate Cheque at h=1001 accepted: %s\n", (r1 == 0) ? "YES" : "NO");
 
     // 2. Forking/Double-Spending Attack: Sign a conflicting cheque at SAME height h = 1001
     // Malicious agent regresses its global in-memory height back to 1001 to equivocate
     atomic_store(&agent.height, 1001);
     csls_cheque_pkt_t cheque2;
-    csls_agent_sign_cheque(&agent, vendor->pk, 70000, &cheque2); // $0.07 at h=1001 (conflicting cheque to same vendor)
+    uint8_t mac2[16];
+    csls_agent_sign_cheque_mac(&agent, vendor->pk, 70000, &cheque2, mac2); // $0.07 at h=1001 (conflicting cheque to same vendor)
 
     printf("  [2] Attacking with conflicting cheque on same height h=1001...\n");
 
@@ -1398,7 +1430,7 @@ int csls_run_equivocation_test(void) {
     memset(&fraud, 0, sizeof(fraud));
 
     uint64_t t0 = csls_time_ns();
-    int r2 = csls_vendor_process_cheque(vendor, &cheque2, &fraud);
+    int r2 = csls_vendor_process_cheque_mac(vendor, &cheque2, mac2, &fraud);
     uint64_t t1 = csls_time_ns();
 
     double extraction_us = (double)(t1 - t0) / 1000.0;
@@ -1477,18 +1509,33 @@ static void *vendor_tcp_worker(void *arg) {
     ack.magic = CSLS_MAGIC;
     ack.type = CSLS_PKT_ACK;
 
+    // Authenticated Session MAC handshake (C2 gate): 95-byte session_init
+    // first, then 151-byte cheques + 16-byte MAC tags (167 bytes on wire).
+    csls_session_init_pkt_t session_init;
+    {
+        size_t total_init = 0;
+        char *iptr = (char *)&session_init;
+        while (total_init < sizeof(session_init)) {
+            ssize_t n = read(client_sock, iptr + total_init, sizeof(session_init) - total_init);
+            if (n <= 0) goto cleanup;
+            total_init += (size_t)n;
+        }
+        if (csls_vendor_session_init(vendor, &session_init) != 0) goto cleanup;
+    }
+
     while (1) {
-        // Read full 151-byte packet
+        // Read full 167-byte authenticated packet (cheque + MAC)
+        uint8_t wire[sizeof(csls_cheque_pkt_t) + 16];
         size_t total_read = 0;
-        char *ptr = (char *)&pkt;
-        while (total_read < sizeof(csls_cheque_pkt_t)) {
-            ssize_t n = read(client_sock, ptr + total_read, sizeof(csls_cheque_pkt_t) - total_read);
+        while (total_read < sizeof(wire)) {
+            ssize_t n = read(client_sock, (char *)wire + total_read, sizeof(wire) - total_read);
             if (n <= 0) goto cleanup;
             total_read += n;
         }
+        memcpy(&pkt, wire, sizeof(pkt));
 
         csls_fraud_pkt_t fraud;
-        int res = csls_vendor_process_cheque(vendor, &pkt, &fraud);
+        int res = csls_vendor_process_cheque_mac(vendor, &pkt, wire + sizeof(pkt), &fraud);
 
         csls_channel_t *vchan = csls_channel_get_or_create(&vendor->channels, pkt.agent_pk);
         ack.acknowledged_h = pkt.height;
@@ -1536,9 +1583,14 @@ int csls_run_network_test(uint16_t port, uint32_t count) {
         return -1;
     }
 
-    uint8_t agent_sk[32], vendor_pk[33];
+    uint8_t agent_sk[32], vendor_sk[32], vendor_pk[33];
     memset(agent_sk, 0x33, 32);
-    memset(vendor_pk, 0x55, 33);
+    memset(vendor_sk, 0x44, 32);
+    if (csls_derive_pk(vendor_sk, vendor_pk) != 0) {
+        printf("Vendor key derivation failed!\n");
+        close(sock);
+        return -1;
+    }
 
     csls_agent_ctx_t agent;
     csls_agent_init(&agent, agent_sk, NULL);
@@ -1546,12 +1598,31 @@ int csls_run_network_test(uint16_t port, uint32_t count) {
     csls_cheque_pkt_t pkt;
     csls_ack_pkt_t ack;
 
-    printf("Streaming %u cheques over TCP socket (127.0.0.1:%u)...\n", count, port);
+    // Authenticated Session MAC handshake (C2 gate) over the socket.
+    csls_session_init_pkt_t session_init;
+    if (csls_agent_session_begin(&agent, vendor_pk, &session_init) != 0) {
+        printf("Session MAC handshake failed!\n");
+        close(sock);
+        csls_agent_destroy(&agent);
+        return -1;
+    }
+    if (send(sock, &session_init, sizeof(session_init), MSG_NOSIGNAL) != (ssize_t)sizeof(session_init)) {
+        printf("Session init send failed!\n");
+        close(sock);
+        csls_agent_destroy(&agent);
+        return -1;
+    }
+
+    printf("Streaming %u authenticated cheques over TCP socket (127.0.0.1:%u)...\n", count, port);
     uint64_t t_start = csls_time_ns();
 
     for (uint32_t i = 1; i <= count; i++) {
-        csls_agent_sign_cheque(&agent, vendor_pk, 1000, &pkt); // $0.001 per cheque
-        if (send(sock, &pkt, sizeof(pkt), MSG_NOSIGNAL) != (ssize_t)sizeof(pkt)) break;
+        uint8_t mac[16];
+        csls_agent_sign_cheque_mac(&agent, vendor_pk, 1000, &pkt, mac); // $0.001 per cheque
+        uint8_t wire[sizeof(pkt) + sizeof(mac)];
+        memcpy(wire, &pkt, sizeof(pkt));
+        memcpy(wire + sizeof(pkt), mac, sizeof(mac));
+        if (send(sock, wire, sizeof(wire), MSG_NOSIGNAL) != (ssize_t)sizeof(wire)) break;
 
         size_t total_ack = 0;
         char *ack_ptr = (char *)&ack;

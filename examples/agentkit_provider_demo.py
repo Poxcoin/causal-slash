@@ -51,6 +51,12 @@ def main():
         for name, v_node, _, _ in providers
     }
 
+    # Authenticated Session MAC channels (C2 gate): the vendor nodes mandate
+    # Session MAC by default (wire cheques omit the Schnorr point R), so the
+    # paying wallet establishes a session with each local vendor node.
+    for _, v_node, _, _ in providers:
+        assert provider.agent_wallet.open_secure_session(v_node)
+
     total_spent = 0.0
 
     for name, v_node, price_per_call, num_calls in providers:

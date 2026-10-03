@@ -59,6 +59,7 @@ static void *vendor_griefing_server(void *arg) {
     uint8_t vendor_sk[32];
     memset(vendor_sk, 0x88, 32);
     csls_vendor_ctx_t *vendor = csls_vendor_new(vendor_sk, 100000000ULL);
+    csls_vendor_enable_mac(vendor, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     assert(vendor != NULL);
 
     while (!state->stop) {
@@ -194,6 +195,7 @@ int main() {
     uint8_t vendor_sk[32];
     memset(vendor_sk, 0x55, 32);
     csls_vendor_ctx_t *vendor = csls_vendor_new(vendor_sk, 10000000ULL);
+    csls_vendor_enable_mac(vendor, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     assert(vendor != NULL);
 
     csls_cheque_pkt_t fuzzed_pkt;

@@ -21,12 +21,16 @@ def run_agent_workflow():
     print(f"[vendor] endpoint:  {vendor.public_key_hex[:22]}...")
     print(f"[channel] buffer:   ${vendor._ctx.max_exposure_delta_v / 1e6:.2f} USDC")
 
+    # Authenticated Session MAC channel (C2 gate): vendors mandate Session MAC
+    # by default because wire cheques omit the Schnorr point R.
+    assert vendor.init_session(agent.create_session(vendor.public_key))
+
     print("[stream] streaming 50 batches (500 tokens total)...")
     num_token_batches = 50
     total_cost_usdc = 0.0
 
     for batch_idx in range(1, num_token_batches + 1):
-        cheque = agent.sign_cheque(vendor.public_key, amount_usdc=0.0001)
+        cheque = agent.sign_cheque(vendor.public_key, amount_usdc=0.0001, session_mac=True)
         res = vendor.process_cheque(cheque)
         assert res.accepted, f"rejected: {res.error_message}"
         total_cost_usdc += 0.0001
@@ -40,12 +44,13 @@ def run_agent_workflow():
     print("[security] testing double-signing detection...")
     attacker = CausalAgentWallet()
     v2 = CausalVendorNode(delta_v_usdc=1.0)
+    assert v2.init_session(attacker.create_session(v2.public_key))
 
-    c1 = attacker.sign_cheque(v2.public_key, amount_usdc=0.01)
+    c1 = attacker.sign_cheque(v2.public_key, amount_usdc=0.01, session_mac=True)
     v2.process_cheque(c1)
 
     attacker._ctx.height = 1
-    c2 = attacker.sign_cheque(v2.public_key, amount_usdc=0.02)
+    c2 = attacker.sign_cheque(v2.public_key, amount_usdc=0.02, session_mac=True)
 
     fraud_res = v2.process_cheque(c2)
     assert not fraud_res.accepted

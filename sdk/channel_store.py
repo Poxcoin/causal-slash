@@ -119,7 +119,7 @@ class SqliteChannelStore:
         uncommitted = cursor.fetchall()
         for pk, r_h, c_h in uncommitted:
             logger.warning(
-                "⚡ [LEAP-AHEAD RECOVERY] Uncommitted reservation for peer %s: "
+                "[LEAP-AHEAD RECOVERY] Uncommitted reservation for peer %s: "
                 "reserved=%d, committed=%d. Next emit will leap forward to next_h=%d. "
                 "Rollbacks strictly prevented to uphold Axiom 2 & 6!",
                 pk.hex()[:12] if isinstance(pk, (bytes, bytearray)) else pk,

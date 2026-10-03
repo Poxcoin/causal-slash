@@ -183,7 +183,10 @@ def test_1_native_ffi_initialization():
     bounded_vendor = CausalVendorNode(max_channels=1)
     w1 = CausalAgentWallet()
     w2 = CausalAgentWallet()
-    res1 = bounded_vendor.process_cheque(w1.sign_cheque(bounded_vendor.public_key_hex, 0.01))
+    # Authenticated Session MAC channel (C2 gate) for the admitted payer;
+    # vendors mandate Session MAC by default (wire omits the Schnorr point R).
+    assert bounded_vendor.init_session(w1.create_session(bounded_vendor.public_key))
+    res1 = bounded_vendor.process_cheque(w1.sign_cheque(bounded_vendor.public_key_hex, 0.01, session_mac=True))
     assert res1.accepted
     res2 = bounded_vendor.process_cheque(w2.sign_cheque(bounded_vendor.public_key_hex, 0.01))
     assert not res2.accepted
@@ -202,9 +205,11 @@ def test_1_native_ffi_initialization():
     w = CausalAgentWallet()
     v1 = CausalVendorNode(delta_v_usdc=10.0)
     v2 = CausalVendorNode(delta_v_usdc=10.0)
-    c1 = w.sign_cheque(v1.public_key, 0.001)
-    c2 = w.sign_cheque(v2.public_key, 0.001)
-    c3 = w.sign_cheque(v1.public_key, 0.001)
+    assert v1.init_session(w.create_session(v1.public_key))
+    assert v2.init_session(w.create_session(v2.public_key))
+    c1 = w.sign_cheque(v1.public_key, 0.001, session_mac=True)
+    c2 = w.sign_cheque(v2.public_key, 0.001, session_mac=True)
+    c3 = w.sign_cheque(v1.public_key, 0.001, session_mac=True)
 
     assert c1.height == 1, f"Expected c1.height=1, got {c1.height}"
     assert c2.height == 2, f"Expected c2.height=2, got {c2.height}"
@@ -215,8 +220,8 @@ def test_1_native_ffi_initialization():
     r3 = v1.process_cheque(c3)
     assert r1.accepted and r2.accepted and r3.accepted
 
-    raw_c1 = _CslsChequePkt.from_buffer_copy(c1.raw_packet)
-    raw_c2 = _CslsChequePkt.from_buffer_copy(c2.raw_packet)
+    raw_c1 = _CslsChequePkt.from_buffer_copy(c1.raw_packet[:151])
+    raw_c2 = _CslsChequePkt.from_buffer_copy(c2.raw_packet[:151])
     extracted_sk = (ctypes.c_uint8 * 32)()
     ext_rc = _LIB.csls_extract_private_key(ctypes.byref(raw_c1), ctypes.byref(raw_c2), extracted_sk)
     assert ext_rc == -2, f"Key extraction between v1 and v2 must fail with -2, got {ext_rc}"
@@ -244,10 +249,13 @@ def test_2_high_speed_streaming():
 
     wallet = CausalAgentWallet()
     vendor = CausalVendorNode(delta_v_usdc=50.0)
+    # Authenticated Session MAC channel (C2 gate): vendors mandate the MAC by
+    # default because wire cheques omit the Schnorr point R.
+    assert vendor.init_session(wallet.create_session(vendor.public_key))
 
     t_start = time.perf_counter()
     for i in range(1, num_cheques + 1):
-        cheque = wallet.sign_cheque(vendor.public_key, amount_usdc=price_per_cheque)
+        cheque = wallet.sign_cheque(vendor.public_key, amount_usdc=price_per_cheque, session_mac=True)
         res = vendor.process_cheque(cheque)
         assert res.accepted is True
         assert res.status_code == CSLS_OK
@@ -295,6 +303,12 @@ def test_3_multichannel_swarm_isolation():
         for v in range(num_vendors)
     ]
 
+    # Authenticated Session MAC channels (C2 gate): every agent establishes one
+    # session per vendor it streams to (CSLS_MAX_SESSIONS = 16 >= num_vendors).
+    for agent in agents:
+        for vendor in vendors:
+            assert vendor.init_session(agent.create_session(vendor.public_key))
+
     error_counts: Dict[int, int] = {}
     error_lock = threading.Lock()
     accepted_cheques = 0
@@ -314,7 +328,7 @@ def test_3_multichannel_swarm_isolation():
             vendor = vendors[vendor_idx]
             amt = 0.0002  # $0.0002
 
-            cheque = agent.sign_cheque(vendor.public_key, amount_usdc=amt)
+            cheque = agent.sign_cheque(vendor.public_key, amount_usdc=amt, session_mac=True)
             res = vendor.process_cheque(cheque)
 
             if res.accepted and res.status_code == CSLS_OK:
@@ -499,12 +513,14 @@ def test_5_coinbase_agentkit_action_provider():
             "--rpc-url", rpc_url, "--private-key", pk,
         ], stdout=subprocess.DEVNULL)
 
-        # Attacker equivocates at height h=1
-        c1 = attacker_wallet.sign_cheque(vendor.public_key, amount_usdc=0.01)
+        # Attacker equivocates at height h=1 over an authenticated Session MAC
+        # channel: the double-sign trap fires downstream of the MAC gate.
+        assert vendor.init_session(attacker_wallet.create_session(vendor.public_key))
+        c1 = attacker_wallet.sign_cheque(vendor.public_key, amount_usdc=0.01, session_mac=True)
         vendor.process_cheque(c1)
 
         attacker_wallet._ctx.height = 1
-        c2 = attacker_wallet.sign_cheque(vendor.public_key, amount_usdc=0.02)
+        c2 = attacker_wallet.sign_cheque(vendor.public_key, amount_usdc=0.02, session_mac=True)
         fraud_res = json.loads(provider.verify_cheque_stream(cheque_bytes=c2.raw_packet.hex()))
         assert fraud_res["status"] == "EQUIVOCATION_DETECTED"
         assert fraud_res["extracted_secret_key"].lower() == attacker_sk_hex.lower()
@@ -537,16 +553,19 @@ def test_6_equivocation_detection_key_inversion():
     victim_sk = bytes([0x66] * 32)
     victim_wallet = CausalAgentWallet(secret_key=victim_sk)
     vendor = CausalVendorNode(delta_v_usdc=25.0)
+    # Authenticated Session MAC channel (C2 gate): both conflicting cheques
+    # carry a valid MAC; the equivocation trap fires downstream of the gate.
+    assert vendor.init_session(victim_wallet.create_session(vendor.public_key))
 
     # Cheque 1: Honest payment at h=1
-    c1 = victim_wallet.sign_cheque(vendor.public_key, amount_usdc=0.05)
+    c1 = victim_wallet.sign_cheque(vendor.public_key, amount_usdc=0.05, session_mac=True)
     res1 = vendor.process_cheque(c1)
     assert res1.accepted is True
     assert res1.status_code == CSLS_OK
 
     # Cheque 2: Malicious double-spending fork at SAME height h=1 with distinct payload
     victim_wallet._ctx.height = 1
-    c2 = victim_wallet.sign_cheque(vendor.public_key, amount_usdc=0.10)
+    c2 = victim_wallet.sign_cheque(vendor.public_key, amount_usdc=0.10, session_mac=True)
 
     # 2. Process conflicting cheque on vendor
     res2 = vendor.process_cheque(c2)

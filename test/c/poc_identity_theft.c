@@ -41,6 +41,7 @@ int main(void) {
     memset(agent_sk, 0xAB, 32);
     memset(vendor_sk, 0x22, 32);
     csls_vendor_ctx_t *vendor = csls_vendor_new(vendor_sk, 100000000ULL);
+    csls_vendor_enable_mac(vendor, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     csls_agent_ctx_t *agent = csls_agent_new(agent_sk, wal);
     if (!agent) { printf("  agent_new failed\n"); return 1; }
     csls_cheque_pkt_t pre[5];

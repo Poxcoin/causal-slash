@@ -24,6 +24,7 @@ static void test_audit_equivocation_false_positive_corrupt_key(void) {
     uint8_t vendor_sk[32];
     memset(vendor_sk, 0x22, 32);
     csls_vendor_ctx_t *vendor = csls_vendor_new(vendor_sk, 10000000ULL);
+    csls_vendor_enable_mac(vendor, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     assert(vendor != NULL);
 
     csls_cheque_pkt_t c_legit;
@@ -71,6 +72,7 @@ static void test_audit_concurrency_out_of_order_stream_desync(void) {
     uint8_t vendor_sk[32];
     memset(vendor_sk, 0x44, 32);
     csls_vendor_ctx_t *vendor = csls_vendor_new(vendor_sk, 10000000ULL);
+    csls_vendor_enable_mac(vendor, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     assert(vendor != NULL);
 
     csls_cheque_pkt_t pkt1, pkt2;
@@ -113,6 +115,7 @@ static void test_audit_ring_buffer_wrap_missed_equivocation(void) {
     uint8_t vendor_sk[32];
     memset(vendor_sk, 0x66, 32);
     csls_vendor_ctx_t *vendor = csls_vendor_new(vendor_sk, 200000000ULL);
+    csls_vendor_enable_mac(vendor, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     assert(vendor != NULL);
 
     csls_fraud_pkt_t fraud;
@@ -167,6 +170,7 @@ static void test_audit_zero_value_cheque_height_inflation(void) {
     uint8_t vendor_sk[32];
     memset(vendor_sk, 0x88, 32);
     csls_vendor_ctx_t *vendor = csls_vendor_new(vendor_sk, 10000000ULL);
+    csls_vendor_enable_mac(vendor, 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
     assert(vendor != NULL);
 
     csls_cheque_pkt_t pkt1, pkt2;

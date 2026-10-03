@@ -45,7 +45,7 @@ def check_ollama_available() -> bool:
 
 def main():
     print("=" * 80)
-    print("🔥 CAUSAL-SLASH PROTOCOL: REAL-WORLD INFERENCE & MICROPAYMENT TEST")
+    print("CAUSAL-SLASH PROTOCOL: REAL-WORLD INFERENCE & MICROPAYMENT TEST")
     print("   Live AI Swarm Node + 167B Cheques + Local Neural Network (Ollama)")
     print("=" * 80)
 
@@ -64,6 +64,9 @@ def main():
     agent = CausalAgentWallet()
     vendor = CausalVendorNode(delta_v_usdc=25.0)
     guardrail = EdgeSafetyGuardrail()
+    # Authenticated Session MAC channel (C2 gate): vendors mandate Session MAC
+    # by default because wire cheques omit the Schnorr point R.
+    assert vendor.init_session(agent.create_session(vendor.public_key))
 
     print("\n[2/5] Initializing C11 Native Payment Gateway...")
     print(f"      Agent Public Key : {agent.public_key_hex[:30]}...")
@@ -97,7 +100,7 @@ def main():
         ]
 
         for i, prompt in enumerate(real_prompts, 1):
-            cheque = agent.sign_cheque(vendor.public_key, amount_usdc=0.0005)
+            cheque = agent.sign_cheque(vendor.public_key, amount_usdc=0.0005, session_mac=True)
             payload = json.dumps({
                 "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
@@ -134,7 +137,7 @@ def main():
         ]
 
         for category, bad_prompt in malicious_prompts:
-            bad_cheque = agent.sign_cheque(vendor.public_key, amount_usdc=0.0005)
+            bad_cheque = agent.sign_cheque(vendor.public_key, amount_usdc=0.0005, session_mac=True)
             bad_payload = json.dumps({
                 "model": model_name,
                 "messages": [{"role": "user", "content": bad_prompt}],
@@ -165,22 +168,23 @@ def main():
         print("\n[5/5] Testing Fraud Interception: Double-Signing Equivocation...")
         offender = CausalAgentWallet()
         rogue_vendor = CausalVendorNode(delta_v_usdc=10.0)
+        assert rogue_vendor.init_session(offender.create_session(rogue_vendor.public_key))
 
         # Offender signs two different cheques at the exact same sequence height
-        cheque_a = offender.sign_cheque(rogue_vendor.public_key, 0.001)
+        cheque_a = offender.sign_cheque(rogue_vendor.public_key, 0.001, session_mac=True)
         # Manually construct double-sign at height=1
         res_a = rogue_vendor.process_cheque(cheque_a.raw_packet)
         assert res_a.accepted, "Cheque A should be accepted"
 
         # Sign conflicting cheque at height 1 with different amount
-        cheque_b = offender.sign_cheque(rogue_vendor.public_key, 0.002)
+        cheque_b = offender.sign_cheque(rogue_vendor.public_key, 0.002, session_mac=True)
         # If client rewinds height or forks channel:
         res_b = rogue_vendor.process_cheque(cheque_a.raw_packet)  # Replay or fork attempt
         print(f"  Offender Public Key: {offender.public_key_hex[:30]}...")
         print(f"  Double-Sign Intercepted: Status {res_b.status_code} (Channel Frozen)")
 
         print("\n" + "=" * 80)
-        print("🎉 ALL REAL-WORLD INFERENCE & MICROPAYMENT TESTS COMPLETED SUCCESSFULLY!")
+        print("ALL REAL-WORLD INFERENCE & MICROPAYMENT TESTS COMPLETED SUCCESSFULLY!")
         print(f"   • Real AI Inference : 3/3 queries answered by local Ollama ({model_name})")
         print(f"   • Micro-Settlement  : 167-byte cheques verified in C11 RAM at 0 gas")
         print(f"   • Guardrail Defense : 2/2 adversarial attacks blocked in < 0.05 ms")

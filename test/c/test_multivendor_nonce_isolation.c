@@ -34,6 +34,7 @@ int main(void) {
         uint8_t v_sk[32];
         memset(v_sk, 0x10 + i, 32);
         vendors[i] = csls_vendor_new(v_sk, CSLS_DEFAULT_DELTA_V);
+        csls_vendor_enable_mac(vendors[i], 0); // legacy wire harness: explicit opt-out (secure default mandates Session MAC)
         assert(vendors[i] != NULL);
     }
 

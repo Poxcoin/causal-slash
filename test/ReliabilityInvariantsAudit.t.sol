@@ -158,31 +158,47 @@ contract ReliabilityInvariantsAuditTest is Test {
         assertEq(usdc.balanceOf(vendor2), 35 * 1e6);
     }
 
-    function test_Audit_Settlement_Freeze_Via_SelfCommit() public {
+    function test_Audit_FraudCommit_LocksAgentWithdrawal_NotVendorSettlement() public {
         vm.startPrank(agentOwner);
         vault.depositCollateral(50 * 1e6, keccak256("root"), agentSigner);
         vault.allocateSessionExposure(vendor1, 20 * 1e6);
         vm.stopPrank();
 
         uint256 fixedDeadline = 2000;
+        // The deadline is far in the future relative to the current timestamp:
+        // the cheque itself stays valid across the whole dispute window.
         bytes memory chequeSig = _signCheque(agentOwner, vendor1, 20 * 1e6, 1, fixedDeadline, agentSigningPk);
 
         bytes32 dummyCommit = keccak256("dummy_commitment");
         vm.prank(agentOwner);
         vault.commitFraudProof(agentOwner, dummyCommit);
 
-        vm.prank(vendor1);
+        // Agent-side escape hatches remain locked during the active commitment.
+        vm.prank(agentOwner);
         vm.expectRevert(PerformanceCollateralVault.TimelockActive.selector);
-        vault.settleCheque(agentOwner, 20 * 1e6, 1, fixedDeadline, chequeSig);
+        vault.instantWithdraw(1 * 1e6);
 
-        vm.warp(2001);
+        // Honest vendor settlement is NOT frozen by the commitment: the cheque
+        // deadline has not passed, so the vendor is paid immediately.
+        vm.roll(block.number + 5);
+        vm.prank(vendor1);
+        vault.settleCheque(agentOwner, 20 * 1e6, 1, fixedDeadline, chequeSig);
+        assertEq(usdc.balanceOf(vendor1), 20 * 1e6);
+
+        // The same cheque can never be settled twice (monotonic cumulative).
+        bytes memory rechequeSig = _signCheque(agentOwner, vendor1, 20 * 1e6, 2, fixedDeadline, agentSigningPk);
+        vm.prank(vendor1);
+        vm.expectRevert(PerformanceCollateralVault.NothingToSettle.selector);
+        vault.settleCheque(agentOwner, 20 * 1e6, 2, fixedDeadline, rechequeSig);
+
+        vm.warp(fixedDeadline + 1);
         vm.roll(block.number + 260);
 
+        // After expiry the commitment is cancelled and the bond is forfeited
+        // to the insurance reserve (anti-spam bond economics).
+        uint256 insuranceBefore = usdc.balanceOf(insuranceReserve);
         vm.prank(agentOwner);
         vault.cancelExpiredCommitment(dummyCommit);
-
-        vm.prank(vendor1);
-        vm.expectRevert(PerformanceCollateralVault.ChequeExpired.selector);
-        vault.settleCheque(agentOwner, 20 * 1e6, 1, fixedDeadline, chequeSig);
+        assertEq(usdc.balanceOf(insuranceReserve), insuranceBefore + 1 * 1e6);
     }
 }
