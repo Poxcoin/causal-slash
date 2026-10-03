@@ -5,7 +5,7 @@
 Causal-Slash Protocol: Live Cross-Terminal Interactive Showcase (Phase 4)
 
 Demonstrates the complete end-to-end production architecture:
-1. Upstream AI Inference Server (Claude Opus 5.5 / GPT-6 Astra emulation) on :9001
+1. Upstream AI Inference Server (Claude 3.5 Sonnet / GPT-4o emulation) on :9001
 2. SlashSidecarProxy on :8999 with EdgeSafetyGuardrail (SLA < 1.5ms)
 3. Zero-Gas Streaming Micropayments (167-byte Session MAC cheques)
 4. Prompt Injection Defense (immediate HTTP 400 shielding upstream)
@@ -53,7 +53,7 @@ class MockUpstreamHandler(http.server.BaseHTTPRequestHandler):
 
         response = {
             "id": "chatcmpl-astra-2026",
-            "model": data.get("model", "gpt-6-astra"),
+            "model": data.get("model", "gpt-4o"),
             "choices": [{"message": {"role": "assistant", "content": "Payment verified via CSLS. Computation delivered with 0 gas drag."}}],
             "_upstream_metrics": {
                 "cheque_verified_on_wire": has_cheque,
@@ -74,7 +74,7 @@ def run_showcase():
     upstream_server = http.server.ThreadingHTTPServer(("127.0.0.1", 9001), MockUpstreamHandler)
     upstream_thread = threading.Thread(target=upstream_server.serve_forever, daemon=True)
     upstream_thread.start()
-    print("[1/5] Upstream AI Server active on http://127.0.0.1:9001 (Claude Opus 5.5 / GPT-6 Astra)")
+    print("[1/5] Upstream AI Server active on http://127.0.0.1:9001 (Claude 3.5 Sonnet / GPT-4o)")
 
     # 2. Initialize Agent Wallet and Vendor Node
     agent_wallet = CausalAgentWallet()
@@ -115,7 +115,7 @@ def run_showcase():
 
         for i, prompt in enumerate(prompts, 1):
             payload = json.dumps({
-                "model": "gpt-6-astra",
+                "model": "gpt-4o",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.2
             }).encode("utf-8")
@@ -141,7 +141,7 @@ def run_showcase():
 
         for i, bad_prompt in enumerate(malicious_prompts, 1):
             bad_payload = json.dumps({
-                "model": "gpt-6-astra",
+                "model": "gpt-4o",
                 "messages": [{"role": "user", "content": bad_prompt}]
             }).encode("utf-8")
 

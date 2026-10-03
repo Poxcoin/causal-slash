@@ -527,7 +527,7 @@ contract PerformanceCollateralVaultTest is Test {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // NEW SECURITY EXPLOIT MITIGATION TESTS (Claude Code Audit Findings)
+    // SECURITY EXPLOIT MITIGATION TESTS (Adversarial Invariant Audit Findings)
     // ─────────────────────────────────────────────────────────────────────────
 
     function test_AntiSelfSlashing_AccompliceCannotStealHonestVendorQuota() public {
