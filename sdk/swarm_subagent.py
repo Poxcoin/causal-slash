@@ -36,13 +36,13 @@ class SpendRateLimitExceededError(Exception):
 def _derive_secp256k1_pubkey(secret_key: bytes) -> bytes:
     """
     Derives an honest 33-byte compressed secp256k1 public key PK = sk · G
-    via the C11 libcausal_slash.so engine (OpenSSL EC_POINT_mul).
-
-    This replaces the broken SHA-256 hash stub that produced random bytes
-    not on the secp256k1 curve (y² = x³ + 7), which broke verification
-    on Base L2 and the C11 core.
+    via the C11 libcausal_slash.so engine (OpenSSL EC_POINT_mul) or pure Python fallback.
     """
-    from .causal_slash import _LIB
+    from .causal_slash import _LIB, _IS_NATIVE
+
+    if not _IS_NATIVE:
+        import ecdsa
+        return ecdsa.SigningKey.from_string(secret_key, curve=ecdsa.SECP256k1).verifying_key.to_string("compressed")
 
     sk_arr = (ctypes.c_uint8 * 32)(*secret_key)
     raw_ctx = _LIB.csls_agent_new(sk_arr, None)

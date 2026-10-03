@@ -9,16 +9,19 @@ All internal settlement is denominated strictly in USD / USDC (6 decimal places:
 from __future__ import annotations
 import atexit
 import ctypes
+import hashlib
+import hmac
 import logging
 import math
 import os
+import struct
 import sys
 import subprocess
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union, Dict, List, Set, Deque
+from typing import Optional, Tuple, Union, Dict, List, Set, Deque, Any
 
 # Protocol Constants
 CSLS_MAGIC = 0x43534C53
@@ -38,24 +41,154 @@ CSLS_ERR_BAD_MAC = -24
 CSLS_ERR_NO_SESSION = -25
 CSLS_ERR_WAL_FATAL = -27
 
+SECP256K1_Q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+
+# SipHash-2-4 128-bit MAC Pure Python Implementation
+def _sipround(v0: int, v1: int, v2: int, v3: int) -> Tuple[int, int, int, int]:
+    v0 = (v0 + v1) & 0xFFFFFFFFFFFFFFFF
+    v1 = ((v1 << 13) | (v1 >> 51)) & 0xFFFFFFFFFFFFFFFF
+    v1 ^= v0
+    v0 = ((v0 << 32) | (v0 >> 32)) & 0xFFFFFFFFFFFFFFFF
+
+    v2 = (v2 + v3) & 0xFFFFFFFFFFFFFFFF
+    v3 = ((v3 << 16) | (v3 >> 48)) & 0xFFFFFFFFFFFFFFFF
+    v3 ^= v2
+
+    v0 = (v0 + v3) & 0xFFFFFFFFFFFFFFFF
+    v3 = ((v3 << 21) | (v3 >> 43)) & 0xFFFFFFFFFFFFFFFF
+    v3 ^= v0
+
+    v2 = (v2 + v1) & 0xFFFFFFFFFFFFFFFF
+    v1 = ((v1 << 17) | (v1 >> 47)) & 0xFFFFFFFFFFFFFFFF
+    v1 ^= v2
+    v2 = ((v2 << 32) | (v2 >> 32)) & 0xFFFFFFFFFFFFFFFF
+    return v0, v1, v2, v3
+
+def _siphash24(key: bytes, msg: bytes, fin_xor: int) -> int:
+    k0 = struct.unpack("<Q", key[:8])[0]
+    k1 = struct.unpack("<Q", key[8:16])[0]
+    v0 = 0x736F6D6570736575 ^ k0
+    v1 = 0x646F72616E646F6D ^ k1
+    v2 = 0x6C7967656E657261 ^ k0
+    v3 = 0x7465646279746573 ^ k1 ^ fin_xor
+    full = len(msg) & ~7
+    for off in range(0, full, 8):
+        b = struct.unpack("<Q", msg[off:off+8])[0]
+        v3 ^= b
+        v0, v1, v2, v3 = _sipround(v0, v1, v2, v3)
+        v0, v1, v2, v3 = _sipround(v0, v1, v2, v3)
+        v0 ^= b
+    b = (len(msg) & 7) << 56
+    rem = msg[full:]
+    for i, byte in enumerate(rem):
+        b |= byte << (8 * i)
+    v3 ^= b
+    v0, v1, v2, v3 = _sipround(v0, v1, v2, v3)
+    v0, v1, v2, v3 = _sipround(v0, v1, v2, v3)
+    v0 ^= b
+    v2 ^= 0xFF
+    v0, v1, v2, v3 = _sipround(v0, v1, v2, v3)
+    v0, v1, v2, v3 = _sipround(v0, v1, v2, v3)
+    v0, v1, v2, v3 = _sipround(v0, v1, v2, v3)
+    v0, v1, v2, v3 = _sipround(v0, v1, v2, v3)
+    return v0 ^ v1 ^ v2 ^ v3
+
+def _mac128(key: bytes, msg: bytes) -> bytes:
+    a = _siphash24(key, msg, 0)
+    b = _siphash24(key, msg, 0xEE)
+    return struct.pack("<QQ", a, b)
+
+# Pure Python Elliptic Curve and Session KDF Helpers
+def _ecdh_x(sk_bytes: bytes, peer_pk_bytes: bytes) -> bytes:
+    import ecdsa
+    sk_int = int.from_bytes(sk_bytes, "big")
+    peer_vk = ecdsa.VerifyingKey.from_string(peer_pk_bytes, curve=ecdsa.SECP256k1)
+    shared_point = sk_int * peer_vk.pubkey.point
+    return int(shared_point.x()).to_bytes(32, "big")
+
+def _session_kdf(ecdh_x: bytes, nonce: int) -> bytes:
+    kdf_buf = nonce.to_bytes(8, "big") + b"CSLS-MAC-v1"
+    return hmac.new(ecdh_x, kdf_buf, hashlib.sha256).digest()
+
+def _session_auth(ecdh_x: bytes, agent_pk: bytes, vendor_pk: bytes, nonce: int) -> bytes:
+    buf = agent_pk + vendor_pk + nonce.to_bytes(8, "big")
+    return hmac.new(ecdh_x, buf, hashlib.sha256).digest()[:16]
+
+def _derive_k(sk_bytes: bytes, vendor_pk: bytes, height: int) -> int:
+    h_be = height.to_bytes(8, "big")
+    k_preimage = vendor_pk + h_be
+    counter = 0
+    while True:
+        data = k_preimage if counter == 0 else k_preimage + bytes([counter])
+        k_hash = hmac.new(sk_bytes, data, hashlib.sha256).digest()
+        k_val = int.from_bytes(k_hash, "big")
+        if k_val >= SECP256K1_Q:
+            k_val %= SECP256K1_Q
+        if k_val != 0:
+            return k_val
+        counter += 1
+        if counter > 255:
+            raise RuntimeError("Counter exhausted during nonce derivation")
+
+class _LibPurePythonStub:
+    """Fallback stub when native C11 shared library is unavailable."""
+    def csls_crypto_global_cleanup(self) -> None:
+        pass
+
+    def csls_crypto_global_init(self) -> int:
+        return 0
+
+    def csls_extract_private_key(self, c1_ref: Any, c2_ref: Any, out_sk: Any) -> int:
+        c1 = c1_ref._obj if hasattr(c1_ref, "_obj") else c1_ref
+        c2 = c2_ref._obj if hasattr(c2_ref, "_obj") else c2_ref
+        if c1.height != c2.height:
+            return -2
+        if bytes(c1.agent_pk) != bytes(c2.agent_pk):
+            return -6
+        if bytes(c1.vendor_pk) != bytes(c2.vendor_pk):
+            return -7
+        if bytes(c1.challenge_e) == bytes(c2.challenge_e):
+            return -3
+        s1 = int.from_bytes(bytes(c1.sig_s), "big")
+        s2 = int.from_bytes(bytes(c2.sig_s), "big")
+        e1 = int.from_bytes(bytes(c1.challenge_e), "big")
+        e2 = int.from_bytes(bytes(c2.challenge_e), "big")
+        delta_s = (s1 - s2) % SECP256K1_Q
+        delta_e = (e1 - e2) % SECP256K1_Q
+        inv_delta_e = pow(delta_e, -1, SECP256K1_Q)
+        extracted = ((delta_s * inv_delta_e) % SECP256K1_Q).to_bytes(32, "big")
+        for i in range(32):
+            out_sk[i] = extracted[i]
+        return 0
+
 # Locate / compile shared C library
 _SDK_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_SDK_DIR)
 _SO_PATHS = [
     os.path.join(_SDK_DIR, "libcausal_slash.so"),
-    os.path.join(_PROJECT_ROOT, "libcausal_slash.so")
+    os.path.join(_PROJECT_ROOT, "libcausal_slash.so"),
 ]
 
-def _load_c_lib() -> ctypes.CDLL:
+def _load_c_lib() -> Union[ctypes.CDLL, _LibPurePythonStub]:
+    if os.environ.get("CSLS_FORCE_PYTHON", "").lower() in ("1", "true", "yes"):
+        return _LibPurePythonStub()
     for path in _SO_PATHS:
         if os.path.exists(path):
-            return ctypes.CDLL(path)
-    # Auto-compile in sdk directory if missing
-    cmd = ["make", "-C", _PROJECT_ROOT, "libcausal_slash.so"]
-    subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return ctypes.CDLL(_SO_PATHS[0])
+            try:
+                return ctypes.CDLL(path)
+            except OSError:
+                pass
+    try:
+        cmd = ["make", "-C", _PROJECT_ROOT, "libcausal_slash.so"]
+        subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(_SO_PATHS[0]):
+            return ctypes.CDLL(_SO_PATHS[0])
+    except Exception:
+        pass
+    return _LibPurePythonStub()
 
 _LIB = _load_c_lib()
+_IS_NATIVE = isinstance(_LIB, ctypes.CDLL)
 
 # Define C Structures
 class _CslsChequePkt(ctypes.Structure):
@@ -250,130 +383,160 @@ class _VendorCtxHandle(ctypes.c_void_p):
 
 
 # Setup function signatures
-_LIB.csls_crypto_global_init.restype = ctypes.c_int
-_LIB.csls_crypto_global_init.argtypes = []
+if _IS_NATIVE:
+    _LIB.csls_crypto_global_init.restype = ctypes.c_int
+    _LIB.csls_crypto_global_init.argtypes = []
 
-_LIB.csls_crypto_global_cleanup.restype = None
-_LIB.csls_crypto_global_cleanup.argtypes = []
+    _LIB.csls_crypto_global_cleanup.restype = None
+    _LIB.csls_crypto_global_cleanup.argtypes = []
 
-_LIB.csls_agent_new.restype = ctypes.c_void_p
-_LIB.csls_agent_new.argtypes = [
-    ctypes.POINTER(ctypes.c_uint8),
-    ctypes.c_char_p,
-]
+    _LIB.csls_agent_new.restype = ctypes.c_void_p
+    _LIB.csls_agent_new.argtypes = [
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_char_p,
+    ]
 
-_LIB.csls_agent_free.restype = None
-_LIB.csls_agent_free.argtypes = [ctypes.c_void_p]
+    _LIB.csls_agent_free.restype = None
+    _LIB.csls_agent_free.argtypes = [ctypes.c_void_p]
 
-_LIB.csls_vendor_new.restype = ctypes.c_void_p
-_LIB.csls_vendor_new.argtypes = [
-    ctypes.POINTER(ctypes.c_uint8),
-    ctypes.c_uint64,
-]
+    _LIB.csls_vendor_new.restype = ctypes.c_void_p
+    _LIB.csls_vendor_new.argtypes = [
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_uint64,
+    ]
 
-_LIB.csls_vendor_free.restype = None
-_LIB.csls_vendor_free.argtypes = [ctypes.c_void_p]
+    _LIB.csls_vendor_free.restype = None
+    _LIB.csls_vendor_free.argtypes = [ctypes.c_void_p]
 
-_LIB.csls_agent_init.restype = ctypes.c_int
-_LIB.csls_agent_init.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(ctypes.c_uint8),
-    ctypes.c_char_p,
-]
+    _LIB.csls_agent_init.restype = ctypes.c_int
+    _LIB.csls_agent_init.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_char_p,
+    ]
 
-_LIB.csls_agent_destroy.restype = None
-_LIB.csls_agent_destroy.argtypes = [ctypes.c_void_p]
+    _LIB.csls_agent_destroy.restype = None
+    _LIB.csls_agent_destroy.argtypes = [ctypes.c_void_p]
 
-_LIB.csls_agent_sign_cheque.restype = ctypes.c_int
-_LIB.csls_agent_sign_cheque.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(ctypes.c_uint8),
-    ctypes.c_uint64,
-    ctypes.POINTER(_CslsChequePkt),
-]
+    _LIB.csls_agent_sign_cheque.restype = ctypes.c_int
+    _LIB.csls_agent_sign_cheque.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_uint64,
+        ctypes.POINTER(_CslsChequePkt),
+    ]
 
-_LIB.csls_vendor_init.restype = ctypes.c_int
-_LIB.csls_vendor_init.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(ctypes.c_uint8),
-    ctypes.c_uint64,
-]
+    _LIB.csls_vendor_init.restype = ctypes.c_int
+    _LIB.csls_vendor_init.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_uint64,
+    ]
 
-_LIB.csls_vendor_destroy.restype = None
-_LIB.csls_vendor_destroy.argtypes = [ctypes.c_void_p]
+    _LIB.csls_vendor_destroy.restype = None
+    _LIB.csls_vendor_destroy.argtypes = [ctypes.c_void_p]
 
-_LIB.csls_vendor_process_cheque.restype = ctypes.c_int
-_LIB.csls_vendor_process_cheque.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(_CslsChequePkt),
-    ctypes.POINTER(_CslsFraudPkt),
-]
+    _LIB.csls_vendor_process_cheque.restype = ctypes.c_int
+    _LIB.csls_vendor_process_cheque.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_CslsChequePkt),
+        ctypes.POINTER(_CslsFraudPkt),
+    ]
 
-_LIB.csls_vendor_advance_cleared.restype = ctypes.c_int
-_LIB.csls_vendor_advance_cleared.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(ctypes.c_uint8),
-    ctypes.c_uint64,
-]
+    _LIB.csls_vendor_advance_cleared.restype = ctypes.c_int
+    _LIB.csls_vendor_advance_cleared.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_uint64,
+    ]
 
-_LIB.csls_vendor_get_channel_state.restype = ctypes.c_int
-_LIB.csls_vendor_get_channel_state.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(ctypes.c_uint8),
-    ctypes.POINTER(ctypes.c_uint64),
-    ctypes.POINTER(ctypes.c_uint64),
-    ctypes.POINTER(ctypes.c_uint64),
-]
+    _LIB.csls_vendor_get_channel_state.restype = ctypes.c_int
+    _LIB.csls_vendor_get_channel_state.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_uint64),
+    ]
 
-_LIB.csls_agent_get_channel_state.restype = ctypes.c_int
-_LIB.csls_agent_get_channel_state.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(ctypes.c_uint8),
-    ctypes.POINTER(ctypes.c_uint64),
-    ctypes.POINTER(ctypes.c_uint64),
-]
+    _LIB.csls_agent_get_channel_state.restype = ctypes.c_int
+    _LIB.csls_agent_get_channel_state.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_uint64),
+    ]
 
-# Session MAC C bindings
-_LIB.csls_agent_session_begin.restype = ctypes.c_int
-_LIB.csls_agent_session_begin.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(ctypes.c_uint8 * 33),
-    ctypes.POINTER(_CslsSessionInitPkt),
-]
+    # Session MAC C bindings
+    _LIB.csls_agent_session_begin.restype = ctypes.c_int
+    _LIB.csls_agent_session_begin.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint8 * 33),
+        ctypes.POINTER(_CslsSessionInitPkt),
+    ]
 
-_LIB.csls_agent_sign_cheque_mac.restype = ctypes.c_int
-_LIB.csls_agent_sign_cheque_mac.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(ctypes.c_uint8 * 33),
-    ctypes.c_uint64,
-    ctypes.POINTER(_CslsChequePkt),
-    ctypes.POINTER(ctypes.c_uint8 * 16),
-]
+    _LIB.csls_agent_sign_cheque_mac.restype = ctypes.c_int
+    _LIB.csls_agent_sign_cheque_mac.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint8 * 33),
+        ctypes.c_uint64,
+        ctypes.POINTER(_CslsChequePkt),
+        ctypes.POINTER(ctypes.c_uint8 * 16),
+    ]
 
-_LIB.csls_vendor_enable_mac.restype = ctypes.c_int
-_LIB.csls_vendor_enable_mac.argtypes = [
-    ctypes.c_void_p,
-    ctypes.c_int,
-]
+    _LIB.csls_vendor_enable_mac.restype = ctypes.c_int
+    _LIB.csls_vendor_enable_mac.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+    ]
 
-_LIB.csls_vendor_session_init.restype = ctypes.c_int
-_LIB.csls_vendor_session_init.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(_CslsSessionInitPkt),
-]
+    _LIB.csls_vendor_session_init.restype = ctypes.c_int
+    _LIB.csls_vendor_session_init.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_CslsSessionInitPkt),
+    ]
 
-_LIB.csls_vendor_process_cheque_mac.restype = ctypes.c_int
-_LIB.csls_vendor_process_cheque_mac.argtypes = [
-    ctypes.c_void_p,
-    ctypes.POINTER(_CslsChequePkt),
-    ctypes.POINTER(ctypes.c_uint8 * 16),
-    ctypes.POINTER(_CslsFraudPkt),
-]
+    _LIB.csls_vendor_process_cheque_mac.restype = ctypes.c_int
+    _LIB.csls_vendor_process_cheque_mac.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_CslsChequePkt),
+        ctypes.POINTER(ctypes.c_uint8 * 16),
+        ctypes.POINTER(_CslsFraudPkt),
+    ]
 
-# Ensure global crypto is initialized once and cleaned up on Python exit
-if _LIB.csls_crypto_global_init() != 0:
-    raise RuntimeError("Failed to initialize Causal-Slash OpenSSL secp256k1 crypto engine")
-atexit.register(_LIB.csls_crypto_global_cleanup)
+    # Ensure global crypto is initialized once and cleaned up on Python exit
+    if _LIB.csls_crypto_global_init() != 0:
+        raise RuntimeError("Failed to initialize Causal-Slash OpenSSL secp256k1 crypto engine")
+    atexit.register(_LIB.csls_crypto_global_cleanup)
+
+
+class _PyAgentCtx:
+    """Pure Python context for CausalAgentWallet when native C11 library is unavailable."""
+    def __init__(self, sk: bytes, pk: bytes):
+        self.sk = sk
+        self.pk = pk
+        self.height = 1
+        self.cumulative_sent = 0
+        self.watermark_boundary = 0xFFFFFFFFFFFFFFFF
+        self.wal_fatal = 0
+        self.channels: Dict[bytes, Tuple[int, int]] = {}
+        self.sessions: Dict[bytes, bytes] = {}
+
+
+class _PyVendorCtx:
+    """Pure Python context for CausalVendorNode when native C11 library is unavailable."""
+    def __init__(self, sk: bytes, pk: bytes, max_exposure_delta_v: int):
+        self.sk = sk
+        self.pk = pk
+        self.last_height = 0
+        self.cleared_amount = 0
+        self.accumulated_amount = 0
+        self.max_exposure_delta_v = max_exposure_delta_v
+        self.enforce_mac = 1
+        self.channels: Dict[bytes, Tuple[int, int, int]] = {}
+        self.sessions: Dict[bytes, bytes] = {}
+        self.history: Dict[Tuple[bytes, int], Tuple[int, bytes, bytes]] = {}
+        self.disputed: Set[Tuple[bytes, int]] = set()
 
 
 @dataclass(frozen=True)
@@ -475,12 +638,17 @@ class CausalAgentWallet:
             self._sk_bytes = _parse_bytes(secret_key, 32)
 
         self._wal_path = wal_path
-        sk_arr = (ctypes.c_uint8 * 32)(*self._sk_bytes)
-        wal_c = wal_path.encode() if wal_path else None
-        raw_ctx = _LIB.csls_agent_new(sk_arr, wal_c)
-        if not raw_ctx:
-            raise RuntimeError("csls_agent_new returned NULL: allocation failed")
-        self._ctx = _AgentCtxHandle(raw_ctx)
+        if _IS_NATIVE:
+            sk_arr = (ctypes.c_uint8 * 32)(*self._sk_bytes)
+            wal_c = wal_path.encode() if wal_path else None
+            raw_ctx = _LIB.csls_agent_new(sk_arr, wal_c)
+            if not raw_ctx:
+                raise RuntimeError("csls_agent_new returned NULL: allocation failed")
+            self._ctx = _AgentCtxHandle(raw_ctx)
+        else:
+            import ecdsa
+            pk = ecdsa.SigningKey.from_string(self._sk_bytes, curve=ecdsa.SECP256k1).verifying_key.to_string("compressed")
+            self._ctx = _PyAgentCtx(self._sk_bytes, pk)
         self._master_ctx = self._ctx
 
     @property
@@ -503,25 +671,31 @@ class CausalAgentWallet:
 
     def get_channel_height(self, vendor_pk: Union[str, bytes]) -> int:
         v_bytes = _parse_bytes(vendor_pk, 33)
-        v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
-        h = ctypes.c_uint64(0)
-        cum = ctypes.c_uint64(0)
         with self._lock:
-            rc = _LIB.csls_agent_get_channel_state(self._ctx, v_arr, ctypes.byref(h), ctypes.byref(cum))
-            if rc == 0:
-                return h.value
-            return 0
+            if _IS_NATIVE and isinstance(self._ctx, _AgentCtxHandle):
+                v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
+                h = ctypes.c_uint64(0)
+                cum = ctypes.c_uint64(0)
+                rc = _LIB.csls_agent_get_channel_state(self._ctx, v_arr, ctypes.byref(h), ctypes.byref(cum))
+                if rc == 0:
+                    return h.value
+                return 0
+            else:
+                return self._ctx.channels.get(v_bytes, (0, 0))[0]
 
     def get_channel_cumulative(self, vendor_pk: Union[str, bytes]) -> int:
         v_bytes = _parse_bytes(vendor_pk, 33)
-        v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
-        h = ctypes.c_uint64(0)
-        cum = ctypes.c_uint64(0)
         with self._lock:
-            rc = _LIB.csls_agent_get_channel_state(self._ctx, v_arr, ctypes.byref(h), ctypes.byref(cum))
-            if rc == 0:
-                return cum.value
-            return 0
+            if _IS_NATIVE and isinstance(self._ctx, _AgentCtxHandle):
+                v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
+                h = ctypes.c_uint64(0)
+                cum = ctypes.c_uint64(0)
+                rc = _LIB.csls_agent_get_channel_state(self._ctx, v_arr, ctypes.byref(h), ctypes.byref(cum))
+                if rc == 0:
+                    return cum.value
+                return 0
+            else:
+                return self._ctx.channels.get(v_bytes, (0, 0))[1]
 
     def create_session(self, vendor_pk: Union[str, bytes]) -> bytes:
         """
@@ -529,13 +703,30 @@ class CausalAgentWallet:
         Returns a 95-byte session_init packet containing ECDH authentication tag.
         """
         v_bytes = _parse_bytes(vendor_pk, 33)
-        v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
-        init_pkt = _CslsSessionInitPkt()
         with self._lock:
-            rc = _LIB.csls_agent_session_begin(self._ctx, v_arr, ctypes.byref(init_pkt))
-            if rc != 0:
-                raise RuntimeError(f"csls_agent_session_begin failed with code {rc}")
-            return bytes(init_pkt)
+            if _IS_NATIVE and isinstance(self._ctx, _AgentCtxHandle):
+                v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
+                init_pkt = _CslsSessionInitPkt()
+                rc = _LIB.csls_agent_session_begin(self._ctx, v_arr, ctypes.byref(init_pkt))
+                if rc != 0:
+                    raise RuntimeError(f"csls_agent_session_begin failed with code {rc}")
+                return bytes(init_pkt)
+            else:
+                ecdh_x = _ecdh_x(self._sk_bytes, v_bytes)
+                nonce = int.from_bytes(os.urandom(8), "big")
+                auth_mac = _session_auth(ecdh_x, self.public_key, v_bytes, nonce)
+                key = _session_kdf(ecdh_x, nonce)
+                self._ctx.sessions[v_bytes] = key
+                init_pkt = _CslsSessionInitPkt()
+                init_pkt.magic = CSLS_MAGIC
+                init_pkt.type = CSLS_PKT_SESSION_INIT
+                for i in range(33):
+                    init_pkt.agent_pk[i] = self.public_key[i]
+                    init_pkt.vendor_pk[i] = v_bytes[i]
+                init_pkt.session_nonce = nonce
+                for i in range(16):
+                    init_pkt.auth_mac[i] = auth_mac[i]
+                return bytes(init_pkt)
 
     def open_secure_session(self, vendor_node: "CausalVendorNode") -> bool:
         """
@@ -561,28 +752,66 @@ class CausalAgentWallet:
             raise ValueError(f"amount_usdc must be strictly positive, got {amount_usdc}")
 
         v_bytes = _parse_bytes(vendor_pk, 33)
-        v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
         delta_micro = int(round(amount_usdc * 1e6))
         if delta_micro > 0xFFFFFFFFFFFFFFFF:
             raise OverflowError("amount_usdc exceeds uint64_t micro-USDC range")
 
         with self._lock:
-            c_pkt = _CslsChequePkt()
-            if session_mac:
-                mac_arr = (ctypes.c_uint8 * 16)()
-                res = _LIB.csls_agent_sign_cheque_mac(
-                    self._ctx, v_arr, delta_micro, ctypes.byref(c_pkt), mac_arr
-                )
-                if res != 0:
-                    raise RuntimeError(f"csls_agent_sign_cheque_mac failed with code {res}")
-                return Cheque.from_c_pkt(c_pkt, mac=bytes(mac_arr))
+            if _IS_NATIVE and isinstance(self._ctx, _AgentCtxHandle):
+                v_arr = (ctypes.c_uint8 * 33)(*v_bytes)
+                c_pkt = _CslsChequePkt()
+                if session_mac:
+                    mac_arr = (ctypes.c_uint8 * 16)()
+                    res = _LIB.csls_agent_sign_cheque_mac(
+                        self._ctx, v_arr, delta_micro, ctypes.byref(c_pkt), mac_arr
+                    )
+                    if res != 0:
+                        raise RuntimeError(f"csls_agent_sign_cheque_mac failed with code {res}")
+                    return Cheque.from_c_pkt(c_pkt, mac=bytes(mac_arr))
+                else:
+                    res = _LIB.csls_agent_sign_cheque(
+                        self._ctx, v_arr, delta_micro, ctypes.byref(c_pkt)
+                    )
+                    if res != 0:
+                        raise RuntimeError(f"csls_agent_sign_cheque failed with code {res}")
+                    return Cheque.from_c_pkt(c_pkt)
             else:
-                res = _LIB.csls_agent_sign_cheque(
-                    self._ctx, v_arr, delta_micro, ctypes.byref(c_pkt)
-                )
-                if res != 0:
-                    raise RuntimeError(f"csls_agent_sign_cheque failed with code {res}")
-                return Cheque.from_c_pkt(c_pkt)
+                if session_mac and v_bytes not in self._ctx.sessions:
+                    raise RuntimeError(f"csls_agent_sign_cheque_mac failed with code {CSLS_ERR_NO_SESSION}")
+                h = self._ctx.height
+                self._ctx.height += 1
+                prev_h, prev_cum = self._ctx.channels.get(v_bytes, (0, 0))
+                cum_amt = prev_cum + delta_micro
+                self._ctx.channels[v_bytes] = (h, cum_amt)
+                self._ctx.cumulative_sent += delta_micro
+
+                k = _derive_k(self._sk_bytes, v_bytes, h)
+                preimage = self.public_key + v_bytes + h.to_bytes(8, "big") + cum_amt.to_bytes(8, "big")
+                e_bytes = hashlib.sha256(preimage).digest()
+                e = int.from_bytes(e_bytes, "big") % SECP256K1_Q
+                sk_int = int.from_bytes(self._sk_bytes, "big")
+                s = (k + e * sk_int) % SECP256K1_Q
+
+                c_pkt = _CslsChequePkt()
+                c_pkt.magic = CSLS_MAGIC
+                c_pkt.type = CSLS_PKT_CHEQUE
+                for i in range(33):
+                    c_pkt.agent_pk[i] = self.public_key[i]
+                    c_pkt.vendor_pk[i] = v_bytes[i]
+                c_pkt.height = h
+                c_pkt.cumulative_amt = cum_amt
+                challenge_e_bytes = e.to_bytes(32, "big")
+                sig_s_bytes = s.to_bytes(32, "big")
+                for i in range(32):
+                    c_pkt.challenge_e[i] = challenge_e_bytes[i]
+                    c_pkt.sig_s[i] = sig_s_bytes[i]
+
+                if session_mac:
+                    skey = self._ctx.sessions[v_bytes]
+                    mac_tag = _mac128(skey[:16], bytes(c_pkt))
+                    return Cheque.from_c_pkt(c_pkt, mac=mac_tag)
+                else:
+                    return Cheque.from_c_pkt(c_pkt)
 
     def session(
         self,
@@ -636,9 +865,10 @@ class CausalAgentWallet:
         with self._lock:
             if not getattr(self, "_closed", False):
                 self._closed = True
-                if hasattr(self, "_ctx") and self._ctx and self._ctx.value:
-                    _LIB.csls_agent_free(self._ctx)
-                    self._ctx = _AgentCtxHandle(None)
+                if hasattr(self, "_ctx") and self._ctx:
+                    if _IS_NATIVE and isinstance(self._ctx, _AgentCtxHandle) and self._ctx.value:
+                        _LIB.csls_agent_free(self._ctx)
+                        self._ctx = _AgentCtxHandle(None)
 
     def __del__(self):
         try:
@@ -689,15 +919,20 @@ class CausalVendorNode:
             self._sk_bytes = _parse_bytes(secret_key, 32)
 
         self._delta_v_micro = int(round(delta_v_usdc * 1e6))
-        sk_arr = (ctypes.c_uint8 * 32)(*self._sk_bytes)
-        raw_ctx = _LIB.csls_vendor_new(sk_arr, self._delta_v_micro)
-        if not raw_ctx:
-            raise RuntimeError("csls_vendor_new returned NULL: allocation failed")
-        self._ctx = _VendorCtxHandle(raw_ctx)
+        if _IS_NATIVE:
+            sk_arr = (ctypes.c_uint8 * 32)(*self._sk_bytes)
+            raw_ctx = _LIB.csls_vendor_new(sk_arr, self._delta_v_micro)
+            if not raw_ctx:
+                raise RuntimeError("csls_vendor_new returned NULL: allocation failed")
+            self._ctx = _VendorCtxHandle(raw_ctx)
+            _LIB.csls_vendor_enable_mac(self._ctx, 1 if enforce_mac else 0)
+        else:
+            import ecdsa
+            pk = ecdsa.SigningKey.from_string(self._sk_bytes, curve=ecdsa.SECP256k1).verifying_key.to_string("compressed")
+            self._ctx = _PyVendorCtx(self._sk_bytes, pk, self._delta_v_micro)
+            self._ctx.enforce_mac = 1 if enforce_mac else 0
         self._master_ctx = self._ctx
         self._channel_accumulated: Dict[bytes, int] = {}
-
-        _LIB.csls_vendor_enable_mac(self._ctx, 1 if enforce_mac else 0)
 
     @property
     def public_key(self) -> bytes:
@@ -728,9 +963,12 @@ class CausalVendorNode:
         """Enables or disables mandatory Session MAC enforcement (C2 gate)."""
         with self._lock:
             self._enforce_mac = enable
-            rc = _LIB.csls_vendor_enable_mac(self._ctx, 1 if enable else 0)
-            if rc != 0:
-                raise RuntimeError(f"csls_vendor_enable_mac failed with code {rc}")
+            if _IS_NATIVE and isinstance(self._ctx, _VendorCtxHandle):
+                rc = _LIB.csls_vendor_enable_mac(self._ctx, 1 if enable else 0)
+                if rc != 0:
+                    raise RuntimeError(f"csls_vendor_enable_mac failed with code {rc}")
+            else:
+                self._ctx.enforce_mac = 1 if enable else 0
 
     def init_session(self, session_init_pkt: Union[bytes, _CslsSessionInitPkt]) -> bool:
         """
@@ -744,46 +982,69 @@ class CausalVendorNode:
             c_init = session_init_pkt
 
         with self._lock:
-            rc = _LIB.csls_vendor_session_init(self._ctx, ctypes.byref(c_init))
-            return rc == 0
+            if _IS_NATIVE and isinstance(self._ctx, _VendorCtxHandle):
+                rc = _LIB.csls_vendor_session_init(self._ctx, ctypes.byref(c_init))
+                return rc == 0
+            else:
+                agent_pk = bytes(c_init.agent_pk)
+                vendor_pk = bytes(c_init.vendor_pk)
+                if vendor_pk != self.public_key:
+                    return False
+                ecdh_x = _ecdh_x(self._sk_bytes, agent_pk)
+                nonce = c_init.session_nonce
+                expected_auth = _session_auth(ecdh_x, agent_pk, vendor_pk, nonce)
+                if bytes(c_init.auth_mac) != expected_auth:
+                    return False
+                key = _session_kdf(ecdh_x, nonce)
+                self._ctx.sessions[agent_pk] = key
+                return True
 
     def get_channel_accumulated(self, agent_pk: Union[str, bytes]) -> int:
         a_bytes = _parse_bytes(agent_pk, 33)
         with self._lock:
             if a_bytes in self._channel_accumulated:
                 return self._channel_accumulated[a_bytes]
-            a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
-            h = ctypes.c_uint64(0)
-            accum = ctypes.c_uint64(0)
-            cleared = ctypes.c_uint64(0)
-            rc = _LIB.csls_vendor_get_channel_state(self._ctx, a_arr, ctypes.byref(h), ctypes.byref(accum), ctypes.byref(cleared))
-            if rc == 0:
-                return accum.value
-            return 0
+            if _IS_NATIVE and isinstance(self._ctx, _VendorCtxHandle):
+                a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
+                h = ctypes.c_uint64(0)
+                accum = ctypes.c_uint64(0)
+                cleared = ctypes.c_uint64(0)
+                rc = _LIB.csls_vendor_get_channel_state(self._ctx, a_arr, ctypes.byref(h), ctypes.byref(accum), ctypes.byref(cleared))
+                if rc == 0:
+                    return accum.value
+                return 0
+            else:
+                return self._ctx.channels.get(a_bytes, (0, 0, 0))[1]
 
     def get_channel_height(self, agent_pk: Union[str, bytes]) -> int:
         a_bytes = _parse_bytes(agent_pk, 33)
-        a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
-        h = ctypes.c_uint64(0)
-        accum = ctypes.c_uint64(0)
-        cleared = ctypes.c_uint64(0)
         with self._lock:
-            rc = _LIB.csls_vendor_get_channel_state(self._ctx, a_arr, ctypes.byref(h), ctypes.byref(accum), ctypes.byref(cleared))
-            if rc == 0:
-                return h.value
-            return 0
+            if _IS_NATIVE and isinstance(self._ctx, _VendorCtxHandle):
+                a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
+                h = ctypes.c_uint64(0)
+                accum = ctypes.c_uint64(0)
+                cleared = ctypes.c_uint64(0)
+                rc = _LIB.csls_vendor_get_channel_state(self._ctx, a_arr, ctypes.byref(h), ctypes.byref(accum), ctypes.byref(cleared))
+                if rc == 0:
+                    return h.value
+                return 0
+            else:
+                return self._ctx.channels.get(a_bytes, (0, 0, 0))[0]
 
     def get_channel_cleared(self, agent_pk: Union[str, bytes]) -> int:
         a_bytes = _parse_bytes(agent_pk, 33)
-        a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
-        h = ctypes.c_uint64(0)
-        accum = ctypes.c_uint64(0)
-        cleared = ctypes.c_uint64(0)
         with self._lock:
-            rc = _LIB.csls_vendor_get_channel_state(self._ctx, a_arr, ctypes.byref(h), ctypes.byref(accum), ctypes.byref(cleared))
-            if rc == 0:
-                return cleared.value
-            return 0
+            if _IS_NATIVE and isinstance(self._ctx, _VendorCtxHandle):
+                a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
+                h = ctypes.c_uint64(0)
+                accum = ctypes.c_uint64(0)
+                cleared = ctypes.c_uint64(0)
+                rc = _LIB.csls_vendor_get_channel_state(self._ctx, a_arr, ctypes.byref(h), ctypes.byref(accum), ctypes.byref(cleared))
+                if rc == 0:
+                    return cleared.value
+                return 0
+            else:
+                return self._ctx.channels.get(a_bytes, (0, 0, 0))[2]
 
     def advance_cleared(self, agent_pk: Optional[Union[str, bytes]] = None, cleared_usdc: float = 0.0) -> None:
         """Advances cleared_amount for an agent or globally, freeing the delta_v exposure buffer."""
@@ -795,14 +1056,22 @@ class CausalVendorNode:
         with self._lock:
             if self._closed:
                 raise RuntimeError("Vendor node is closed")
-            if agent_pk is not None:
-                a_bytes = _parse_bytes(agent_pk, 33)
-                a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
-                res = _LIB.csls_vendor_advance_cleared(self._ctx, a_arr, cleared_micro)
+            if _IS_NATIVE and isinstance(self._ctx, _VendorCtxHandle):
+                if agent_pk is not None:
+                    a_bytes = _parse_bytes(agent_pk, 33)
+                    a_arr = (ctypes.c_uint8 * 33)(*a_bytes)
+                    res = _LIB.csls_vendor_advance_cleared(self._ctx, a_arr, cleared_micro)
+                else:
+                    res = _LIB.csls_vendor_advance_cleared(self._ctx, None, cleared_micro)
+                if res != 0:
+                    raise RuntimeError(f"csls_vendor_advance_cleared failed with code {res}")
             else:
-                res = _LIB.csls_vendor_advance_cleared(self._ctx, None, cleared_micro)
-            if res != 0:
-                raise RuntimeError(f"csls_vendor_advance_cleared failed with code {res}")
+                if agent_pk is not None:
+                    a_bytes = _parse_bytes(agent_pk, 33)
+                    h, accum, prev_cleared = self._ctx.channels.get(a_bytes, (0, 0, 0))
+                    self._ctx.channels[a_bytes] = (h, accum, prev_cleared + cleared_micro)
+                else:
+                    self._ctx.cleared_amount += cleared_micro
 
     def process_cheque(self, cheque: Union[Cheque, bytes]) -> ProcessResult:
         """
@@ -842,16 +1111,79 @@ class CausalVendorNode:
                         error_message="MAX_CHANNELS_CAPACITY_REACHED: Vendor channel table full",
                     )
 
-            if pkt_len == expected_mac:
-                mac_bytes = raw[expected_plain:expected_mac]
-                mac_arr = (ctypes.c_uint8 * 16)(*mac_bytes)
-                res = _LIB.csls_vendor_process_cheque_mac(
-                    self._ctx, ctypes.byref(c_pkt), mac_arr, ctypes.byref(c_fraud)
-                )
+            if _IS_NATIVE and isinstance(self._ctx, _VendorCtxHandle):
+                if pkt_len == expected_mac:
+                    mac_bytes = raw[expected_plain:expected_mac]
+                    mac_arr = (ctypes.c_uint8 * 16)(*mac_bytes)
+                    res = _LIB.csls_vendor_process_cheque_mac(
+                        self._ctx, ctypes.byref(c_pkt), mac_arr, ctypes.byref(c_fraud)
+                    )
+                else:
+                    res = _LIB.csls_vendor_process_cheque(
+                        self._ctx, ctypes.byref(c_pkt), ctypes.byref(c_fraud)
+                    )
             else:
-                res = _LIB.csls_vendor_process_cheque(
-                    self._ctx, ctypes.byref(c_pkt), ctypes.byref(c_fraud)
-                )
+                if self._ctx.enforce_mac:
+                    if pkt_len != expected_mac or agent_pk not in self._ctx.sessions:
+                        res = CSLS_ERR_BAD_MAC
+                    else:
+                        skey = self._ctx.sessions[agent_pk]
+                        tag = _mac128(skey[:16], raw[:expected_plain])
+                        if raw[expected_plain:expected_mac] != tag:
+                            res = CSLS_ERR_BAD_MAC
+                        else:
+                            res = None
+                else:
+                    res = None
+
+                if res is None:
+                    hist_key = (agent_pk, c_pkt.height)
+                    if hist_key in self._ctx.history:
+                        prev_amt, prev_e, prev_s = self._ctx.history[hist_key]
+                        if prev_e != bytes(c_pkt.challenge_e):
+                            if hist_key in self._ctx.disputed:
+                                res = CSLS_ERR_FRAUD
+                            else:
+                                self._ctx.disputed.add(hist_key)
+                                s1 = int.from_bytes(prev_s, "big")
+                                s2 = int.from_bytes(bytes(c_pkt.sig_s), "big")
+                                e1 = int.from_bytes(prev_e, "big")
+                                e2 = int.from_bytes(bytes(c_pkt.challenge_e), "big")
+                                delta_s = (s1 - s2) % SECP256K1_Q
+                                delta_e = (e1 - e2) % SECP256K1_Q
+                                inv_delta_e = pow(delta_e, -1, SECP256K1_Q)
+                                extracted_sk = ((delta_s * inv_delta_e) % SECP256K1_Q).to_bytes(32, "big")
+
+                                c_fraud.magic = CSLS_MAGIC
+                                c_fraud.type = CSLS_PKT_FRAUD
+                                for i in range(33):
+                                    c_fraud.offender_pk[i] = agent_pk[i]
+                                c_fraud.collision_h = c_pkt.height
+                                for i in range(32):
+                                    c_fraud.extracted_sk[i] = extracted_sk[i]
+                                res = CSLS_ERR_FRAUD
+                        else:
+                            res = CSLS_ERR_REPLAY
+                    else:
+                        last_h, accumulated, cleared = self._ctx.channels.get(agent_pk, (0, 0, 0))
+                        if c_pkt.cumulative_amt < accumulated:
+                            res = -11
+                        else:
+                            unconfirmed = c_pkt.cumulative_amt - cleared if c_pkt.cumulative_amt >= cleared else 0
+                            if unconfirmed > self._ctx.max_exposure_delta_v:
+                                res = CSLS_ERR_EXPOSURE_CAP
+                            elif last_h > 0 and c_pkt.height <= last_h:
+                                res = CSLS_ERR_OUT_OF_ORDER
+                            else:
+                                preimage = agent_pk + bytes(c_pkt.vendor_pk) + c_pkt.height.to_bytes(8, "big") + c_pkt.cumulative_amt.to_bytes(8, "big")
+                                expected_e = (int.from_bytes(hashlib.sha256(preimage).digest(), "big") % SECP256K1_Q).to_bytes(32, "big")
+                                if expected_e != bytes(c_pkt.challenge_e):
+                                    res = CSLS_ERR_FORGED_HASH
+                                else:
+                                    self._ctx.history[hist_key] = (c_pkt.cumulative_amt, bytes(c_pkt.challenge_e), bytes(c_pkt.sig_s))
+                                    self._ctx.channels[agent_pk] = (c_pkt.height, c_pkt.cumulative_amt, cleared)
+                                    self._ctx.last_height = c_pkt.height
+                                    res = CSLS_OK
 
             if res == CSLS_OK:
                 self._channel_accumulated[agent_pk] = c_pkt.cumulative_amt
@@ -904,9 +1236,10 @@ class CausalVendorNode:
         with self._lock:
             if not getattr(self, "_closed", False):
                 self._closed = True
-                if hasattr(self, "_ctx") and self._ctx and self._ctx.value:
-                    _LIB.csls_vendor_free(self._ctx)
-                    self._ctx = _VendorCtxHandle(None)
+                if hasattr(self, "_ctx") and self._ctx:
+                    if _IS_NATIVE and isinstance(self._ctx, _VendorCtxHandle) and self._ctx.value:
+                        _LIB.csls_vendor_free(self._ctx)
+                        self._ctx = _VendorCtxHandle(None)
 
     def __del__(self):
         try:
@@ -1370,8 +1703,7 @@ if __name__ == "__main__":
 
     # Tamper height back to duplicate for double-spending attack
     attacker_agent._ctx.height = legit_cheque.height
-    fake_pk = b"\x02" + (b"\x77" * 32)
-    fork_cheque = attacker_agent.sign_cheque(fake_pk, amount_usdc=0.07, session_mac=True)
+    fork_cheque = attacker_agent.sign_cheque(v2.public_key, amount_usdc=0.07, session_mac=True)
 
     r2 = v2.process_cheque(fork_cheque)
     assert not r2.accepted

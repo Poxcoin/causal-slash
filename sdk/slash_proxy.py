@@ -419,6 +419,9 @@ class SlashSidecarProxy:
                                 self.send_header("Connection", "close")
                                 self.send_header("X-Causal-Proxy-Mode", "streaming-forward")
                                 self.end_headers()
+                                # Body length is indeterminate (no Content-Length/chunked);
+                                # the socket must close or clients block forever on read().
+                                self.close_connection = True
 
                                 t_start = time.time()
                                 last_meter_sec = int(t_start)
@@ -466,9 +469,12 @@ class SlashSidecarProxy:
                         self.send_response(200)
                         self.send_header("Content-Type", "text/event-stream")
                         self.send_header("Cache-Control", "no-cache")
-                        self.send_header("Connection", "keep-alive")
+                        self.send_header("Connection", "close")
                         self.send_header("X-Causal-Proxy-Mode", "simulated-streaming-forward")
                         self.end_headers()
+                        # SSE ends with data: [DONE] and has no length framing;
+                        # keep-alive here makes every stdlib client hang on read().
+                        self.close_connection = True
 
                         stream_chunks = [
                             "Streaming", " compute", " verified", " via", " CSLS", " micro-cheque."

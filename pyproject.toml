@@ -13,6 +13,7 @@ authors = [
     { name = "Causal-Slash Protocol Developers", email = "dev@causal-slash.io" }
 ]
 classifiers = [
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -22,6 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.0.0",
+    "ecdsa>=0.13",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +44,7 @@ where = ["."]
 include = ["sdk*"]
 
 [tool.setuptools.package-data]
-sdk = ["py.typed", "libcausal_slash.so"]
+sdk = ["py.typed", "libcausal_slash.so", "libbloodhound.so"]
 
 [tool.pytest.ini_options]
 pythonpath = [".", "sdk"]
