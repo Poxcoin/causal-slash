@@ -1,0 +1,16 @@
+{
+  "epochs": 100,
+  "obligations": 102500,
+  "nodes_per_epoch": 1000,
+  "gross_volume_micro": 100012500000,
+  "annihilated_volume_micro": 100000000000,
+  "residual_volume_micro": 12500000,
+  "compression_ratio": 0.9998750156230471,
+  "min_epoch_compression_ratio": 0.9998750156230471,
+  "cycles_resolved": 12500,
+  "certificates": 100000,
+  "conservation_ok": true,
+  "netting_seconds": 277.8297691345215,
+  "build_seconds": 1457.0412425994873,
+  "gate_compression_gt_99": true
+}

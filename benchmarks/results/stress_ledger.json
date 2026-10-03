@@ -1,0 +1,26 @@
+{
+  "port": 9444,
+  "agents": 12,
+  "cheques_requested": 100000,
+  "cheques_acked": 1200000,
+  "cheques_rejected": 0,
+  "wall_seconds": 4.1440,
+  "tps_avg": 289574.8,
+  "tps_peak_100ms": 306340.0,
+  "rtt_us": {"avg": 38.029, "p50": 30.522, "p99": 117.504, "p999": 646.054, "max": 3955.929},
+  "total_volume_micro_usdc": 1200000000,
+  "ledger": [
+    {"agent_idx": 0, "pk": "0335f737927627c4af1e9a39ae02b086c6b31426d0d64f01e5ce3ee8a445bbd667", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 1, "pk": "03baf7689c0a3558fb604589036a8d1e4b685d909f6e0e2c6018a14049ae64ec26", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 2, "pk": "029c1f585aa80762f9f4458f6806978b7befb46c7b68af82d399630793ff1a2b50", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 3, "pk": "031428f3a3532ff4f1cac70f7292bfad06d1037f800ee8839b56ebba917a22e900", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 4, "pk": "031162ffa0f68dda9783c9e3c419ed824a086c1594dc8d3333306016611739dfc1", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 5, "pk": "029ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895b", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 6, "pk": "03887b313b55d7c6706037fe7bd554364faccfe21bc2652a2a6a0b0d7026c585ea", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 7, "pk": "02cea8c5859201cae256ebc4a9cc71540316c53dc66ae43288fb8807c2fb8d58c1", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 8, "pk": "0244b9c62b2e40f9623c61ec464829cf5af49e0abf99cdac5564d05158ddf5a925", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 9, "pk": "03511c257d785b45602625994811d17ea994a5defbcf80e919ef9e0a64b87935da", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 10, "pk": "029c5530e4385ebc41cdaf8257edf9a2baaf8506a4099103211e6ed7382103ed67", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0},
+    {"agent_idx": 11, "pk": "021fd22aba903a3ee542ba62dca598bd19da4e0af9001ff0d5cefbb3878b2aaaf4", "final_height": 100000, "final_cumulative_micro": 100000000, "acked": 100000, "rejected": 0, "rc": 0}
+  ]
+}

@@ -46,7 +46,40 @@ N_LEAVES = 2 ** DEPTH  # 1024 sub-agents
 N_VENDORS = 6
 MINT_AMOUNT = 20_000_000_000  # 20,000 USDC
 BOND_AMOUNT = 5_000_000_000   # 5,000 USDC master bond
-VENDOR_FUND_ETH = "0.005ether"
+VENDOR_FUND_ETH = "0.0002ether"
+VENDOR_MIN_WEI = 50_000_000_000_000  # skip funding above 5e-5 ETH
+
+
+def eth_balance(addr: str) -> int:
+    out = sh(["cast", "balance", addr, "--rpc-url", RPC])
+    return int(out.strip().split()[0])
+
+
+def phase_fund(vendors, master_pk, state):
+    funders = [(master_pk, "master")]
+    for v in vendors:
+        if eth_balance(v["addr"]) > VENDOR_MIN_WEI:
+            funders.append((v["sk"].to_bytes(32, "big").hex(), f"vendor{v['idx']}"))
+    for v in vendors:
+        bal = eth_balance(v["addr"])
+        if bal > VENDOR_MIN_WEI:
+            print(f"  [fund] vendor{v['idx']} {v['addr']}: already funded ({bal} wei), skip")
+            continue
+        sent = False
+        last_err = None
+        for pk, who in funders:
+            try:
+                h = sh(["cast", "send", v["addr"], "--value", VENDOR_FUND_ETH,
+                        "--private-key", pk, "--rpc-url", RPC, "--json"])
+                h = json.loads(h)["transactionHash"]
+                print(f"  [tx] fund vendor{v['idx']} {v['addr']} from {who}: "
+                      f"https://sepolia.arbiscan.io/tx/{h}")
+                sent = True
+                break
+            except RuntimeError as e:
+                last_err = e
+        if not sent:
+            raise RuntimeError(f"could not fund vendor{v['idx']}: {last_err}")
 
 
 def sh(cmd, timeout=120):
@@ -99,7 +132,7 @@ def build_tree(leaves):
             nxt.append(keccak256(a + b))
         levels.append(nxt)
         cur = nxt
-    return levels[0][0], levels
+    return levels[-1][0], levels
 
 
 def merkle_proof(levels, index):
@@ -174,7 +207,6 @@ def phase_keys(args, master):
         "master": master,
         "root1": root1.hex(),
         "root2": root2.hex(),
-        "gen2_sk": subs2_sk,
         "sorted_order": order,
         "leaf_position": {str(i): pos[i] for i in range(N_LEAVES)},
         "levels1": [[h.hex() for h in lv] for lv in levels1],
@@ -242,6 +274,36 @@ def phase_anchor(args, state, master_pk):
     print("[anchor] GATE PASS: root rotation preserved generation-1 payments (grace active)")
 
 
+def to_int(out: str) -> int:
+    """Parses `cast call` numeric output: 0x-hex, decimal, and 'v [1.2e9]' forms."""
+    tok = out.strip().splitlines()[0].split()[0].replace(",", "")
+    return int(tok, 16) if tok.startswith("0x") else int(tok)
+
+
+def vault_bond(master: str) -> int:
+    # `cast call ... (uint256,bytes32,...)` prints one value per line; bond is first.
+    out = vault_call("vaults(address)(uint256,bytes32,address,address,uint256,uint256,bool)", master)
+    return to_int(out)
+
+
+def find_settled_tx(sub_addr: str, vendor_addr: str) -> str:
+    """Recovers the settlement tx hash for (sub, vendor) from SwarmChequeSettled logs."""
+    topic = "0x" + keccak256(b"SwarmChequeSettled(address,address,address,uint64,uint256,uint256)").hex()
+    latest = to_int(sh(["cast", "block-number", "--rpc-url", RPC]))
+    from_block = max(0, latest - 60000)
+    out = sh(["cast", "logs", "--address", VAULT, topic,
+              "--from-block", str(from_block), "--to-block", str(latest),
+              "--rpc-url", RPC, "--json"], timeout=120)
+    logs = json.loads(out)
+    for lg in logs:
+        topics = lg.get("topics", [])
+        # topics: [sig, master, subAgent, vendor]
+        if len(topics) >= 4 and topics[2].endswith(sub_addr[2:].lower()) \
+                and topics[3].endswith(vendor_addr[2:].lower()):
+            return lg.get("transactionHash")
+    return None
+
+
 def phase_settle(args, state, master_pk, ledger_path):
     master = state["master"]
     subs = state["subs"]
@@ -256,17 +318,12 @@ def phase_settle(args, state, master_pk, ledger_path):
                                         vault_address=VAULT, chain_id=CHAIN_ID,
                                         master_agent=master)
 
-    print(f"[settle] funding {N_VENDORS} vendors with {VENDOR_FUND_ETH} gas each...")
-    for v in vendors:
-        h = sh(["cast", "send", v["addr"], "--value", VENDOR_FUND_ETH,
-                "--private-key", master_pk, "--rpc-url", RPC, "--json"])
-        h = json.loads(h)["transactionHash"]
-        print(f"  [tx] fund vendor{v['idx']} {v['addr']}: https://sepolia.arbiscan.io/tx/{h}")
+    print(f"[settle] funding {N_VENDORS} vendors with gas (adaptive, {VENDOR_FUND_ETH} top-ups)...")
+    phase_fund(vendors, master_pk, state)
 
     # settle the 12 TCP swarm identities; agents rotate across the vendors
     results = []
-    bond_before = int(vault_call("vaults(address)(uint256,bytes32,address,address,uint256,uint256,bool)",
-                                 master).split(",")[0], 16)
+    bond_before = vault_bond(master)
 
     for entry in ledger["ledger"]:
         i = entry["agent_idx"]
@@ -277,40 +334,56 @@ def phase_settle(args, state, master_pk, ledger_path):
 
         # Merkle proof under generation-1 root (now in grace after rotation!)
         p = pos[str(i)]
-        proof = contract_proof([bytes.fromhex(x) for x in state["levels1"]], p)
+        levels1 = [[bytes.fromhex(x) for x in lv] for lv in state["levels1"]]
+        proof = contract_proof(levels1, p)
 
         vendor_settler = BaseOnChainSettler(rpc_url=RPC, private_key=vendor["sk"].to_bytes(32, "big").hex(),
                                             vault_address=VAULT, chain_id=CHAIN_ID,
                                             master_agent=master)
         assert vendor_settler.caller_address.lower() == vendor["addr"].lower()
 
-        usdc_before = int(usdc_call("balanceOf(address)(uint256)", vendor["addr"]), 16)
-        settled_before = int(vault_call("swarmSettledAmounts(address,address)(uint256)",
-                                        "0x" + sub["addr"], vendor["addr"]) or "0", 16)
+        usdc_before = to_int(usdc_call("balanceOf(address)(uint256)", vendor["addr"]))
+        settled_before = to_int(vault_call("swarmSettledAmounts(address,address)(uint256)",
+                                           sub["addr"], vendor["addr"]) or "0")
         bond_before_agent = bond_before
 
-        t0 = time.time()
-        tx_hash = vendor_settler.settle_swarm_cheque(
-            subagent_pk=sub["sk"], height=height, amount=cumulative,
-            merkle_proof=proof, master_agent=master, vendor_address=vendor["addr"])
-        dt = time.time() - t0
+        if settled_before >= cumulative:
+            # Idempotent resume: an earlier crashed run already settled this pair.
+            tx_hash = find_settled_tx(sub["addr"].lower(), vendor["addr"].lower()) or "already-settled"
+            receipt = json.loads(sh(["cast", "receipt", tx_hash, "--rpc-url", RPC, "--json"], timeout=120))
+            gas_used = to_int(receipt["gasUsed"])
+            block = to_int(receipt["blockNumber"])
+            settled_after = settled_before
+            height_onchain = to_int(vault_call("swarmChannelHeights(address,address)(uint64)",
+                                               sub["addr"], vendor["addr"]))
+            bond_after = bond_before
+            usdc_after = usdc_before
+            dt = 0.0
+            delta = 0
+            vendor_delta = 0
+            bond_delta = 0
+        else:
+            t0 = time.time()
+            tx_hash = vendor_settler.settle_swarm_cheque(
+                subagent_pk=sub["sk"], height=height, amount=cumulative,
+                merkle_proof=proof, master_agent=master, vendor_address=vendor["addr"])
+            dt = time.time() - t0
 
-        receipt = json.loads(sh(["cast", "receipt", tx_hash, "--rpc-url", RPC, "--json"], timeout=120))
-        gas_used = int(receipt["gasUsed"], 16)
-        block = int(receipt["blockNumber"], 16)
+            receipt = json.loads(sh(["cast", "receipt", tx_hash, "--rpc-url", RPC, "--json"], timeout=120))
+            gas_used = to_int(receipt["gasUsed"])
+            block = to_int(receipt["blockNumber"])
 
-        usdc_after = int(usdc_call("balanceOf(address)(uint256)", vendor["addr"]), 16)
-        settled_after = int(vault_call("swarmSettledAmounts(address,address)(uint256)",
-                                       "0x" + sub["addr"], vendor["addr"]), 16)
-        height_onchain = int(vault_call("swarmChannelHeights(address,address)(uint64)",
-                                        "0x" + sub["addr"], vendor["addr"]), 16)
-        bond_after = int(vault_call("vaults(address)(uint256,bytes32,address,address,uint256,uint256,bool)",
-                                    master).split(",")[0], 16)
-        bond_before = bond_after
+            usdc_after = to_int(usdc_call("balanceOf(address)(uint256)", vendor["addr"]))
+            settled_after = to_int(vault_call("swarmSettledAmounts(address,address)(uint256)",
+                                              sub["addr"], vendor["addr"]))
+            height_onchain = to_int(vault_call("swarmChannelHeights(address,address)(uint64)",
+                                               sub["addr"], vendor["addr"]))
+            bond_after = vault_bond(master)
+            bond_before = bond_after
 
-        delta = cumulative - settled_before
-        vendor_delta = usdc_after - usdc_before
-        bond_delta = bond_before_agent - bond_after
+            delta = cumulative - settled_before
+            vendor_delta = usdc_after - usdc_before
+            bond_delta = bond_before_agent - bond_after
 
         ok_delta = (settled_after == cumulative)
         ok_funds = (vendor_delta == delta)          # protocolFeeBps = 0

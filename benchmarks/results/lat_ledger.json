@@ -1,0 +1,15 @@
+{
+  "port": 9444,
+  "agents": 1,
+  "cheques_requested": 200000,
+  "cheques_acked": 200000,
+  "cheques_rejected": 0,
+  "wall_seconds": 3.0285,
+  "tps_avg": 66040.3,
+  "tps_peak_100ms": 77350.0,
+  "rtt_us": {"avg": 13.286, "p50": 12.649, "p99": 24.018, "p999": 36.284, "max": 1588.571},
+  "total_volume_micro_usdc": 200000000,
+  "ledger": [
+    {"agent_idx": 0, "pk": "0335f737927627c4af1e9a39ae02b086c6b31426d0d64f01e5ce3ee8a445bbd667", "final_height": 200000, "final_cumulative_micro": 200000000, "acked": 200000, "rejected": 0, "rc": 0}
+  ]
+}
