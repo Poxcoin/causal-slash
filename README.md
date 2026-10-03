@@ -121,6 +121,12 @@ make test-bloodhound
 
 `SlashProxy` (`sdk/slash_proxy.py`) is a local reverse proxy that allows autonomous agent frameworks (including Coinbase AgentKit, ElizaOS, CrewAI, AutoGen, and LangChain) to stream payments per request without modifying core application code.
 
+### Python SDK Installation:
+```bash
+pip install causal-slash-sdk
+```
+> **Platform Support:** Linux x86_64 only. The embedded native cryptographic acceleration binaries (`libcausal_slash.so`, `libbloodhound.so`) are compiled specifically for Linux x86_64.
+
 ### Integration Flow:
 1. Start the proxy sidecar:
    ```bash
@@ -309,6 +315,11 @@ Expected: `All Schnorr Bloodhound Tests Successfully Passed`
 ### 5. Run High-Frequency Quantile Latency Profiler:
 ```bash
 python3 benchmarks/slashbench.py
+```
+
+### 6. Run Autonomous Agent Streaming Quickstart:
+```bash
+python3 examples/quickstart_agent.py
 ```
 
 ---

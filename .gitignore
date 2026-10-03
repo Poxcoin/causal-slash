@@ -36,10 +36,20 @@ node_modules/
 package-lock.json
 
 # Environment & Wallet secrets
-.env
+.env*
 *.env
+*.deployer_wallet.json
 .deployer_wallet.json
+scripts/.deployer_wallet.json
 deployment_receipt.json
+
+# Python Packaging
+dist/
+build/
+*.egg-info/
+
+# Internal fundraising & grants
+docs/grants/
 
 # OS and Editor artifacts
 .DS_Store
