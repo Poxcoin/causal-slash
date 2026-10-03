@@ -3,7 +3,7 @@
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![Client SDK: Apache-2.0](https://img.shields.io/badge/SDK-Apache--2.0-green.svg)](LICENSE)
 [![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-100%2F100_Passing-brightgreen?logo=solidity)](test/)
-[![Python SDK Tests](https://img.shields.io/badge/Pytest-68%2F70_Passing-brightgreen?logo=pytest)](test/)
+[![Python SDK Tests](https://img.shields.io/badge/Pytest-70%2F70_Passing-brightgreen?logo=pytest)](test/)
 [![Base Sepolia](https://img.shields.io/badge/Base_Sepolia-0x901c...2253-success?logo=ethereum)](https://sepolia.basescan.org/address/0x901c98Da847DD24ff23FcC37B6D1549A17F12253#code)
 [![Arbitrum Sepolia](https://img.shields.io/badge/Arbitrum_Sepolia-0x45Cd...1f1F-blue?logo=arbitrum)](https://sepolia.arbiscan.io/address/0x45Cd2B0d1319C158a5B37B74DcBE3D78C9861f1F#code)
 [![C11 Engine Latency](https://img.shields.io/badge/C11_Latency-1.68_%C2%B5s-blue)](src/causal_daemon.c)
@@ -187,8 +187,8 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 * `make test-bloodhound`: MEV searcher Keccak-256 vector verification and equivocation extraction test under AddressSanitizer.
 * `benchmarks/stress_tcp_swarm.c`: High-load multi-client TCP streaming audit under ASan/TSan.
 
-### 3. Python SDK & Integration Tests (68/70 Passing):
-* `pytest -v`: 68 passing tests covering SQLite WAL `ChannelStore`, AsyncIO Actor Queue, secp256k1 honest PK, Circuit Breaker, Edge Guardrails, and On-chain Settlement.
+### 3. Python SDK & Integration Tests (70/70 Passing):
+* `pytest -v`: 70 passing tests covering SQLite WAL `ChannelStore`, AsyncIO Actor Queue, secp256k1 honest PK, Circuit Breaker, Edge Guardrails, and On-chain Settlement.
 * `test/test_e2e_full_stack.py`: Full-stack end-to-end integration test suite.
 
 ---
@@ -292,7 +292,7 @@ Expected: `Ran 13 test suites: 100 tests passed, 0 failed, 0 skipped (100 total 
 ```bash
 pytest -v
 ```
-Expected: `68 passed, 2 failed`
+Expected: `70 passed`
 
 ### 3. Run C11 Cryptographic Daemon & Socket Benchmarks:
 ```bash
@@ -305,6 +305,11 @@ Expected: `Latency per End-to-End Cheque (Sign + Verify): ~1.68 µs`
 make test-bloodhound
 ```
 Expected: `All Schnorr Bloodhound Tests Successfully Passed`
+
+### 5. Run High-Frequency Quantile Latency Profiler:
+```bash
+python3 benchmarks/slashbench.py
+```
 
 ---
 

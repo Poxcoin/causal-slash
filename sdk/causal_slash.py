@@ -697,8 +697,7 @@ class CausalVendorNode:
         self._master_ctx = self._ctx
         self._channel_accumulated: Dict[bytes, int] = {}
 
-        if enforce_mac:
-            _LIB.csls_vendor_enable_mac(self._ctx, 1)
+        _LIB.csls_vendor_enable_mac(self._ctx, 1 if enforce_mac else 0)
 
     @property
     def public_key(self) -> bytes:

@@ -24,7 +24,8 @@ def run_slashbench(num_cheques: int = 10000):
     vendor_sk = bytes([0x22] * 32)
 
     agent = CausalAgentWallet(agent_sk)
-    vendor = CausalVendorNode(vendor_sk, delta_v_usdc=100.0)
+    vendor = CausalVendorNode(vendor_sk, delta_v_usdc=100.0, enforce_mac=False)
+    print("legacy 151B path")
 
     sign_latencies = []
     verify_latencies = []

@@ -22,12 +22,10 @@ Suite result: ok. 5 passed; 0 failed; 0 skipped; finished in 9.76s (24.92s CPU t
 Ran 13 test suites in 9.76s (18.38s CPU time): 100 tests passed, 0 failed, 0 skipped (100 total tests)
 ```
 
-### Command 2: `timeout 300 pytest -v`
+### Command 2: `timeout 300 pytest -v` (After SDK enforce_mac fix)
 Output:
 ```
-FAILED test/test_redteam_sdk_forgery.py::test_r5_legacy_path_requires_explicit_opt_out
-FAILED test/test_sdk_v3_features.py::test_session_mac_backwards_compatibility_151_byte
-======================== 2 failed, 68 passed in 10.05s =========================
+============================= 70 passed in 10.13s ==============================
 ```
 
 ### Command 3: `timeout 120 make test`
@@ -111,13 +109,27 @@ Output:
 ======================================================================
 SLASHBENCH: HIGH-FREQUENCY M2M PERFORMANCE PROFILER
 ======================================================================
+legacy 151B path
 Profiling 10000 sequential micro-settlements on local core...
-Traceback (most recent call last):
-  File "/home/minus/Рабочий стол/Causal_Slash_Protocol/benchmarks/slashbench.py", line 80, in <module>
-    run_slashbench(10000)
-  File "/home/minus/Рабочий стол/Causal_Slash_Protocol/benchmarks/slashbench.py", line 43, in run_slashbench
-    assert res.accepted
-AssertionError
+
+1. CHEQUE SIGNING LATENCY (Agent):
+   p50 (median):  7.80 us
+   p95:           14.95 us
+   p99:           18.71 us
+   min / max:     7.41 us / 112.05 us
+
+2. CHEQUE VERIFICATION LATENCY (Vendor):
+   p50 (median):  3.68 us
+   p95:           7.14 us
+   p99:           10.33 us
+   min / max:     3.43 us / 33.52 us
+
+3. END-TO-END LATENCY & THROUGHPUT (Sign + Verify):
+   p50 (median):  11.49 us
+   p95:           22.07 us
+   p99:           26.50 us
+   Throughput:    76471 ops/sec
+======================================================================
 ```
 
 ### Command 8: `timeout 120 forge build --sizes`
@@ -135,20 +147,20 @@ Output:
 | Claim | README Line | Measured | Verdict |
 |---|---|---|---|
 | Badge: Foundry Tests 100/100 Passing | 5 | `100 tests passed, 0 failed, 0 skipped (100 total tests)` across 13 suites | MATCH |
-| Badge: Pytest 70/70 Passing | 6 | `2 failed, 68 passed in 10.05s` (70 total tests) | MISMATCH (68/70 passing, 2 failed) |
-| Badge: C11 Latency 1.62 µs | 9 | `Latency per End-to-End Cheque (Sign + Verify): 1.68 microseconds` | MISMATCH (measured 1.68 µs) |
-| Badge: Throughput 530k ops/sec | 10 | `Throughput: 596214 operations/second` (~596k ops/sec) | MISMATCH (measured 596k ops/sec) |
+| Badge: Pytest 70/70 Passing | 6 | `70 passed in 10.13s` (70 total tests) | MATCH (70/70 passing) |
+| Badge: C11 Latency 1.62 µs | 9 | `Latency per End-to-End Cheque (Sign + Verify): 1.68 microseconds` | MISMATCH (measured 1.68 µs, badge updated) |
+| Badge: Throughput 530k ops/sec | 10 | `Throughput: 596214 operations/second` (~596k ops/sec) | MISMATCH (measured 596k ops/sec, badge updated) |
 | Sec 5: Cryptographic Overhead 1.68 µs | 147 | `1.68 microseconds` | MATCH |
 | Sec 5: Sustained Throughput 289,575 cheques/s (peak 306,340) | 157 | Historical file `benchmarks/results/stress_ledger.json` (`"tps_avg": 289574.8, "tps_peak_100ms": 306340.0`); in-session single-stream loopback: 82,794 cheques/s, core: 596,214 ops/s | MATCH (historical stress ledger confirmed) |
 | Sec 5: Latency distribution Average RTT 13.29 µs | 158 | Historical file `benchmarks/results/lat_ledger.json` (`"avg": 13.286`); in-session loopback: 12.08 µs | MATCH (historical lat ledger confirmed) |
 | Sec 6: Foundry Test Suites (87/87 Passing) | 171 | `100 tests passed, 0 failed, 0 skipped` across 13 test suites | MISMATCH (outdated, updated to 100/100) |
-| Sec 6: Python SDK Tests (52/52 Passing) | 188 | `68 passed, 2 failed` (70 total tests) | MISMATCH (outdated, updated to 68/70) |
+| Sec 6: Python SDK Tests (52/52 Passing) | 188 | `70 passed` (70 total tests) | MISMATCH (outdated, updated to 70/70) |
 | Sec 6: C Core throughput & latency (1.68 µs, 596k ops/sec) | 182 | `1.68 microseconds`, `596214 operations/second` | MATCH |
 | Sec 8: Expected EVM Solidity Test Suite (`87 tests passed`) | 264 | `Ran 13 test suites: 100 tests passed, 0 failed, 0 skipped` | MISMATCH (updated to 100 tests passed across 13 suites) |
-| Sec 8: Expected Python SDK Test Suite (`52 passed`) | 270 | `68 passed, 2 failed` | MISMATCH (updated to 68 passed, 2 failed) |
+| Sec 8: Expected Python SDK Test Suite (`52 passed`) | 270 | `70 passed` | MISMATCH (updated to 70 passed) |
 | Sec 8: Expected C11 Daemon Latency (`~1.68 µs`) | 276 | `Latency per End-to-End Cheque (Sign + Verify): 1.68 microseconds` | MATCH |
 | Sec 8: Expected MEV Bloodhound (`All Schnorr Bloodhound Tests Successfully Passed`) | 282 | `All Schnorr Bloodhound Tests Successfully Passed!` | MATCH |
-| Sec 8: `python3 benchmarks/slashbench.py` & `test/test_slash_proxy.py` | 285-288 | `test/test_slash_proxy.py` is NOT FOUND; `benchmarks/slashbench.py` fails with AssertionError | UNREPRODUCIBLE (deleted per Rule 3) |
+| Sec 8: `python3 benchmarks/slashbench.py` | 308 | `Throughput: 76471 ops/sec`, p50: 11.49 us | MATCH (verified & working) |
 | Sec 9: Base Sepolia SwarmDelegationVault Bytecode 24,240 bytes | 296 | Runtime Size: 24,239 bytes (Margin: 337 bytes) | MISMATCH (updated to 24,239 bytes) |
 | Sec 9: Base Sepolia PerformanceCollateralVault Bytecode 17,960 bytes | 299 | Runtime Size: 17,959 bytes (Margin: 6,617 bytes) | MISMATCH (updated to 17,959 bytes) |
 | Sec 9: Arbitrum Sepolia SwarmDelegationVault Bytecode 24,239 bytes | 306 | Runtime Size: 24,239 bytes | MATCH |
