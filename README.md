@@ -2,10 +2,10 @@
 
 [![License: BUSL-1.1](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![Client SDK: Apache-2.0](https://img.shields.io/badge/SDK-Apache--2.0-green.svg)](LICENSE)
-[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-87%2F87_Passing-brightgreen?logo=solidity)](test/)
-[![Python SDK Tests](https://img.shields.io/badge/Pytest-52%2F52_Passing-brightgreen?logo=pytest)](test/)
-[![Base Sepolia](https://img.shields.io/badge/Base_Sepolia-0x33BD...775c-success?logo=ethereum)](https://sepolia.basescan.org/address/0x33BD2908a372cf6A533B75e79D3cAa754da8775c#code)
-[![Arbitrum Sepolia](https://img.shields.io/badge/Arbitrum_Sepolia-0x7ff2...b8b6-blue?logo=arbitrum)](https://sepolia.arbiscan.io/address/0x7ff2D6B943e23d5A31772482417FB67c2ED0b8b6#code)
+[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-100%2F100_Passing-brightgreen?logo=solidity)](test/)
+[![Python SDK Tests](https://img.shields.io/badge/Pytest-68%2F70_Passing-brightgreen?logo=pytest)](test/)
+[![Base Sepolia](https://img.shields.io/badge/Base_Sepolia-0x901c...2253-success?logo=ethereum)](https://sepolia.basescan.org/address/0x901c98Da847DD24ff23FcC37B6D1549A17F12253#code)
+[![Arbitrum Sepolia](https://img.shields.io/badge/Arbitrum_Sepolia-0x45Cd...1f1F-blue?logo=arbitrum)](https://sepolia.arbiscan.io/address/0x45Cd2B0d1319C158a5B37B74DcBE3D78C9861f1F#code)
 [![C11 Engine Latency](https://img.shields.io/badge/C11_Latency-1.68_%C2%B5s-blue)](src/causal_daemon.c)
 [![Throughput](https://img.shields.io/badge/Throughput-596k_ops%2Fsec-orange)](src/causal_daemon.c)
 
@@ -17,6 +17,8 @@
 
 ### What is Causal-Slash?
 **Causal-Slash** is a high-throughput micro-settlement protocol operating directly at the L4 transport layer. It enables autonomous agent meshes, DePIN compute providers, and machine-to-machine services to stream payments per token or per API request with sub-microsecond execution latency and zero gas overhead during active streaming.
+
+Causal-Slash operates with no KYC, no centralized accounts, and zero custodial onboarding. Agent identity is defined strictly by a secp256k1 public key, while bilateral trust is established through a bond-based performance collateral vault on Base L2 and Arbitrum. Payment streams over raw sockets as signed 167-byte cheques per token.
 
 ### Core Problem: Fragmented Liquidity & Idle Capital
 In typical multi-agent architectures, an agent communicating with 50 external vendors (LLM providers, vector databases, web scrapers, GPU clusters) must deposit pre-funded balances into 50 separate centralized accounts:
@@ -168,10 +170,10 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 
 The protocol is validated through a comprehensive multi-tier test suite with 100% pass rate:
 
-### 1. Foundry Test Suites (87/87 Passing):
-* `test/PerformanceCollateralVault.t.sol`: 20 unit, state-machine, and fuzzing invariant tests.
-* `test/SwarmDelegationVault.t.sol`: 22 multi-agent delegation, Merkle tree quota, and restitution tests.
-* `test/AdversarialExploits.t.sol`: 10 adversarial exploit tests (signature malleability, replay, self-slashing economics, frontrunning).
+### 1. Foundry Test Suites (100/100 Passing):
+* `test/PerformanceCollateralVault.t.sol`: 26 unit, state-machine, and fuzzing invariant tests.
+* `test/SwarmDelegationVault.t.sol`: 16 multi-agent delegation, Merkle tree quota, and restitution tests.
+* `test/AdversarialExploits.t.sol`: 28 adversarial exploit tests (signature malleability, replay, self-slashing economics, optimistic forge, restitution race, swarm delegation).
 * `test/YieldStreamingCollateral.t.sol`: 4 ERC4626 yield-bearing collateral and liquidity buffer tests.
 * `test/CompetitorGriefingAttacks.t.sol`: 5 MEV frontrunning and DoS griefing resistance tests.
 * `test/ReliabilityInvariantsAudit.t.sol`: 4 unbonding race and haircut solvency tests.
@@ -182,12 +184,12 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 * `make test`: High-frequency cryptographic engine, equivocation trap, and TCP loopback tests (1.68 µs latency, 596k ops/sec).
 * `make test-asan`: Full memory sanitizer check ensuring zero memory leaks or buffer overflows.
 * `make test-tsan`: ThreadSanitizer data-race check across multi-threaded agent and refiller threads (0 races).
-* `make test-bloodhound`: MEV searcher Keccak-256 vector verification and 32.5 ns equivocation extraction test.
+* `make test-bloodhound`: MEV searcher Keccak-256 vector verification and equivocation extraction test under AddressSanitizer.
 * `benchmarks/stress_tcp_swarm.c`: High-load multi-client TCP streaming audit under ASan/TSan.
 
-### 3. Python SDK & Integration Tests (52/52 Passing):
-* `pytest -v`: 52/52 passing tests covering SQLite WAL `ChannelStore`, AsyncIO Actor Queue, secp256k1 honest PK, Circuit Breaker, Edge Guardrails, and On-chain Settlement.
-* `python3 examples/e2e_full_stack_live.py`: Complete 7-stage end-to-end integration (1,711 cheques, 99.93% netting compression in RAM).
+### 3. Python SDK & Integration Tests (68/70 Passing):
+* `pytest -v`: 68 passing tests covering SQLite WAL `ChannelStore`, AsyncIO Actor Queue, secp256k1 honest PK, Circuit Breaker, Edge Guardrails, and On-chain Settlement.
+* `test/test_e2e_full_stack.py`: Full-stack end-to-end integration test suite.
 
 ---
 
@@ -207,46 +209,69 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 │   ├── schnorr_bloodhound.c                  # Autonomous MEV searcher engine (Apache-2.0)
 │   └── schnorr_bloodhound.h                  # Bloodhound definitions (Apache-2.0)
 ├── sdk/                                      # Developer SDK & Sidecars (Apache-2.0)
-│   ├── causal_slash.py                       # Python FFI bindings to C11 engine
-│   ├── slash_proxy.py                        # Reverse proxy sidecar for agent swarms
-│   ├── onchain_settler.py                    # On-chain batch settlement & slashing driver
-│   ├── debt_cycle_mesh.py                    # In-RAM Kirchhoff cycle debt netting engine
 │   ├── agentkit_provider.py                  # AgentKit ActionProvider bindings
+│   ├── async_causal.py                       # Asynchronous client channel actor
+│   ├── bloodhound.py                         # Python FFI bindings to Bloodhound searcher
 │   ├── causal_agentkit.py                    # Multi-vendor streaming provider
+│   ├── causal_eth.py                         # Ethereum / L2 settlement helpers
+│   ├── causal_slash.py                       # Python FFI bindings to C11 engine
 │   ├── channel_store.py                      # SQLite WAL persistence for channel states
+│   ├── debt_cycle_mesh.py                    # In-RAM Kirchhoff cycle debt netting engine
 │   ├── guardrails.py                         # Edge safety inspection & threat mitigation
+│   ├── integrations/                         # Agent framework integrations
+│   │   ├── decorators.py                     # Streaming payment decorators
+│   │   └── langchain.py                      # LangChain callback and tool integration
+│   ├── onchain_settler.py                    # On-chain batch settlement & slashing driver
 │   ├── session.py                            # Session lifecycle and budget limits
-│   ├── telemetry.py                          # Latency, percentiles and throughput metrics
+│   ├── slash_proxy.py                        # Reverse proxy sidecar for agent swarms
 │   ├── swarm_stream.py                       # Multi-channel swarm streaming
-│   └── swarm_subagent.py                     # Subagent leaf generation & proof handling
+│   ├── swarm_subagent.py                     # Subagent leaf generation & proof handling
+│   └── telemetry.py                          # Latency, percentiles and throughput metrics
 ├── test/                                     # Comprehensive Test Suites
-│   ├── PerformanceCollateralVault.t.sol      # Core vault unit and fuzz tests
-│   ├── SwarmDelegationVault.t.sol            # Swarm Merkle quotas and grace period tests
 │   ├── AdversarialExploits.t.sol             # Adversarial exploit test suite
-│   ├── YieldStreamingCollateral.t.sol        # ERC4626 yield and buffer tests
 │   ├── CompetitorGriefingAttacks.t.sol       # MEV griefing and race tests
+│   ├── PerformanceCollateralVault.t.sol      # Core vault unit and fuzz tests
 │   ├── ReliabilityInvariantsAudit.t.sol      # Solvency and haircut invariant tests
-│   ├── test_onchain_settler.py               # EIP-712 and calldata differential tests
-│   ├── test_guardrail.py                     # Edge safety guardrail tests
+│   ├── SwarmDelegationVault.t.sol            # Swarm Merkle quotas and grace period tests
+│   ├── YieldStreamingCollateral.t.sol        # ERC4626 yield and buffer tests
+│   ├── invariants/                           # Invariant & Formal Verification Suites
+│   │   ├── HalmosProtocolInvariants.t.sol    # Halmos formal symbolic mathematical proofs
+│   │   ├── ProtocolInvariants.t.sol          # Stateful property-based invariant suite
+│   │   └── VaultHandler.sol                  # Foundry invariant testing harness handler
+│   ├── test_causal_agentkit.py               # AgentKit provider tests
+│   ├── test_channel_store_and_async.py       # Channel storage and async actor tests
 │   ├── test_debt_cycle_stress.py             # Large-scale debt cycle netting stress tests
+│   ├── test_e2e_full_stack.py                # Full-stack end-to-end integration tests
+│   ├── test_guardrail.py                     # Edge safety guardrail tests
+│   ├── test_onchain_settler.py               # EIP-712 and calldata differential tests
+│   ├── test_redteam_debt_mesh.py             # Red team debt netting conservation tests
+│   ├── test_redteam_sdk_forgery.py           # Signature and session MAC security tests
 │   ├── test_sdk_unified.py                   # Unified SDK FFI and streaming tests
 │   ├── test_sdk_v3_features.py               # 167-byte MAC wire and session tests
 │   └── c/                                    # C Sanitizer & Concurrency Audits
 │       ├── test_schnorr_bloodhound.c         # MEV hound test
 │       ├── test_redteam_exploit.c            # Malformed packet fuzzing
 │       ├── test_competitor_griefing.c        # Griefing resilience audit
-│       └── test_reliability_audit.c          # Concurrency and race tests
+│       ├── test_reliability_audit.c          # Concurrency and race tests
+│       ├── test_csls_daemon_net.c            # Daemon network loopback tests
+│       └── test_swarm_simulation.c           # Swarm simulation regression tests
 ├── benchmarks/                               # Empirical Profiling & Industrial Stress
+│   ├── benchmark_e2e_streaming.py            # End-to-end streaming latency benchmark
+│   ├── run_kirchhoff_netting.py              # In-RAM Kirchhoff debt netting benchmark
 │   ├── slashbench.py                         # High-frequency quantile latency profiler
 │   ├── stress_tcp_swarm.c                    # C11 multi-agent 1.2M cheque TCP benchmark
-│   ├── run_kirchhoff_netting.py              # In-RAM Kirchhoff debt netting benchmark
+│   ├── swarm_2026_industrial.py              # Industrial swarm workload generator
 │   └── swarm_onchain_stress.py               # On-chain multi-agent batch stress harness
 ├── examples/                                 # Executable Quickstarts
+│   ├── agentkit_provider_demo.py             # AgentKit provider integration demo
+│   ├── elizaos_plugin_demo.py                # ElizaOS agent streaming plugin demo
 │   ├── quickstart_agent.py                   # Agent micro-payment quickstart
-│   └── full_system_demo.py                   # End-to-end key extraction demo
+│   └── quickstart_sidecar.py                 # SlashProxy sidecar quickstart
 ├── scripts/                                  # Deployment Scripts & Receipts
 │   ├── deploy_base_sepolia.js                # Base Sepolia contract deployer
 │   ├── deploy_arbitrum_sepolia.js            # Arbitrum Sepolia contract deployer
+│   ├── deploy_base_sepolia_full.js           # Base Sepolia full deployment script
+│   ├── deploy_swarm_arbitrum.js              # Arbitrum Swarm deployment script
 │   └── deployment_receipt_*.json             # On-chain verified deployment receipts
 ├── Makefile                                  # Build and audit orchestration
 ├── LICENSE                                   # Dual Licensing Specification
@@ -261,13 +286,13 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 ```bash
 forge test -vvv
 ```
-Expected: `Ran 9 test suites: 87 tests passed, 0 failed, 0 skipped`
+Expected: `Ran 13 test suites: 100 tests passed, 0 failed, 0 skipped (100 total tests)`
 
 ### 2. Execute Python SDK Test Suite:
 ```bash
 pytest -v
 ```
-Expected: `52 passed`
+Expected: `68 passed, 2 failed`
 
 ### 3. Run C11 Cryptographic Daemon & Socket Benchmarks:
 ```bash
@@ -281,26 +306,29 @@ make test-bloodhound
 ```
 Expected: `All Schnorr Bloodhound Tests Successfully Passed`
 
-### 5. Run Sidecar Proxy Tests & High-Frequency Profiler:
-```bash
-python3 test/test_slash_proxy.py
-python3 benchmarks/slashbench.py
-```
-
 ---
 
-## 9. Deployed Contracts
-
+## 9. Deployed & Verified Contracts
+ 
 ### Base Sepolia (Chain ID `84532`)
-* **Contract:** `PerformanceCollateralVault`
-* **Address:** [`0x33BD2908a372cf6A533B75e79D3cAa754da8775c`](https://sepolia.basescan.org/address/0x33BD2908a372cf6A533B75e79D3cAa754da8775c#code)
-* **Settlement Asset:** Base Sepolia USDC (`0x036CbD53842c5426634e7929541eC2318f3dCF7e`)
-
+* **SwarmDelegationVault (Hierarchical Merkle Slashing & Settlement):** [`0x901c98Da847DD24ff23FcC37B6D1549A17F12253`](https://sepolia.basescan.org/address/0x901c98Da847DD24ff23FcC37B6D1549A17F12253#code)
+  * Bytecode: 24,239 bytes (strictly under the 24,576 byte EIP-170 limit)
+  * Status: Verified on Basescan
+* **PerformanceCollateralVault (Direct Shared Bond & Optimistic Settlement):** [`0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5`](https://sepolia.basescan.org/address/0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5#code)
+  * Bytecode: 17,959 bytes
+  * Status: Verified on Basescan
+* **MockUSDC (Free Mintable 6-Decimals Test Asset for Autonomous Swarms):** [`0xa07eA15D1FE0B884Ffb51b19d98D938b2Bf04D6B`](https://sepolia.basescan.org/address/0xa07eA15D1FE0B884Ffb51b19d98D938b2Bf04D6B#code)
+  * Status: Verified on Basescan
+ 
 ### Arbitrum Sepolia (Chain ID `421614`)
-* **Contract:** `SwarmDelegationVault` (Bytecode: 24,219 bytes, strictly under the 24,576 byte EIP-170 limit)
-* **Address:** [`0x7ff2D6B943e23d5A31772482417FB67c2ED0b8b6`](https://sepolia.arbiscan.io/address/0x7ff2D6B943e23d5A31772482417FB67c2ED0b8b6#code)
-* **Settlement Asset:** MockUSDC (`0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5`)
-* **Verified Settlement Transaction:** [`0xffd51e049b6b39b04854c0171610033de5652d7b78d4bf1edd792ba01670724e`](https://sepolia.arbiscan.io/tx/0xffd51e049b6b39b04854c0171610033de5652d7b78d4bf1edd792ba01670724e)
+* **SwarmDelegationVault (Hierarchical Merkle Slashing & Settlement):** [`0x45Cd2B0d1319C158a5B37B74DcBE3D78C9861f1F`](https://sepolia.arbiscan.io/address/0x45Cd2B0d1319C158a5B37B74DcBE3D78C9861f1F#code)
+  * Bytecode: 24,239 bytes (strictly under the 24,576 byte EIP-170 limit)
+  * Status: Verified on Arbiscan
+* **PerformanceCollateralVault (Direct Shared Bond & Optimistic Settlement):** [`0xfEaA1F897FF4540d7B43010A80912FCEcCd95A9a`](https://sepolia.arbiscan.io/address/0xfeaa1f897ff4540d7b43010a80912fceccd95a9a#code)
+  * Bytecode: 17,959 bytes
+  * Status: Verified on Arbiscan
+* **MockUSDC (Free Mintable 6-Decimals Test Asset for Autonomous Swarms):** [`0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5`](https://sepolia.arbiscan.io/address/0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5#code)
+  * Status: Verified on Arbiscan
 
 ---
 
