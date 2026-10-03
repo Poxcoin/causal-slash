@@ -44,19 +44,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install System Dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc libssl-dev make
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install Python Dependencies
-        run: pip install coincurve ecdsa
+        run: pip install --upgrade pip && pip install coincurve ecdsa pydantic pytest
 
-      - name: Build C Library
-        run: make libcausal_slash.so
+      - name: Build C Libraries
+        run: make all
 
-      - name: Run End-to-End Key Extraction Simulation
-        run: python3 examples/full_system_demo.py
-
-      - name: Run Runnable Agent Quickstart
+      - name: Run Quickstart Agent Demo
         run: python3 examples/quickstart_agent.py
+
+      - name: Run ElizaOS Plugin Demo
+        run: python3 examples/elizaos_plugin_demo.py
+
+      - name: Run AgentKit Provider Demo
+        run: python3 examples/agentkit_provider_demo.py
+
+      - name: Run Full Python SDK & Swarm Test Suite
+        run: pytest -v
