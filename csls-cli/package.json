@@ -1,0 +1,21 @@
+{
+  "name": "csls",
+  "version": "1.0.0",
+  "description": "Causal-Slash Protocol Autonomous Terminal Coding Agent",
+  "main": "bin/csls",
+  "bin": {
+    "csls": "bin/csls"
+  },
+  "type": "module",
+  "keywords": [
+    "csls",
+    "causal-slash",
+    "terminal-agent",
+    "coding-assistant"
+  ],
+  "author": "Causal-Slash Protocol Developers",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
