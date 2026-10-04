@@ -1,7 +1,7 @@
 # CAUSAL-SLASH PROTOCOL: FRONTIER DePIN, ROBOTICS & PHYSICAL HARDWARE ARCHITECTURES
 > **STATUS:** ARCHITECTURAL SPECIFICATION & EXPANSION MANIFESTO (OCTOBER 2026)  
 > **ROLE:** Lead DePIN & Hardware Systems Architect  
-> **ARBITER:** Base L2 / Base Ecosystem Fund / Coinbase Ventures  
+> **ARBITER:** Base L2 (PerformanceCollateralVault.sol / SwarmDelegationVault.sol)  
 > **COMPLIANCE:** 100% COMPLIANT WITH THE 6 SACRED AXIOMS
 
 ---
@@ -14,7 +14,7 @@ Causal-Slash Protocol is fundamentally a **microsecond-grade, zero-gas, non-cust
 3. **In-RAM Kirchhoff Debt Netting** resolving multi-party cyclic obligations via Tarjan SCC with >99.9% gas compression;
 4. **Game-Theoretic $O(1)$ Schnorr EOTS Slashing** foreclosing fraud in 35 ns off-chain and single-block commit-reveal on Base L2;
 5. **80/20 Morpho/Aave Yield-Bearing Collateral Buffer** guaranteeing zero-second instant unbonding;
-6. **Zero Web2 Dependencies** (no KYC, no Stripe, no banking APIs, pure `secp256k1` primitives);
+6. **Zero Web2 Dependencies** (no KYC, no centralized payment intermediaries, no banking APIs, pure `secp256k1` primitives);
 
 make it the **only mathematically viable clearing layer for physical edge systems, robotics, power grids, and decentralized compute**.
 
@@ -45,10 +45,10 @@ make it the **only mathematically viable clearing layer for physical edge system
 
 ### MODEL 1: THE KINETIC ENERGY GRID (SUB-CYCLE FREQUENCY REGULATION & NANOGRID ARBITRAGE)
 * **The Physical Reality:** 50/60 Hz power grids require Fast Frequency Response (FFR) within **16.6 to 100 milliseconds** of a frequency drop. Battery storage, inverters, and EV chargers must inject active power to prevent blackouts.
-* **Why Web2 & Legacy DeFi Fail:** Web2 utilities bill on monthly batch meters; credit card fees ($0.30) are 30,000x the value of a 500 W·s burst. Blockchain block times (200 ms - 12 s) are too slow, and pairwise state channels fragment liquidity.
+* **Why Web2 & Legacy DeFi Fail:** Web2 utilities bill on monthly batch meters; centralized settlement fees ($0.30) are 30,000x the value of a 500 W·s burst. Blockchain block times (200 ms - 12 s) are too slow, and pairwise state channels fragment liquidity.
 * **C-Slash Implementation:**
   - Inverters stream 167B cheques at 1.62 µs metering Watt-seconds ($1\text{ micro-USDC} = 500\text{ W}\cdot\text{s}$).
-  - Virtual Power Plant (VPP) posts $5M bond in `SwarmDelegationVault.sol`, granting $10-$50 Merkle quotas to 500,000 inverters. Local failure slashes only the $10 quota.
+  - Virtual Power Plant (VPP) posts $5M bond in `SwarmDelegationVault.sol`, allocating $10-$50 Merkle quotas to 500,000 inverters. Local failure slashes only the $10 quota.
   - Electrical circuits physically obey Kirchhoff’s Current Law ($\sum I_{\text{in}} = \sum I_{\text{out}}$). Closed power-exchange loops are annihilated in RAM via `DebtCycleMesh` (99.98% volume compression).
 * **Monetization:** 2 bps netting fee on gross power debt eliminated in RAM ($400/day per 500 MW VPP) + 80/20 yield on locked utility reserves.
 
@@ -66,7 +66,7 @@ make it the **only mathematically viable clearing layer for physical edge system
 ---
 
 ### MODEL 3: EPHEMERAL RDMA TENSOR STREAMING (DISAGGREGATED MoE & KV-CACHE P2P COMMERCE)
-* **The Physical Reality:** Frontier Mixture-of-Experts (MoE) models (DeepSeek-V3, Llama 405B) disaggregate compute: prefill, decode, and expert feed-forward layers run across distinct physical servers, streaming tensors over 100GbE/400GbE RoCEv2 (RDMA) with <10 µs latency.
+* **The Physical Reality:** Frontier Mixture-of-Experts (MoE) and multimodal reasoning architectures (such as Claude Opus 5.5, GPT-6 Astra, Kling 3.0 Omni) disaggregate compute: prefill, decode, and expert feed-forward layers run across distinct physical servers, streaming tensors over 100GbE/400GbE RoCEv2 (RDMA) with <10 µs latency.
 * **Why Web2 & Legacy DeFi Fail:** Web2 clouds rent rigid full servers by the hour; there is no way to dynamically buy 4 milliseconds of compute from an idle H100 node in Germany and settle for $0.00004. On-chain compute tokens incur prohibitive gas and high latency.
 * **C-Slash Implementation:**
   - C11 daemon runs inside kernel-bypass / SmartNIC FPGA (NVIDIA BlueField-3 / AMD Pensando). 167B cheques are embedded in RoCEv2 header metadata.
@@ -78,9 +78,9 @@ make it the **only mathematically viable clearing layer for physical edge system
 
 ### MODEL 4: DECENTRALIZED ENVIRONMENTAL SENSORS & AD-HOC BACKHAUL ARBITRAGE
 * **The Physical Reality:** Remote wildfire probes, seismic monitors, and marine buoys have micro-power budgets and cannot afford satellite dishes. They rely on multi-hop LoRaWAN/BLE hops to passing delivery trucks, tractors, and edge towers.
-* **Why Web2 & Legacy DeFi Fail:** A wildfire probe in a national forest cannot have an AT&T credit card account to pay a passing vehicle $0.00002 for relaying a 128-byte packet. Existing DePIN tokens rely on volatile inflationary tokens rather than deterministic USD clearing.
+* **Why Web2 & Legacy DeFi Fail:** A wildfire probe in a national forest cannot maintain a centralized telecom billing account to pay a passing vehicle $0.00002 for relaying a 128-byte packet. Existing DePIN tokens rely on volatile inflationary tokens rather than deterministic USD clearing.
 * **C-Slash Implementation:**
   - 167B cheque (or 95B delta state) is appended directly to LoRaWAN radio frames. Forwarder vehicles verify in 1.62 µs and relay without credit risk.
-  - Forestry consortium deposits $250,000 USDC into `SwarmDelegationVault.sol`, granting $0.25 annual quotas across 1,000,000 sensors. Stolen sensors leak at most $0.25.
+  - Forestry consortium deposits $250,000 USDC into `SwarmDelegationVault.sol`, allocating $0.25 annual quotas across 1,000,000 sensors. Stolen sensors leak at most $0.25.
   - Regional 5G gateways net multi-hop forwarding debts in RAM (99.92% gas savings).
 * **Monetization:** 5 bps protocol netting fee on telemetry volume + parametric insurance yield on catastrophe reserves.

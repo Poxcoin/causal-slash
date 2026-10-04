@@ -1,6 +1,6 @@
 # CAUSAL-SLASH PROTOCOL: THE SOVEREIGN M2M P2P BUSINESS ARCHITECTURE
 > **STATUS:** FOUNDATIONAL BUSINESS & ARCHITECTURAL MANIFESTO (OCTOBER 2026)  
-> **ECOSYSTEM:** BASE L2 (COINBASE VENTURES / BASE ECOSYSTEM FUND — $500,000 GRANT CANDIDATE)  
+> **ECOSYSTEM:** BASE L2 (ENTERPRISE SWARM COMMERCE & HIGH-FREQUENCY SETTLEMENT)  
 > **INVARIANTS:** 100% PERMISSIONLESS P2P MACHINE COMMERCE — ZERO WEB2 DEPENDENCY
 
 ---
@@ -10,7 +10,7 @@
 ### The Fatal Flaw of Web2 AI Architectures:
 In 2026, autonomous multi-agent swarms (trading agents, code orchestrators, security probers, crawler swarms) represent the fastest-growing consumers of compute and data. However, **they are structurally blocked by the legacy financial and SaaS rails**:
 1. **No Legal Identity:** Autonomous agents cannot pass KYC/AML, cannot hold passports, and cannot register corporate entities without human custodial friction.
-2. **No Credit Cards:** Agents cannot subscribe to Stripe, enter CVVs, or maintain recurring Web2 subscriptions.
+2. **No Centralized Custodial Accounts:** Agents cannot maintain corporate bank accounts, custodial fiat credentials, or recurring Web2 subscriptions.
 3. **Centralized Chokepoints:** Funneling millions of ephemeral subagents through centralized Web2 accounts (OpenAI, Anthropic, AWS) creates single-point-of-failure account bans, arbitrary rate-limits, and custody nightmares.
 
 ### The Single Viable Reality:
@@ -31,8 +31,8 @@ In 2026, autonomous multi-agent swarms (trading agents, code orchestrators, secu
                                           v
 +-----------------------------------------------------------------------------------+
 |                      SOVEREIGN P2P VENDOR NODE (PRODUCER)                         |
-|   Identity: secp256k1 PK | Hardware: vLLM / Ollama / Local GPU / Qdrant / Scraper  |
-|   Zero Sign-up | Zero Stripe | Pure Wire Settlement Bounded by delta_v ($1.00)     |
+|   Identity: secp256k1 PK | Hardware: Frontier Inference / Enterprise Node / Qdrant|
+|   Zero Sign-up | Zero Intermediaries | Wire Settlement Bounded by delta_v ($1.00) |
 +-----------------------------------------------------------------------------------+
                                           |
                         [Reciprocal Multi-Agent Debts]
@@ -54,8 +54,8 @@ In 2026, autonomous multi-agent swarms (trading agents, code orchestrators, secu
 * **No registration portal:** A vendor does not fill out forms or verify email addresses.
 * **Pure Cryptographic Identity:** A vendor is defined solely by a 33-byte compressed `secp256k1` public key and a network listening endpoint (IP:Port or HTTP URL).
 * **Commoditized Compute Supply:**
-  - A student running **Ollama** on an RTX 4090 is an inference vendor.
-  - A data center running **vLLM** clusters on 8x H100s is an institutional inference vendor.
+  - An enterprise inference gateway routing Claude Opus 5.5, GPT-6 Astra, Kling 3.0 Omni, or ElevenLabs is an inference vendor.
+  - An institutional compute cluster hosting accelerated frontier hardware is an institutional inference vendor.
   - A developer hosting **Qdrant / Milvus** is a memory-retrieval vendor.
   - A scraping node running headless Chromium is a real-time web intelligence vendor.
 
@@ -90,7 +90,7 @@ In 2026, autonomous multi-agent swarms (trading agents, code orchestrators, secu
 
 ## 4. COMPETITIVE ADVANTAGES OVER ALTERNATIVES
 
-1. **vs. Traditional API Keys (Stripe / OpenAI / Anthropic):**
+1. **vs. Centralized Web2 Gateways:**
    - No human in the loop. 100% autonomous agent compatibility.
    - Zero pre-payment lockup or monthly subscriptions; true per-token micro-settlement.
    - Zero risk of vendor platform de-platforming or account bans.
