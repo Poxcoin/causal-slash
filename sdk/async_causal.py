@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, Dict, Optional
 
-from .channel_store import SqliteChannelStore
+from .channel_store import ChannelStore, SqliteChannelStore
 from .swarm_subagent import SubagentSession, SwarmDelegationVault, SpendRateLimitExceededError
 
 logger = logging.getLogger("causal_slash.async_causal")
@@ -124,7 +124,7 @@ class AsyncChannelActor:
         amount_micro: int,
         dispatch_fn: Callable[[int, int], Coroutine[Any, Any, Any]],
     ) -> Any:
-        # Phase 1: Durably reserve height in SQLite WAL with Fail-Forward Leap-Ahead
+        # Phase 1: Durably reserve height in ChannelStore with Fail-Forward Leap-Ahead
         reserved_h = self.store.reserve_height(self.peer_pk)
 
         channel = self.store.get_channel(self.peer_pk)
