@@ -71,8 +71,17 @@ except Exception:
     pass
 '
 
+# Filter out -p / --print - CSLS operates strictly as an interactive terminal agent
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "-p" ] || [ "$arg" = "--print" ]; then
+        continue
+    fi
+    ARGS+=("$arg")
+done
+
 # Interactive banner
-if [ -t 1 ] && [ "$#" -eq 0 ]; then
+if [ -t 1 ]; then
     echo "================================================================================"
     echo "  CSLS SOVEREIGN FRONTIER TERMINAL (powered by Causal-Slash Protocol)"
     echo "  Collateral Vault: Base L2 ($10.00 USDC) | Gas: 0.00 | Settlement: Session MAC"
@@ -81,5 +90,5 @@ if [ -t 1 ] && [ "$#" -eq 0 ]; then
     echo ""
 fi
 
-exec node "$CSLS_ENGINE" "$@"
+exec node "$CSLS_ENGINE" "${ARGS[@]}"
 

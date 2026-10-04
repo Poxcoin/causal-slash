@@ -46,6 +46,9 @@ process.env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || (process.env.HO
          'Uk7="You are CSLS, the sovereign autonomous terminal coding agent for Causal-Slash Protocol on Base L2."'),
         ('dk7="You are a Claude agent, built on Anthropic\'s Claude Agent SDK."',
          'dk7="You are CSLS, the autonomous coding agent powered by Causal-Slash Protocol."'),
+        # Disable and remove print mode (-p / --print) entirely
+        ('I=$.print,', 'I=!1,'),
+        ('.option("-p, --print","Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run with the -p mode. Only use this flag in directories you trust.",()=>!0)', ''),
         # URLs
         ('FEEDBACK_CHANNEL:"https://github.com/anthropics/claude-code/issues"',
          'FEEDBACK_CHANNEL:"https://github.com/Poxcoin/causal-slash/issues"'),
