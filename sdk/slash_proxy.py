@@ -2,7 +2,7 @@
 """
 Causal-Slash Sidecar Reverse Proxy (SlashProxy)
 Acts as a zero-configuration local reverse proxy for AI multi-agent swarms.
-Intercepts M2M completions for P2P vendor nodes (vLLM / Ollama / local inference), attaches CSLS micro-cheques
+Intercepts M2M completions for frontier closed models, attaches CSLS micro-cheques
 over L4 raw socket, and eliminates cyclic reciprocal debts in-memory via DebtCycleMesh
 before broadcasting residual settlements to external network sockets.
 """
@@ -335,7 +335,7 @@ class SlashSidecarProxy:
                         pass
                     return
 
-                # Route C: M2M Vendor Completions (P2P Vendor Nodes / vLLM / Ollama)
+                # Route C: M2M Vendor Completions (Frontier Closed Model Gateways)
                 # Check for incoming client payment cheque (e.g. from autonomous agent)
                 incoming_cheque_hdr = self.headers.get("X-Causal-Cheque")
                 if incoming_cheque_hdr:
@@ -388,7 +388,7 @@ class SlashSidecarProxy:
                                 pass
                             return
 
-                    # 3. Honest streaming forward to upstream Vendor Node (vLLM / Ollama / Local M2M)
+                    # 3. Honest streaming forward to upstream Frontier Gateway
                     target_upstream = (
                         proxy_self.upstream_url
                         or self.headers.get("X-Causal-Upstream-Url")

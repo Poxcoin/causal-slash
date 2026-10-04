@@ -2,7 +2,7 @@
 """
 Edge Safety Guardrail for Causal-Slash Sidecar Proxy & Agentic Gateways (v0.3.0).
 Provides sub-millisecond (< 1.5 ms) deep inspection of incoming completion
-requests, shielding upstream inference model endpoints (Claude, GPT, Llama, vLLM,
+requests, shielding upstream frontier model endpoints (Claude Opus 5.5, Kling 3.0,
 custom enterprise endpoints) from:
   1. Prompt Injections & Jailbreaks (DAN mode, instruction override, policy bypass).
   2. System Prompt & Credential Leakage (API key dumps, env var extraction).
@@ -162,7 +162,7 @@ _DEFAULT_PATTERNS = [
 class EdgeSafetyGuardrail:
     """
     Sub-millisecond Edge Safety Guardrail for AI Agent Proxies.
-    Designed to protect vendor upstream accounts (Claude, GPT, Llama, vLLM endpoints)
+    Designed to protect vendor upstream accounts (Claude Opus, Kling, ElevenLabs endpoints)
     from ToS bans and adversarial agent exploits.
     
     Guarantees:
