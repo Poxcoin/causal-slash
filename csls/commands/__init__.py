@@ -32,7 +32,6 @@ from csls.commands.clear import ClearCommand
 from csls.commands.memory import MemoryCommand
 from csls.commands.exit import ExitCommand
 
-
 class CommandRegistry:
     """Registry maintaining all slash commands."""
 

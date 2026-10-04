@@ -465,52 +465,16 @@ class SlashSidecarProxy:
                                 pass
                             return
                     else:
-                        # Fallback simulated streaming forward with per-second micro-USDC metering
-                        self.send_response(200)
-                        self.send_header("Content-Type", "text/event-stream")
-                        self.send_header("Cache-Control", "no-cache")
-                        self.send_header("Connection", "close")
-                        self.send_header("X-Causal-Proxy-Mode", "simulated-streaming-forward")
+                        err_payload = json.dumps({
+                            "error": "NO_UPSTREAM_CONFIGURED",
+                            "message": "Vendor received payment cheque, but CAUSAL_UPSTREAM_URL is not configured."
+                        }).encode("utf-8")
+                        self.send_response(503)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(err_payload)))
                         self.end_headers()
-                        # SSE ends with data: [DONE] and has no length framing;
-                        # keep-alive here makes every stdlib client hang on read().
-                        self.close_connection = True
-
-                        stream_chunks = [
-                            "Streaming", " compute", " verified", " via", " CSLS", " micro-cheque."
-                        ]
-                        t_start = time.time()
-                        last_meter_sec = int(t_start)
-
-                        for i, token in enumerate(stream_chunks):
-                            payload = {
-                                "id": f"chatcmpl-stream-{i}",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": "causal-slash-routed-llm",
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {"content": token},
-                                    "finish_reason": None if i < len(stream_chunks) - 1 else "stop"
-                                }]
-                            }
-                            line = f"data: {json.dumps(payload)}\n\n".encode("utf-8")
-                            try:
-                                self.wfile.write(line)
-                                self.wfile.flush()
-                            except (BrokenPipeError, ConnectionResetError):
-                                break
-                            time.sleep(0.01)
-                            curr_sec = int(time.time())
-                            if curr_sec > last_meter_sec:
-                                delta_sec = curr_sec - last_meter_sec
-                                last_meter_sec = curr_sec
-                                with proxy_self._lock:
-                                    proxy_self.total_settled_usdc += delta_sec * proxy_self.spend_rate_per_sec_usdc
-
                         try:
-                            self.wfile.write(b"data: [DONE]\n\n")
-                            self.wfile.flush()
+                            self.wfile.write(err_payload)
                         except (BrokenPipeError, ConnectionResetError):
                             pass
                         return
@@ -589,6 +553,60 @@ class SlashSidecarProxy:
                 if subagent_session is not None:
                     amount_micro = int(round(proxy_self.price_per_req * 1e6))
                     subagent_session.commit_spend(amount_micro)
+
+                # If an upstream URL is configured, forward the request with the attached cheque
+                if proxy_self.upstream_url:
+                    target_endpoint = proxy_self.upstream_url.rstrip("/") + self.path
+                    fwd_headers = {}
+                    for h, v in self.headers.items():
+                        if h.lower() not in ("host", "content-length", "x-causal-cheque"):
+                            fwd_headers[h] = v
+                    fwd_headers["Host"] = urllib.parse.urlparse(proxy_self.upstream_url).netloc or "localhost"
+                    fwd_headers["Connection"] = "close"
+                    fwd_headers["X-Causal-Cheque"] = cheque.raw_packet.hex()
+
+                    u_req = urllib.request.Request(
+                        target_endpoint,
+                        data=req_body if req_body else None,
+                        headers=fwd_headers,
+                        method=self.command,
+                    )
+                    try:
+                        with urllib.request.urlopen(u_req, timeout=30.0) as u_resp:
+                            self.send_response(u_resp.status)
+                            for h, v in u_resp.getheaders():
+                                if h.lower() not in ("content-length", "transfer-encoding", "connection"):
+                                    self.send_header(h, v)
+                            self.send_header("Connection", "close")
+                            self.send_header("X-Causal-Proxy-Mode", "client-streaming-forward")
+                            self.send_header("X-Causal-Slash-Cheque-Height", str(cheque.height))
+                            self.send_header("X-Causal-Slash-Settled-USDC", f"{cheque.cumulative_amount_usdc:.6f}")
+                            self.send_header("X-Causal-Slash-Packet-Reduction", f"{proxy_self.packet_reduction_ratio * 100:.2f}%")
+                            if subagent_session:
+                                self.send_header("X-Causal-Subagent-Id", subagent_id)
+                            self.end_headers()
+                            self.close_connection = True
+                            while True:
+                                chunk = u_resp.read(512)
+                                if not chunk:
+                                    break
+                                try:
+                                    self.wfile.write(chunk)
+                                    self.wfile.flush()
+                                except (BrokenPipeError, ConnectionResetError):
+                                    break
+                            return
+                    except Exception as e:
+                        err_data = json.dumps({"error": f"Upstream forward failed: {e}"}).encode("utf-8")
+                        self.send_response(502)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(err_data)))
+                        self.end_headers()
+                        try:
+                            self.wfile.write(err_data)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+                        return
 
                 summary = proxy_self.mesh.get_summary()
 

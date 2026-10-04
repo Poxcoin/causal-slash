@@ -39,7 +39,7 @@ from sdk import (
     get_metrics,
     CausalQueueFullError,
     AsyncChannelActor,
-    SqliteChannelStore,
+    ChannelStore,
     SlashSidecarProxy,
 )
 
@@ -294,7 +294,7 @@ def test_async_channel_actor_backpressure_queue_full(tmp_path):
     """Verifies that AsyncChannelActor raises CausalQueueFullError when max_queue_size is exceeded."""
     import asyncio
     db_dir = str(tmp_path / "channels")
-    store = SqliteChannelStore(db_dir)
+    store = ChannelStore(db_dir)
     store.open()
     peer_pk = b"\x02" + (b"\x11" * 32)
     actor = AsyncChannelActor(peer_pk, store, max_queue_size=2)
@@ -326,7 +326,7 @@ def test_async_channel_actor_client_timeout_cancellation_skips_signing(tmp_path)
     """Verifies that if a client cancels a request, the worker loop skips execution without spending."""
     import asyncio
     db_dir = str(tmp_path / "channels_cancel")
-    store = SqliteChannelStore(db_dir)
+    store = ChannelStore(db_dir)
     store.open()
     peer_pk = b"\x02" + (b"\x22" * 32)
     actor = AsyncChannelActor(peer_pk, store, max_queue_size=10)

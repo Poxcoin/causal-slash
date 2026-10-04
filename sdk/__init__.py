@@ -37,7 +37,6 @@ from .slash_proxy import SlashSidecarProxy
 from .guardrails import EdgeSafetyGuardrail
 from .channel_store import (
     ChannelStore,
-    SqliteChannelStore,
     ChannelRecord,
     ChannelStoreLockedError,
     ChannelStoreError,
@@ -95,7 +94,6 @@ __all__ = [
     "SlashSidecarProxy",
     "EdgeSafetyGuardrail",
     "ChannelStore",
-    "SqliteChannelStore",
     "ChannelRecord",
     "ChannelStoreLockedError",
     "ChannelStoreError",

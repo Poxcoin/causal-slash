@@ -92,8 +92,7 @@ def causal_paid(
                 )
             except Exception:
                 if active_subagent is not None:
-                    # Cancel uncommitted reservation
-                    pass
+                    active_subagent.release_reserve(price_micro)
                 raise
 
             # 3. Commit spend

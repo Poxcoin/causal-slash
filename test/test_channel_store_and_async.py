@@ -20,7 +20,7 @@ if os.path.join(_ROOT, "sdk") not in sys.path:
     sys.path.insert(0, os.path.join(_ROOT, "sdk"))
 
 from sdk.channel_store import (
-    SqliteChannelStore,
+    ChannelStore,
     ChannelStoreLockedError,
     ChannelStoreError,
 )
@@ -49,7 +49,7 @@ def temp_dir():
 
 def test_channel_store_basic_flow_and_leap_ahead(temp_dir):
     peer_pk = b"\x02" + b"\x11" * 32
-    store = SqliteChannelStore(temp_dir, "test_channel.db")
+    store = ChannelStore(temp_dir, "test_channel.db")
     store.open()
 
     # Initial state
@@ -76,7 +76,7 @@ def test_channel_store_basic_flow_and_leap_ahead(temp_dir):
     store.close()
 
     # Reopen after crash: store must perform FAIL-FORWARD LEAP-AHEAD to height 4
-    store2 = SqliteChannelStore(temp_dir, "test_channel.db")
+    store2 = ChannelStore(temp_dir, "test_channel.db")
     store2.open()
 
     # The uncommitted h3 must NEVER be reused!
@@ -91,11 +91,11 @@ def test_channel_store_basic_flow_and_leap_ahead(temp_dir):
 
 
 def test_channel_store_exclusive_process_lock(temp_dir):
-    store1 = SqliteChannelStore(temp_dir, "locked.db")
+    store1 = ChannelStore(temp_dir, "locked.db")
     store1.open()
 
     # Second instance must fail to acquire lock
-    store2 = SqliteChannelStore(temp_dir, "locked.db")
+    store2 = ChannelStore(temp_dir, "locked.db")
     with pytest.raises(ChannelStoreLockedError):
         store2.open()
 
