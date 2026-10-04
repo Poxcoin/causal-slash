@@ -36,6 +36,7 @@ from .agentkit_provider import CausalSlashActionProvider
 from .slash_proxy import SlashSidecarProxy
 from .guardrails import EdgeSafetyGuardrail
 from .channel_store import (
+    ChannelStore,
     SqliteChannelStore,
     ChannelRecord,
     ChannelStoreLockedError,
@@ -93,6 +94,7 @@ __all__ = [
     "CausalSlashActionProvider",
     "SlashSidecarProxy",
     "EdgeSafetyGuardrail",
+    "ChannelStore",
     "SqliteChannelStore",
     "ChannelRecord",
     "ChannelStoreLockedError",

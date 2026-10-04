@@ -194,7 +194,7 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 * `benchmarks/stress_tcp_swarm.c`: High-load multi-client TCP streaming audit under ASan/TSan.
 
 ### 3. Python SDK & Integration Tests (70/70 Passing):
-* `pytest -v`: 70 passing tests covering SQLite WAL `ChannelStore`, AsyncIO Actor Queue, secp256k1 honest PK, Circuit Breaker, Edge Guardrails, and On-chain Settlement.
+* `pytest -v`: 70 passing tests covering high-speed `ChannelStore`, AsyncIO Actor Queue, secp256k1 honest PK, Circuit Breaker, Edge Guardrails, and On-chain Settlement.
 * `test/test_e2e_full_stack.py`: Full-stack end-to-end integration test suite.
 
 ---
@@ -221,7 +221,7 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 │   ├── causal_agentkit.py                    # Multi-vendor streaming provider
 │   ├── causal_eth.py                         # Ethereum / L2 settlement helpers
 │   ├── causal_slash.py                       # Python FFI bindings to C11 engine
-│   ├── channel_store.py                      # SQLite WAL persistence for channel states
+│   ├── channel_store.py                      # Crash-proof monotonic channel store (Zero-SQLite)
 │   ├── debt_cycle_mesh.py                    # In-RAM Kirchhoff cycle debt netting engine
 │   ├── guardrails.py                         # Edge safety inspection & threat mitigation
 │   ├── integrations/                         # Agent framework integrations
