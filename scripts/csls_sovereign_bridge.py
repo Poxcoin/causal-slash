@@ -32,7 +32,7 @@ from causal_slash import CausalAgentWallet, CausalVendorNode
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [CSLS-Bridge] %(message)s")
 logger = logging.getLogger("CSLSBridge")
 
-DEFAULT_MODEL = os.environ.get("CSLS_MODEL", "qwen2.5-coder:14b")
+DEFAULT_MODEL = os.environ.get("CSLS_MODEL", "csls-coder")
 OLLAMA_URL = os.environ.get("CSLS_OLLAMA_URL", "http://127.0.0.1:11434")
 
 
@@ -483,6 +483,20 @@ class SovereignBridgeServer(http.server.ThreadingHTTPServer):
         self.req_counter = 0
 
 
+def warm_model(upstream_url: str, model: str) -> None:
+    """Pin the model in memory so the long agent context is not reloaded between turns."""
+    try:
+        req = urllib.request.Request(
+            f"{upstream_url}/api/generate",
+            data=json.dumps({"model": model, "prompt": "", "keep_alive": -1}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=120).read()
+        logger.info("Model %s pinned in memory (keep_alive=forever)", model)
+    except Exception as exc:
+        logger.warning("Could not pin model %s: %s", model, exc)
+
+
 def run_bridge(port: int = 8402, model: str = DEFAULT_MODEL, upstream_url: str = OLLAMA_URL) -> SovereignBridgeServer:
     server = SovereignBridgeServer(("127.0.0.1", port), model=model, upstream_url=upstream_url)
     t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -499,6 +513,7 @@ if __name__ == "__main__":
     parser.add_argument("--upstream", default=OLLAMA_URL, help=f"Upstream URL (default: {OLLAMA_URL})")
     args = parser.parse_args()
 
+    warm_model(args.upstream, args.model)
     s = SovereignBridgeServer(("127.0.0.1", args.port), model=args.model, upstream_url=args.upstream)
     logger.info("CSLS Sovereign Bridge running on http://127.0.0.1:%d -> %s (%s)", args.port, args.upstream, args.model)
     try:

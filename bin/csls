@@ -23,6 +23,11 @@ BRIDGE_PORT="${CSLS_PORT:-8402}"
 BRIDGE_URL="http://127.0.0.1:${BRIDGE_PORT}"
 BRIDGE_SCRIPT="$REPO_DIR/scripts/csls_sovereign_bridge.py"
 
+# Ensure the long-context sovereign model exists (agent prompt does not fit Ollama's default 2048-token window)
+if command -v ollama >/dev/null 2>&1 && ! ollama list 2>/dev/null | grep -q '^csls-coder'; then
+    ollama create csls-coder -f "$REPO_DIR/scripts/csls_coder.Modelfile" >/dev/null 2>&1 || true
+fi
+
 # Ensure sovereign bridge is running
 if ! curl -s "${BRIDGE_URL}/health" >/dev/null 2>&1; then
     nohup python3 "$BRIDGE_SCRIPT" --port "$BRIDGE_PORT" >/tmp/csls_bridge.log 2>&1 &
@@ -79,6 +84,30 @@ for arg in "$@"; do
     fi
     ARGS+=("$arg")
 done
+
+# Persistent agent memory: reopen the last conversation of this directory instead of starting blank.
+# Start a fresh chat explicitly with: csls --new
+HAS_SESSION_FLAG=0
+NEW_CHAT=0
+FILTERED=()
+for arg in "${ARGS[@]}"; do
+    case "$arg" in
+        --new) NEW_CHAT=1; continue ;;
+        -c|--continue|-r|--resume) HAS_SESSION_FLAG=1 ;;
+    esac
+    FILTERED+=("$arg")
+done
+ARGS=("${FILTERED[@]}")
+if [ "$NEW_CHAT" -eq 0 ] && [ "$HAS_SESSION_FLAG" -eq 0 ]; then
+    if python3 -c '
+import os, re, sys, glob
+cfg = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.csls"))
+key = re.sub(r"[^a-zA-Z0-9]", "-", os.getcwd())
+sys.exit(0 if glob.glob(os.path.join(cfg, "projects", key, "*.jsonl")) else 1)
+'; then
+        ARGS=(--continue "${ARGS[@]}")
+    fi
+fi
 
 exec node "$CSLS_ENGINE" "${ARGS[@]}"
 
