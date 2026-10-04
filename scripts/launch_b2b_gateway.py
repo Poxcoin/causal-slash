@@ -338,24 +338,6 @@ class FrontierGatewayHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
 
-        if self.server.upstream_url:
-            try:
-                upstream_req = urllib.request.Request(
-                    f"{self.server.upstream_url}/v1/chat/completions",
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(upstream_req, timeout=45) as upstream_resp:
-                    while True:
-                        chunk = upstream_resp.read(1024)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
-                return
-            except Exception as exc:
-                logger.warning("Upstream forwarding to %s failed (%s), using fallback stream", self.server.upstream_url, exc)
-
         chunks = [
             f'data: {{"id": "chatcmpl-opus", "model": "{model}", "choices": [{{"delta": {{"role": "assistant", "content": "Verified compute "}}}}]}}\n\n',
             f'data: {{"id": "chatcmpl-opus", "model": "{model}", "choices": [{{"delta": {{"content": "delivered with 0 gas drag "}}}}]}}\n\n',
@@ -419,13 +401,11 @@ class FrontierGatewayServer(http.server.ThreadingHTTPServer):
         vendor_node: CausalVendorNode,
         guardrail: EdgeSafetyGuardrail,
         price_per_call: float = 0.0005,
-        upstream_url: Optional[str] = None,
     ):
         super().__init__(server_address, FrontierGatewayHandler)
         self.vendor_node = vendor_node
         self.guardrail = guardrail
         self.price_per_call = price_per_call
-        self.upstream_url = upstream_url
         self.start_time = time.time()
         self.stats = {
             "requests_processed": 0,
@@ -441,7 +421,6 @@ def launch_gateway(
     delta_v_usdc: float = 5.0,
     price_per_call: float = 0.0005,
     secret_key: Optional[str] = None,
-    upstream_url: Optional[str] = None,
 ) -> FrontierGatewayServer:
     """Initializes and binds the sovereign Frontier Vendor Gateway server."""
     vendor_node = CausalVendorNode(
@@ -455,15 +434,12 @@ def launch_gateway(
         vendor_node=vendor_node,
         guardrail=guardrail,
         price_per_call=price_per_call,
-        upstream_url=upstream_url,
     )
     logger.info("Frontier Vendor Gateway initialized on %s:%d", host, port)
     logger.info("Vendor Node Public Key: %s", vendor_node.public_key_hex)
     logger.info("Session MAC enforcement: True (C2 Gate active)")
     logger.info("Credit Exposure Buffer: $%.2f USDC", delta_v_usdc)
     logger.info("Settlement Mode: 100%% Sovereign M2M Micro-cheques (0 API keys required)")
-    if upstream_url:
-        logger.info("Upstream Inference Backend: %s", upstream_url)
     return server
 
 
@@ -610,7 +586,6 @@ def main() -> None:
     parser.add_argument("--delta-v", type=float, default=5.0, help="Credit exposure buffer in USDC (default: 5.0)")
     parser.add_argument("--price", type=float, default=0.0005, help="Price per completion in USDC (default: 0.0005)")
     parser.add_argument("--secret-key", default=None, help="Vendor hex secret key (optional)")
-    parser.add_argument("--upstream-url", default=None, help="Upstream inference backend URL (e.g. http://127.0.0.1:11434)")
     parser.add_argument("--verify", action="store_true", help="Run automated self-verification test and exit")
     args = parser.parse_args()
 
@@ -624,7 +599,6 @@ def main() -> None:
         delta_v_usdc=args.delta_v,
         price_per_call=args.price,
         secret_key=args.secret_key,
-        upstream_url=args.upstream_url,
     )
     print(f"Frontier Vendor Gateway listening on http://{args.host}:{args.port}")
     print("Zero Web2 API Keys Required: Pure Sovereign M2M Micro-cheque Settlement.")
