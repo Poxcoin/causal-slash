@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Causal-Slash Protocol Developers
 #
-# CSLS - sovereign terminal coding agent. Just run: csls
+# Causal-Slash CLI entrypoint wrapper
 set -e
 
 SOURCE="${BASH_SOURCE[0]}"
@@ -13,9 +13,5 @@ while [ -h "$SOURCE" ]; do
 done
 REPO_DIR="$( cd -P "$( dirname "$SOURCE" )/.." >/dev/null 2>&1 && pwd )"
 
-# Long-context model: the default Ollama window (2048 tokens) is too small to keep a conversation.
-if command -v ollama >/dev/null 2>&1 && ! ollama list 2>/dev/null | grep -q '^csls-coder'; then
-    ollama create csls-coder -f "$REPO_DIR/scripts/csls_coder.Modelfile" >/dev/null 2>&1 || true
-fi
-
-exec python3 "$REPO_DIR/terminal/csls.py" "$@"
+export PYTHONPATH="$REPO_DIR:$PYTHONPATH"
+exec python3 -m csls "$@"
