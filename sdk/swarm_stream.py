@@ -26,7 +26,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from causal_slash import CausalAgentWallet, CausalVendorNode, Cheque
+try:
+    from .causal_slash import CausalAgentWallet, CausalVendorNode, Cheque
+except ImportError:
+    from causal_slash import CausalAgentWallet, CausalVendorNode, Cheque
 
 ChequeStatusError = RuntimeError
 

@@ -25,7 +25,7 @@ class BondCommand(Command):
         rpc_url = cfg.get("rpc_url", "")
         vault_addr = cfg.get("vault_address", "")
 
-        ok, bond_info, msg = BondBackend.query_bond(rpc_url, vault_addr)
+        ok, bond_info, msg = BondBackend.query_bond(rpc_url, vault_addr, agent_address=ctx.session.wallet_address)
         if not ok:
             console.print(f"[{WARN_YELLOW}]{msg}[/]")
             ctx.session.set_bond_status("no bond")

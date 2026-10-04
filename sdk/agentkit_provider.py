@@ -25,17 +25,30 @@ _SDK_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SDK_DIR not in sys.path:
     sys.path.insert(0, _SDK_DIR)
 
-from causal_slash import (
-    CausalAgentWallet,
-    CausalVendorNode,
-    Cheque,
-    ProcessResult,
-    CSLS_OK,
-    CSLS_ERR_FRAUD,
-    CSLS_ERR_EXPOSURE_CAP,
-    CSLS_ERR_REPLAY,
-    CSLS_ERR_OUT_OF_ORDER,
-)
+try:
+    from .causal_slash import (
+        CausalAgentWallet,
+        CausalVendorNode,
+        Cheque,
+        ProcessResult,
+        CSLS_OK,
+        CSLS_ERR_FRAUD,
+        CSLS_ERR_EXPOSURE_CAP,
+        CSLS_ERR_REPLAY,
+        CSLS_ERR_OUT_OF_ORDER,
+    )
+except ImportError:
+    from causal_slash import (
+        CausalAgentWallet,
+        CausalVendorNode,
+        Cheque,
+        ProcessResult,
+        CSLS_OK,
+        CSLS_ERR_FRAUD,
+        CSLS_ERR_EXPOSURE_CAP,
+        CSLS_ERR_REPLAY,
+        CSLS_ERR_OUT_OF_ORDER,
+    )
 
 # ---------------------------------------------------------------------------
 # Coinbase AgentKit Standard Interfaces & Fallback Decorators

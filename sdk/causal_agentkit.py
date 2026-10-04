@@ -47,9 +47,14 @@ _SDK_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SDK_DIR not in sys.path:
     sys.path.insert(0, _SDK_DIR)
 
-from causal_slash import CausalAgentWallet, CausalVendorNode, Cheque   # noqa: E402
-from causal_eth import keccak256                                       # noqa: E402
-from debt_cycle_mesh import DebtCycleMesh, NettingSummary              # noqa: E402
+try:
+    from .causal_slash import CausalAgentWallet, CausalVendorNode, Cheque
+    from .causal_eth import keccak256
+    from .debt_cycle_mesh import DebtCycleMesh, NettingSummary
+except ImportError:
+    from causal_slash import CausalAgentWallet, CausalVendorNode, Cheque
+    from causal_eth import keccak256
+    from debt_cycle_mesh import DebtCycleMesh, NettingSummary
 
 SECP256K1_Q = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 TREASURY_FEE_NUM = 100          # 0.01% of annihilated volume

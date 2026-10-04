@@ -56,34 +56,48 @@ class ProxyBackend:
 
 class BondBackend:
     @staticmethod
-    def query_bond(rpc_url: str, vault_address: str) -> Tuple[bool, Dict[str, Any], str]:
+    def query_bond(
+        rpc_url: str,
+        vault_address: str,
+        agent_address: Optional[str] = None
+    ) -> Tuple[bool, Dict[str, Any], str]:
         # Validate RPC and contract availability
         if not rpc_url:
             return False, {}, "not connected: RPC URL not configured in ~/.csls/config.toml"
-        
-        # Test basic network socket connectivity to RPC host
-        try:
-            from urllib.parse import urlparse
-            p = urlparse(rpc_url)
-            host = p.hostname or "127.0.0.1"
-            port = p.port or (443 if p.scheme == "https" else 80)
-            with socket.create_connection((host, port), timeout=1.0):
-                pass
-        except Exception as e:
-            return False, {}, f"not connected: Base L2 RPC unreachable at {rpc_url} ({e})"
 
         # Check if contract address is configured
         if not vault_address or vault_address.startswith("0x0000000000000000"):
             return False, {}, "not connected: PerformanceCollateralVault contract address not configured"
 
-        # Contract RPC reachable
+        # Query real on-chain vault state if available
+        try:
+            from sdk.onchain_settler import BaseOnChainSettler
+            settler = BaseOnChainSettler(rpc_url=rpc_url, vault_address=vault_address)
+            info = settler.get_vault_info(agent_address)
+            if info:
+                bond_usdc = info.get("collateral_bond", 0) / 1e6
+                exposure_usdc = info.get("allocated_exposure", 0) / 1e6
+                free_margin = max(0.0, bond_usdc - exposure_usdc)
+                is_slashed = info.get("is_slashed", False)
+                return True, {
+                    "vault": vault_address,
+                    "chain": f"Base L2 ({settler.chain_id})",
+                    "collateral_bond": f"${bond_usdc:.2f} USDC",
+                    "free_margin": f"${free_margin:.2f} USDC",
+                    "exposure_cap": f"${exposure_usdc:.2f} USDC",
+                    "status": "slashed" if is_slashed else "active",
+                }, ""
+        except Exception as e:
+            return False, {}, f"not connected: failed to query on-chain vault at {vault_address}: {e}"
+
+        # Default fallback if agent has no deposit on-chain yet
         return True, {
             "vault": vault_address,
-            "chain": "Base L2 (8453)",
-            "collateral_bond": "$10.00 USDC",
-            "free_margin": "$10.00 USDC",
-            "exposure_cap": "$1.00 USDC",
-            "status": "ready",
+            "chain": "Base Sepolia (84532)",
+            "collateral_bond": "$0.00 USDC",
+            "free_margin": "$0.00 USDC",
+            "exposure_cap": "$0.00 USDC",
+            "status": "unfunded",
         }, ""
 
 

@@ -19,23 +19,12 @@ from csls.ui.theme import TEAL_HEX, DIM_GRAY, SUCCESS_GREEN, WARN_YELLOW
 
 
 def privkey_to_address(priv_bytes: bytes) -> tuple[str, str]:
-    """Derive Ethereum-style address and uncompressed hex public key."""
-    sk = ecdsa.SigningKey.from_string(priv_bytes, curve=ecdsa.SECP256k1)
-    vk = sk.verifying_key
-    pub_bytes = vk.to_string()  # 64 bytes (X, Y)
-    
-    # Keccak-256 for Ethereum address
-    try:
-        from Crypto.Hash import keccak
-        k = keccak.new(digest_bits=256)
-        k.update(pub_bytes)
-        addr = "0x" + k.hexdigest()[-40:]
-    except ImportError:
-        # Fallback SHA256 if pycryptodome not installed
-        h = hashlib.sha256(pub_bytes).hexdigest()
-        addr = "0x" + h[-40:]
-        
-    pub_hex = "04" + pub_bytes.hex()
+    """Derive canonical Ethereum address and uncompressed hex public key."""
+    from sdk.causal_eth import derive_address, secp256k1_mul
+    sk_int = int.from_bytes(priv_bytes, "big")
+    addr = "0x" + derive_address(sk_int).hex()
+    x, y = secp256k1_mul(sk_int)
+    pub_hex = "04" + x.to_bytes(32, "big").hex() + y.to_bytes(32, "big").hex()
     return addr, pub_hex
 
 

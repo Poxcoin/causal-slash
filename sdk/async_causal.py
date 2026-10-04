@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, Dict, Optional
 
-from .channel_store import ChannelStore, SqliteChannelStore
+from .channel_store import ChannelStore
 from .swarm_subagent import SubagentSession, SwarmDelegationVault, SpendRateLimitExceededError
 
 logger = logging.getLogger("causal_slash.async_causal")
@@ -42,7 +42,7 @@ class AsyncChannelActor:
     def __init__(
         self,
         peer_pk: bytes,
-        store: SqliteChannelStore,
+        store: ChannelStore,
         max_queue_size: int = 10000,
     ):
         self.peer_pk = peer_pk
@@ -149,7 +149,7 @@ class AsyncCausalClient:
     def __init__(
         self,
         master_sk: bytes,
-        store: SqliteChannelStore,
+        store: ChannelStore,
         max_queue_size: int = 10000,
     ):
         self.vault = SwarmDelegationVault(master_sk)
@@ -164,7 +164,7 @@ class AsyncCausalClient:
         db_dir: str = "./channels_state",
         max_queue_size: int = 10000,
     ) -> AsyncCausalClient:
-        store = SqliteChannelStore(db_dir)
+        store = ChannelStore(db_dir)
         store.open()
         return cls(master_sk, store, max_queue_size=max_queue_size)
 

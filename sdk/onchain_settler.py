@@ -645,6 +645,7 @@ class BaseOnChainSettler:
                     return receipt
                 if status in (0, "0x0", "0", False):
                     raise TransactionRevertedError(f"Transaction {tx_hash} reverted on-chain")
+            time.sleep(0.25)
 
         raise TransactionTimeoutError(f"Timed out waiting for receipt of {tx_hash} after {max_time}s")
 

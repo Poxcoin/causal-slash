@@ -266,5 +266,3 @@ class ChannelStore:
                 self._lock_file = None
 
 
-# Backwards compatibility alias
-SqliteChannelStore = ChannelStore
