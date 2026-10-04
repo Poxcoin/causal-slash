@@ -35,28 +35,32 @@ if ! curl -s "${BRIDGE_URL}/health" >/dev/null 2>&1; then
     done
 fi
 
-# Locate Claude Code engine
-CLAUDE_BIN=""
-if [ -x "/home/minus/.local/share/claude/versions/2.1.197" ]; then
-    CLAUDE_BIN="/home/minus/.local/share/claude/versions/2.1.197"
-elif command -v claude >/dev/null 2>&1; then
-    CLAUDE_BIN="$(command -v claude)"
-elif [ -f "/tmp/claude_2150/package/cli.js" ] && command -v node >/dev/null 2>&1; then
-    CLAUDE_BIN="node /tmp/claude_2150/package/cli.js"
+# Locate CSLS engine
+CSLS_ENGINE="/home/minus/.local/share/csls/engine/cli.js"
+if [ ! -f "$CSLS_ENGINE" ] && [ -f "$REPO_DIR/engine/csls/cli.js" ]; then
+    CSLS_ENGINE="$REPO_DIR/engine/csls/cli.js"
 fi
 
-if [ -z "$CLAUDE_BIN" ]; then
-    echo "Error: Claude Code binary not found." >&2
+if [ ! -f "$CSLS_ENGINE" ]; then
+    echo "Error: CSLS engine not found at $CSLS_ENGINE." >&2
     exit 1
 fi
 
-# Auto-trust current working directory and pre-approve sovereign key in ~/.claude.json
+export CLAUDE_CONFIG_DIR="${CSLS_CONFIG_DIR:-$HOME/.csls}"
+export ANTHROPIC_BASE_URL="${BRIDGE_URL}"
+export ANTHROPIC_API_KEY="csls_key_uwjBYsnRPkg-6mUjkwAA"
+
+# Auto-trust current working directory and pre-approve sovereign key in ~/.csls/.claude.json
 python3 -c '
 import os, json
-p = os.path.expanduser("~/.claude.json")
+cfg_dir = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.csls"))
+os.makedirs(cfg_dir, exist_ok=True)
+p = os.path.join(cfg_dir, ".claude.json")
 cwd = os.path.realpath(os.getcwd())
 try:
     d = json.load(open(p)) if os.path.exists(p) else {}
+    d.setdefault("numStartups", 1)
+    d.setdefault("autoUpdates", False)
     d.setdefault("customApiKeyResponses", {}).setdefault("approved", [])
     if "uwjBYsnRPkg-6mUjkwAA" not in d["customApiKeyResponses"]["approved"]:
         d["customApiKeyResponses"]["approved"].append("uwjBYsnRPkg-6mUjkwAA")
@@ -66,9 +70,6 @@ try:
 except Exception:
     pass
 '
-
-export ANTHROPIC_BASE_URL="${BRIDGE_URL}"
-export ANTHROPIC_API_KEY="csls_key_uwjBYsnRPkg-6mUjkwAA"
 
 # Interactive banner
 if [ -t 1 ] && [ "$#" -eq 0 ]; then
@@ -80,4 +81,5 @@ if [ -t 1 ] && [ "$#" -eq 0 ]; then
     echo ""
 fi
 
-exec $CLAUDE_BIN "$@"
+exec node "$CSLS_ENGINE" "$@"
+
