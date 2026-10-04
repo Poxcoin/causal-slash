@@ -82,6 +82,16 @@ done
 
 # Interactive banner
 if [ -t 1 ]; then
+    echo -e "\033[36m"
+    echo "       ████████████████████████"
+    echo "        ◥█                     "
+    echo "       ████████████████████████"
+    echo "                               "
+    echo "       ████████████████████████"
+    echo "                             ██"
+    echo "       ████████████████████████"
+    echo "            LAYER 4 - CSLS     "
+    echo -e "\033[0m"
     echo "================================================================================"
     echo "  CSLS SOVEREIGN FRONTIER TERMINAL (powered by Causal-Slash Protocol)"
     echo "  Collateral Vault: Base L2 ($10.00 USDC) | Gas: 0.00 | Settlement: Session MAC"
