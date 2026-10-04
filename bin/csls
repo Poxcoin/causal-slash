@@ -2,112 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Causal-Slash Protocol Developers
 #
-# CSLS Sovereign Frontier Coding Terminal
-# Wraps Claude Code with the Causal-Slash Autonomous Micropayment Bridge.
-# Powered by Base L2 collateral vault & 167-byte Session MAC micro-cheques.
-# Zero Web2 API keys, zero credit cards, zero KYC.
-
+# CSLS - sovereign terminal coding agent. Just run: csls
 set -e
 
-# Resolve repository root even if invoked via symlink
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
     DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
     SOURCE="$(readlink "$SOURCE")"
     [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
-SCRIPT_DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
-REPO_DIR="$( cd -P "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd )"
+REPO_DIR="$( cd -P "$( dirname "$SOURCE" )/.." >/dev/null 2>&1 && pwd )"
 
-BRIDGE_PORT="${CSLS_PORT:-8402}"
-BRIDGE_URL="http://127.0.0.1:${BRIDGE_PORT}"
-BRIDGE_SCRIPT="$REPO_DIR/scripts/csls_sovereign_bridge.py"
-
-# Ensure the long-context sovereign model exists (agent prompt does not fit Ollama's default 2048-token window)
+# Long-context model: the default Ollama window (2048 tokens) is too small to keep a conversation.
 if command -v ollama >/dev/null 2>&1 && ! ollama list 2>/dev/null | grep -q '^csls-coder'; then
     ollama create csls-coder -f "$REPO_DIR/scripts/csls_coder.Modelfile" >/dev/null 2>&1 || true
 fi
 
-# Ensure sovereign bridge is running
-if ! curl -s "${BRIDGE_URL}/health" >/dev/null 2>&1; then
-    nohup python3 "$BRIDGE_SCRIPT" --port "$BRIDGE_PORT" >/tmp/csls_bridge.log 2>&1 &
-    # Wait for bridge health
-    for i in {1..30}; do
-        if curl -s "${BRIDGE_URL}/health" >/dev/null 2>&1; then
-            break
-        fi
-        sleep 0.1
-    done
-fi
-
-# Locate CSLS engine
-CSLS_ENGINE="/home/minus/.local/share/csls/engine/cli.js"
-if [ ! -f "$CSLS_ENGINE" ] && [ -f "$REPO_DIR/engine/csls/cli.js" ]; then
-    CSLS_ENGINE="$REPO_DIR/engine/csls/cli.js"
-fi
-
-if [ ! -f "$CSLS_ENGINE" ]; then
-    echo "Error: CSLS engine not found at $CSLS_ENGINE." >&2
-    exit 1
-fi
-
-export CLAUDE_CONFIG_DIR="${CSLS_CONFIG_DIR:-$HOME/.csls}"
-export ANTHROPIC_BASE_URL="${BRIDGE_URL}"
-export ANTHROPIC_API_KEY="csls_key_uwjBYsnRPkg-6mUjkwAA"
-
-# Auto-trust current working directory and pre-approve sovereign key in ~/.csls/.claude.json
-python3 -c '
-import os, json
-cfg_dir = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.csls"))
-os.makedirs(cfg_dir, exist_ok=True)
-p = os.path.join(cfg_dir, ".claude.json")
-cwd = os.path.realpath(os.getcwd())
-try:
-    d = json.load(open(p)) if os.path.exists(p) else {}
-    d.setdefault("numStartups", 1)
-    d.setdefault("autoUpdates", False)
-    d.setdefault("customApiKeyResponses", {}).setdefault("approved", [])
-    if "uwjBYsnRPkg-6mUjkwAA" not in d["customApiKeyResponses"]["approved"]:
-        d["customApiKeyResponses"]["approved"].append("uwjBYsnRPkg-6mUjkwAA")
-    d.setdefault("projects", {}).setdefault(cwd, {})["hasTrustDialogAccepted"] = True
-    with open(p, "w") as f:
-        json.dump(d, f, indent=2)
-except Exception:
-    pass
-'
-
-# Filter out -p / --print - CSLS operates strictly as an interactive terminal agent
-ARGS=()
-for arg in "$@"; do
-    if [ "$arg" = "-p" ] || [ "$arg" = "--print" ]; then
-        continue
-    fi
-    ARGS+=("$arg")
-done
-
-# Persistent agent memory: reopen the last conversation of this directory instead of starting blank.
-# Start a fresh chat explicitly with: csls --new
-HAS_SESSION_FLAG=0
-NEW_CHAT=0
-FILTERED=()
-for arg in "${ARGS[@]}"; do
-    case "$arg" in
-        --new) NEW_CHAT=1; continue ;;
-        -c|--continue|-r|--resume) HAS_SESSION_FLAG=1 ;;
-    esac
-    FILTERED+=("$arg")
-done
-ARGS=("${FILTERED[@]}")
-if [ "$NEW_CHAT" -eq 0 ] && [ "$HAS_SESSION_FLAG" -eq 0 ]; then
-    if python3 -c '
-import os, re, sys, glob
-cfg = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.csls"))
-key = re.sub(r"[^a-zA-Z0-9]", "-", os.getcwd())
-sys.exit(0 if glob.glob(os.path.join(cfg, "projects", key, "*.jsonl")) else 1)
-'; then
-        ARGS=(--continue "${ARGS[@]}")
-    fi
-fi
-
-exec node "$CSLS_ENGINE" "${ARGS[@]}"
-
+exec python3 "$REPO_DIR/terminal/csls.py" "$@"
