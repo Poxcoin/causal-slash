@@ -322,6 +322,37 @@ python3 benchmarks/slashbench.py
 python3 examples/quickstart_agent.py
 ```
 
+### 7. Interactive Terminal Shell (`csls` CLI):
+Install the CLI and package in editable mode:
+```bash
+pip install -e .
+# or on externally managed environments:
+pip install --break-system-packages -e .
+```
+
+Launch the sovereign interactive terminal shell:
+```bash
+csls
+```
+
+The shell renders inline in your terminal's standard scrollback (no fullscreen takeover or alternate screen) with teal `#21E2CC` accents, dynamic horizontal rules, persistent input history (`~/.csls/history`), and bottom toolbar (`? for shortcuts | bond: ready`):
+* `/help` — show command reference table
+* `/wallet new` — create agent wallet (secp256k1 keypair)
+* `/wallet info` — display loaded wallet and address
+* `/model [model_id]` — switch or view active late 2026 frontier models (Claude Opus 5.5, Opus 4.6, DeepSeek V4.1 Flash, DeepSeek V4 Pro, GLM 5.3, GLM 5.2, Gemini 3.8 Flash, Gemini 3.8 Live)
+* `/vendor` — inspect connected M2M inference vendor, latency, settled micro-USDC, and public key
+* `/memory` — inspect persistent project conversation context, storage file, and remembered turns
+* `/clear` — clear persistent rolling conversation memory context
+* `/bond` — query Base L2 collateral bond and free margin
+* `/status` — live node status and streaming monitor
+* `/stream` — listen for live 167-byte session-MAC cheques
+* `/net` — in-RAM Kirchhoff debt netting summary
+* `/hound` — Schnorr Bloodhound equivocation hunter
+* `/test` — run C11, Foundry, and pytest suites
+* `/bench` — latency and throughput benchmark
+* `/verify` — on-chain contract addresses and EIP-170 bytecode limits
+* `/exit` — quit CSLS (or `Ctrl+D`, or double `Ctrl+C`)
+
 ---
 
 ## 9. Deployed & Verified Contracts

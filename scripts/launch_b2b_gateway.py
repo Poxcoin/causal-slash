@@ -120,8 +120,13 @@ class FrontierGatewayHandler(http.server.BaseHTTPRequestHandler):
             "cheques_verified": self.server.stats["cheques_verified"],
             "supported_models": [
                 "claude-opus-5.5",
-                "claude-3-7-sonnet-20250219",
-                "claude-3-5-sonnet-20241022",
+                "claude-opus-4.6",
+                "deepseek-v4.1-flash",
+                "deepseek-v4-pro",
+                "glm-5.3",
+                "glm-5.2",
+                "gemini-3.8-flash",
+                "gemini-3.8-live",
                 "eleven-labs-multilingual-v3",
                 "kling-3.0-video",
             ],
@@ -147,8 +152,13 @@ class FrontierGatewayHandler(http.server.BaseHTTPRequestHandler):
             "object": "list",
             "data": [
                 {"id": "claude-opus-5.5", "object": "model", "owned_by": "causal-vendor-mesh"},
-                {"id": "claude-3-7-sonnet-20250219", "object": "model", "owned_by": "causal-vendor-mesh"},
-                {"id": "claude-3-5-sonnet-20241022", "object": "model", "owned_by": "causal-vendor-mesh"},
+                {"id": "claude-opus-4.6", "object": "model", "owned_by": "causal-vendor-mesh"},
+                {"id": "deepseek-v4.1-flash", "object": "model", "owned_by": "causal-vendor-mesh"},
+                {"id": "deepseek-v4-pro", "object": "model", "owned_by": "causal-vendor-mesh"},
+                {"id": "glm-5.3", "object": "model", "owned_by": "causal-vendor-mesh"},
+                {"id": "glm-5.2", "object": "model", "owned_by": "causal-vendor-mesh"},
+                {"id": "gemini-3.8-flash", "object": "model", "owned_by": "causal-vendor-mesh"},
+                {"id": "gemini-3.8-live", "object": "model", "owned_by": "causal-vendor-mesh"},
                 {"id": "eleven-labs-multilingual-v3", "object": "model", "owned_by": "causal-vendor-mesh"},
                 {"id": "kling-3.0-video", "object": "model", "owned_by": "causal-vendor-mesh"},
             ],
@@ -328,6 +338,10 @@ class FrontierGatewayHandler(http.server.BaseHTTPRequestHandler):
 
     def _stream_chat_response(self, payload: Dict[str, Any]) -> None:
         model = payload.get("model", "claude-opus-5.5")
+        messages = payload.get("messages", [])
+        num_turns = len(messages)
+        last_content = messages[-1].get("content", "").replace('"', '\\"') if messages else "Ping"
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -338,10 +352,17 @@ class FrontierGatewayHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
 
+        prefix = f"[{model}] Verified compute "
+        if num_turns > 1:
+            body_text = f"delivered with 0 gas drag (rolling memory active: {num_turns} context items, query: '{last_content[:32]}') "
+        else:
+            body_text = "delivered with 0 gas drag "
+        suffix = "via Causal-Slash Protocol."
+
         chunks = [
-            f'data: {{"id": "chatcmpl-opus", "model": "{model}", "choices": [{{"delta": {{"role": "assistant", "content": "Verified compute "}}}}]}}\n\n',
-            f'data: {{"id": "chatcmpl-opus", "model": "{model}", "choices": [{{"delta": {{"content": "delivered with 0 gas drag "}}}}]}}\n\n',
-            f'data: {{"id": "chatcmpl-opus", "model": "{model}", "choices": [{{"delta": {{"content": "via Causal-Slash Protocol."}}}}]}}\n\n',
+            f'data: {{"id": "chatcmpl-{model}", "model": "{model}", "choices": [{{"delta": {{"role": "assistant", "content": "{prefix}"}}}}]}}\n\n',
+            f'data: {{"id": "chatcmpl-{model}", "model": "{model}", "choices": [{{"delta": {{"content": "{body_text}"}}}}]}}\n\n',
+            f'data: {{"id": "chatcmpl-{model}", "model": "{model}", "choices": [{{"delta": {{"content": "{suffix}"}}}}]}}\n\n',
             "data: [DONE]\n\n",
         ]
         for chunk in chunks:

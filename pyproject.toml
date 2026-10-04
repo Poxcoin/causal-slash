@@ -24,6 +24,8 @@ classifiers = [
 dependencies = [
     "pydantic>=2.0.0",
     "ecdsa>=0.13",
+    "prompt_toolkit>=3.0.36",
+    "rich>=13.0.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +34,7 @@ langchain = [
 ]
 
 [project.scripts]
+csls = "csls.cli:main"
 causal-proxy = "sdk.slash_proxy:main"
 
 [project.urls]
@@ -41,7 +44,7 @@ Repository = "https://github.com/causal-slash/causal-slash-protocol"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["sdk*"]
+include = ["sdk*", "csls*"]
 
 [tool.setuptools.package-data]
 sdk = ["py.typed", "libcausal_slash.so", "libbloodhound.so"]

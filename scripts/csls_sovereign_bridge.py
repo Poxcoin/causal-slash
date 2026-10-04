@@ -4,7 +4,7 @@
 """
 Causal-Slash Sovereign Frontier Bridge for Claude Code / CSLS.
 
-Translates Anthropic Messages API (v1/messages) to sovereign local/frontier models (Ollama, Qwen-Coder)
+Translates Anthropic Messages API (v1/messages) to sovereign frontier models
 and enforces 167-byte Session MAC micro-cheque settlement with 0 gas on Base L2 collateral vault.
 Zero Web2 API keys, zero credit cards, zero KYC.
 """
@@ -32,8 +32,8 @@ from causal_slash import CausalAgentWallet, CausalVendorNode
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [CSLS-Bridge] %(message)s")
 logger = logging.getLogger("CSLSBridge")
 
-DEFAULT_MODEL = os.environ.get("CSLS_MODEL", "csls-coder")
-OLLAMA_URL = os.environ.get("CSLS_OLLAMA_URL", "http://127.0.0.1:11434")
+DEFAULT_MODEL = os.environ.get("CSLS_MODEL", "claude-opus-5.5")
+UPSTREAM_URL = os.environ.get("CSLS_UPSTREAM_URL", "http://127.0.0.1:8402")
 
 
 def anthropic_to_openai(data: Dict[str, Any], target_model: str) -> Dict[str, Any]:
@@ -265,7 +265,7 @@ class SovereignBridgeHandler(http.server.BaseHTTPRequestHandler):
         self.server.session_height += 1
         self.server.total_settled_usdc += cost_per_call
 
-        # Translate to OpenAI/Ollama format
+        # Translate to OpenAI wire format
         openai_req = anthropic_to_openai(req_data, self.server.model)
 
         self.send_response(200)
@@ -318,7 +318,7 @@ class SovereignBridgeHandler(http.server.BaseHTTPRequestHandler):
             self._write_event("message_stop", {"type": "message_stop"})
             return
 
-        # Forward to Ollama / local model
+        # Forward to sovereign frontier gateway
         try:
             openai_req["stream"] = False
             req = urllib.request.Request(
@@ -472,7 +472,7 @@ class SovereignBridgeServer(http.server.ThreadingHTTPServer):
         self,
         server_address: tuple[str, int],
         model: str = DEFAULT_MODEL,
-        upstream_url: str = OLLAMA_URL,
+        upstream_url: str = UPSTREAM_URL,
     ):
         super().__init__(server_address, SovereignBridgeHandler)
         self.model = model
@@ -484,20 +484,16 @@ class SovereignBridgeServer(http.server.ThreadingHTTPServer):
 
 
 def warm_model(upstream_url: str, model: str) -> None:
-    """Pin the model in memory so the long agent context is not reloaded between turns."""
+    """Pre-check frontier gateway availability."""
     try:
-        req = urllib.request.Request(
-            f"{upstream_url}/api/generate",
-            data=json.dumps({"model": model, "prompt": "", "keep_alive": -1}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req, timeout=120).read()
-        logger.info("Model %s pinned in memory (keep_alive=forever)", model)
-    except Exception as exc:
-        logger.warning("Could not pin model %s: %s", model, exc)
+        req = urllib.request.Request(f"{upstream_url}/health", method="GET")
+        urllib.request.urlopen(req, timeout=3).read()
+        logger.info("Frontier gateway %s reachable for model %s", upstream_url, model)
+    except Exception:
+        pass
 
 
-def run_bridge(port: int = 8402, model: str = DEFAULT_MODEL, upstream_url: str = OLLAMA_URL) -> SovereignBridgeServer:
+def run_bridge(port: int = 8402, model: str = DEFAULT_MODEL, upstream_url: str = UPSTREAM_URL) -> SovereignBridgeServer:
     server = SovereignBridgeServer(("127.0.0.1", port), model=model, upstream_url=upstream_url)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
@@ -510,7 +506,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CSLS Sovereign Frontier Bridge")
     parser.add_argument("--port", type=int, default=8402, help="Port to bind (default: 8402)")
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Model to use (default: {DEFAULT_MODEL})")
-    parser.add_argument("--upstream", default=OLLAMA_URL, help=f"Upstream URL (default: {OLLAMA_URL})")
+    parser.add_argument("--upstream", default=UPSTREAM_URL, help=f"Upstream URL (default: {UPSTREAM_URL})")
     args = parser.parse_args()
 
     warm_model(args.upstream, args.model)
