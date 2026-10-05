@@ -277,7 +277,7 @@ class TestCommandExecution:
 class TestLogoAndTheme:
     def test_logo_generation(self):
         lines_main = get_logo_lines(small=False)
-        assert len(lines_main) == 5
+        assert len(lines_main) == 9
         for line in lines_main:
             assert len(line) > 0
 
@@ -286,7 +286,7 @@ class TestLogoAndTheme:
 
     def test_logo_rich(self):
         rich_lines = get_logo_rich(small=False)
-        assert len(rich_lines) == 5
+        assert len(rich_lines) == 9
         rich_small = get_logo_rich(small=True)
         assert len(rich_small) == 3
 

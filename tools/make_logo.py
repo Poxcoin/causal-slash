@@ -72,15 +72,24 @@ def main():
         print(f"Error: {LOGO_PNG} not found", file=sys.stderr)
         sys.exit(1)
 
-    # 1. Main Logo: 5 terminal lines (10 pixel rows, 12 columns)
-    grid_main = rasterize_glyph(LOGO_PNG, target_w=12, target_h=10, threshold=160)
-    lines_main = grid_to_half_blocks(grid_main)
+    # 1. Main Logo: 9 terminal lines (compact square CSLS glyph + spacer + wordmark)
+    lines_main = [
+        "████████████",
+        "◥█          ",
+        "████████████",
+        "            ",
+        "████████████",
+        "          ██",
+        "████████████",
+        "            ",
+        "Causal-Slash",
+    ]
 
     # 2. Small Logo: 3 terminal lines (for /help header)
     lines_small = [
-        "████████",
-        "█▄▄  ▀▀█",
-        "████████",
+        "██████",
+        "◥█  ██",
+        "██████",
     ]
 
     os.makedirs(os.path.dirname(OUTPUT_PY), exist_ok=True)
@@ -94,8 +103,8 @@ Teal truecolor: {TEAL_HEX} (RGB {TEAL_RGB[0]}, {TEAL_RGB[1]}, {TEAL_RGB[2]}).
 
 TEAL_HEX = "{TEAL_HEX}"
 TEAL_RGB = {TEAL_RGB}
-TEAL_ANSI = "{TEAL_ANSI}"
-RESET_ANSI = "{RESET_ANSI}"
+TEAL_ANSI = "\\033[38;2;33;226;204m"
+RESET_ANSI = "\\033[0m"
 
 # Main logo (5 lines high)
 LOGO_MAIN_RAW = {lines_main!r}
