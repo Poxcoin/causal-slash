@@ -322,7 +322,17 @@ python3 benchmarks/slashbench.py
 python3 examples/quickstart_agent.py
 ```
 
-### 7. Interactive Terminal Shell (`csls` CLI):
+### 7. Run Sovereign Frontier Vendor Gateway (Compute Providers):
+Launch high-throughput gateway proxying frontier models with 167B Session MAC micro-cheques:
+```bash
+python3 scripts/launch_b2b_gateway.py --host 0.0.0.0 --port 8402 --delta-v 10.0 --price 0.0005
+```
+Or execute the automated self-verification test suite:
+```bash
+python3 scripts/launch_b2b_gateway.py --verify
+```
+
+### 8. Interactive Terminal Shell (`csls` CLI):
 Install the CLI and package in editable mode:
 ```bash
 pip install -e .
