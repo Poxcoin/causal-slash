@@ -8,14 +8,28 @@ Teal truecolor: #21E2CC (RGB 33, 226, 204).
 
 TEAL_HEX = "#21E2CC"
 TEAL_RGB = (33, 226, 204)
-TEAL_ANSI = "[38;2;33;226;204m"
-RESET_ANSI = "[0m"
+TEAL_ANSI = "\033[38;2;33;226;204m"
+RESET_ANSI = "\033[0m"
 
-# Main logo (5 lines high)
-LOGO_MAIN_RAW = ['████████████', '██▄▄▄▄▄▄▄▄▄▄', '            ', '▀▀▀▀▀▀▀▀▀▀██', '████████████']
+# Main logo (9 lines high: 7-line square glyph + spacer + wordmark)
+LOGO_MAIN_RAW = [
+    "████████████",
+    "◥█          ",
+    "████████████",
+    "            ",
+    "████████████",
+    "          ██",
+    "████████████",
+    "            ",
+    "Causal-Slash",
+]
 
-# Small logo for /help and compact headers (3 lines high)
-LOGO_SMALL_RAW = ['████████', '█▄▄  ▀▀█', '████████']
+# Small logo for /help and compact headers (3 lines high, square proportions)
+LOGO_SMALL_RAW = [
+    "██████",
+    "◥█  ██",
+    "██████",
+]
 
 # Plain text fallback for terminals without truecolor or UTF-8 block support
 LOGO_PLAIN = "Causal-Slash"

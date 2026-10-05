@@ -25,6 +25,9 @@ def render_header(
     if cwd is None:
         cwd = os.getcwd()
 
+    home = os.path.expanduser("~")
+    display_cwd = cwd.replace(home, "~", 1) if cwd.startswith(home) else cwd
+
     mem_text = (
         f"resumed session: {memory_turns} dialog turns remembered (/memory)"
         if memory_turns > 0
@@ -35,26 +38,26 @@ def render_header(
         # Fallback for minimal non-truecolor terminals
         console.print(f"[bold {TEAL_HEX}]{LOGO_PLAIN} CLI {VERSION}[/]")
         console.print(f"[dim {DIM_GRAY}]{TAGLINE}[/]")
-        console.print(f"[dim {DIM_GRAY}]{cwd}[/]")
+        console.print(f"[dim {DIM_GRAY}]{display_cwd}[/]")
         if mem_text:
             console.print(f"[dim {TEAL_HEX}]{mem_text}[/]")
         console.print()
         return
 
-    # Left: logo half-block art (5 lines)
+    # Left: logo half-block art (9 lines: glyph + wordmark)
     logo_lines = get_logo_rich(small=False)
 
     # Right: title, tagline, cwd, memory context
     right_lines = [
         Text(f"Causal-Slash CLI {VERSION}", style=f"bold {TEAL_HEX}"),
         Text(TAGLINE, style=f"dim {DIM_GRAY}"),
-        Text(cwd, style=f"dim {DIM_GRAY}"),
+        Text(display_cwd, style=f"dim {DIM_GRAY}"),
         Text(mem_text, style=f"dim {TEAL_HEX}") if mem_text else Text(""),
         Text(""),
     ]
 
     # Render side-by-side using Table.grid without any borders or background
-    table = Table.grid(padding=(0, 2))
+    table = Table.grid(padding=(0, 4))
     table.add_column(no_wrap=True)
     table.add_column(no_wrap=False)
 
