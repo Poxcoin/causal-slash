@@ -17,7 +17,7 @@
     "ai-agents"
   ],
   "author": "Causal-Slash Protocol Contributors",
-  "license": "BUSL-1.1",
+  "license": "Apache-2.0 OR MIT",
   "dependencies": {
     "dotenv": "^16.4.5",
     "ethers": "^6.13.2"
