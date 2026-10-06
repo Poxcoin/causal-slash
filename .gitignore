@@ -27,7 +27,10 @@ cache/
 *.md
 !/README.md
 !/CONTRIBUTING.md
+!/CODE_OF_CONDUCT.md
+!/SECURITY.md
 !.github/**/*.md
+!.github/**
 
 # Evidence archives & OTS timestamps
 CAUSAL_SLASH_IP_EVIDENCE_BUNDLE.*
