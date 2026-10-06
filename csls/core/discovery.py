@@ -11,6 +11,7 @@ from typing import Optional, Tuple, Dict, Any, List
 
 DEFAULT_PUBLIC_RELAYS: List[str] = [
     "https://gateway.causal-slash.net",
+    "https://gateway.kadoclub.net",
     "https://relay.causal-slash.org",
 ]
 

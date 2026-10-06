@@ -51,9 +51,9 @@ class TestCommand(Command):
             ret = await run_subprocess_stream(cmd, ctx.session, console, cwd=root)
             if ret != 0:
                 overall_ok = False
-                console.print(f"[{ERROR_RED}]✗ {name} failed with exit code {ret}[/]")
+                console.print(f"[{ERROR_RED}][FAIL] {name} failed with exit code {ret}[/]")
             else:
-                console.print(f"[{SUCCESS_GREEN}]✓ {name} passed[/]")
+                console.print(f"[{SUCCESS_GREEN}][OK] {name} passed[/]")
             console.print()
 
         return 0 if overall_ok else 1
