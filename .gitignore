@@ -29,7 +29,8 @@ cache/
 !/CONTRIBUTING.md
 !/CODE_OF_CONDUCT.md
 !/SECURITY.md
-!.github/**/*.md
+!/PULL_REQUEST_TEMPLATE.md
+!/ISSUE_TEMPLATE.md
 !.github/**
 
 # Evidence archives & OTS timestamps
