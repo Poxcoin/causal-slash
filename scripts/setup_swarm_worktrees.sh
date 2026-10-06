@@ -8,28 +8,28 @@ PARENT_DIR="$(dirname "$ROOT_DIR")"
 
 echo "[SWARM] Initializing isolated Git Worktrees..."
 
-# Create worktree for Terminal 1 (Core)
-if [ ! -d "$PARENT_DIR/causal_term1_core" ]; then
-    git worktree add "$PARENT_DIR/causal_term1_core" -b term1_core main
-    echo "[OK] Terminal 1 worktree created: $PARENT_DIR/causal_term1_core"
+# Create worktree for Track 1 (Blue Team Core)
+if [ ! -d "$PARENT_DIR/csls_blueteam" ]; then
+    git worktree add "$PARENT_DIR/csls_blueteam" -b csls_blueteam main
+    echo "[OK] Track 1 worktree created: $PARENT_DIR/csls_blueteam"
 fi
 
-# Create worktree for Terminal 2 (SDK)
-if [ ! -d "$PARENT_DIR/causal_term2_sdk" ]; then
-    git worktree add "$PARENT_DIR/causal_term2_sdk" -b term2_sdk main
-    echo "[OK] Terminal 2 worktree created: $PARENT_DIR/causal_term2_sdk"
+# Create worktree for Track 2 (Terminal & SDK)
+if [ ! -d "$PARENT_DIR/csls_terminal" ]; then
+    git worktree add "$PARENT_DIR/csls_terminal" -b csls_terminal main
+    echo "[OK] Track 2 worktree created: $PARENT_DIR/csls_terminal"
 fi
 
-# Create worktree for Terminal 3 (Red Team)
-if [ ! -d "$PARENT_DIR/causal_term3_redteam" ]; then
-    git worktree add "$PARENT_DIR/causal_term3_redteam" -b term3_redteam main
-    echo "[OK] Terminal 3 worktree created: $PARENT_DIR/causal_term3_redteam"
+# Create worktree for Track 3 (Red Team)
+if [ ! -d "$PARENT_DIR/csls_redteam" ]; then
+    git worktree add "$PARENT_DIR/csls_redteam" -b csls_redteam main
+    echo "[OK] Track 3 worktree created: $PARENT_DIR/csls_redteam"
 fi
 
-# Create worktree for Terminal 5 (Quant / Research)
-if [ ! -d "$PARENT_DIR/causal_term5_quant" ]; then
-    git worktree add "$PARENT_DIR/causal_term5_quant" -b term5_quant main
-    echo "[OK] Terminal 5 worktree created: $PARENT_DIR/causal_term5_quant"
+# Create worktree for Track 4 (Marketing & GPU Partners)
+if [ ! -d "$PARENT_DIR/csls_marketing" ]; then
+    git worktree add "$PARENT_DIR/csls_marketing" -b csls_marketing main
+    echo "[OK] Track 4 worktree created: $PARENT_DIR/csls_marketing"
 fi
 
 echo "[SWARM] Active worktree list:"

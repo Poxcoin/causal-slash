@@ -18,7 +18,7 @@
 ### What is Causal-Slash?
 **Causal-Slash** is a high-throughput micro-settlement protocol operating directly at the L4 transport layer. It enables autonomous agent meshes, DePIN compute providers, and machine-to-machine services to stream payments per token or per API request with sub-microsecond execution latency and zero gas overhead during active streaming.
 
-Causal-Slash operates with no KYC, no centralized accounts, and zero custodial onboarding. Agent identity is defined strictly by a secp256k1 public key, while bilateral trust is established through a bond-based performance collateral vault on Base L2 and Arbitrum. Payment streams over raw sockets as signed 167-byte cheques per token.
+Causal-Slash operates as a non-custodial protocol with zero custodial intermediaries and on-chain sanctions screening. Agent identity is defined strictly by a secp256k1 public key, while bilateral trust is established through a bond-based performance collateral vault on Base L2 and Arbitrum. Payment streams over raw sockets as signed 167-byte cheques per token.
 
 ### Core Problem: Fragmented Liquidity & Idle Capital
 In typical multi-agent architectures, an agent communicating with 50 external vendors (LLM providers, vector databases, web scrapers, GPU clusters) must deposit pre-funded balances into 50 separate centralized accounts:
