@@ -105,36 +105,41 @@ async function main() {
     console.log(`  • Protocol Treasury: ${treasury}`);
     console.log(`  • Insurance Reserve: ${insuranceReserve}`);
 
-    const contract = await factory.deploy(ARBITRUM_SEPOLIA_USDC, treasury, insuranceReserve);
-    console.log(`\nTransaction submitted! Hash: ${contract.deploymentTransaction().hash}`);
-    console.log('Waiting for confirmation on Arbitrum Sepolia...');
+    // Step 1: Deploy SwarmDelegationVault.sol
+    console.log('\n--- Step 1: Deploying SwarmDelegationVault.sol on Arbitrum Sepolia ---');
+    const swarmArtifactPath = path.resolve(__dirname, '../out/SwarmDelegationVault.sol/SwarmDelegationVault.json');
+    if (!fs.existsSync(swarmArtifactPath)) {
+        throw new Error("SwarmDelegationVault artifact not found. Please run 'forge build' first.");
+    }
+    const swarmRaw = JSON.parse(fs.readFileSync(swarmArtifactPath, 'utf8'));
+    const swarmFactory = new ethers.ContractFactory(swarmRaw.abi, swarmRaw.bytecode?.object || swarmRaw.bytecode, wallet);
+    const swarmContract = await swarmFactory.deploy(ARBITRUM_SEPOLIA_USDC, treasury, insuranceReserve);
+    console.log(`Submitted SwarmDelegationVault tx: ${swarmContract.deploymentTransaction().hash}`);
+    await swarmContract.waitForDeployment();
+    const swarmAddress = await swarmContract.getAddress();
+    console.log(`SwarmDelegationVault deployed at: ${swarmAddress}`);
+    console.log(`Arbiscan Explorer: https://sepolia.arbiscan.io/address/${swarmAddress}`);
 
-    await contract.waitForDeployment();
-    const deployedAddress = await contract.getAddress();
+    // Step 2: Deploy PerformanceCollateralVault.sol
+    console.log('\n--- Step 2: Deploying PerformanceCollateralVault.sol on Arbitrum Sepolia ---');
+    const pcvArtifactPath = path.resolve(__dirname, '../out/PerformanceCollateralVault.sol/PerformanceCollateralVault.json');
+    if (!fs.existsSync(pcvArtifactPath)) {
+        throw new Error("PerformanceCollateralVault artifact not found. Please run 'forge build' first.");
+    }
+    const pcvRaw = JSON.parse(fs.readFileSync(pcvArtifactPath, 'utf8'));
+    const pcvFactory = new ethers.ContractFactory(pcvRaw.abi, pcvRaw.bytecode?.object || pcvRaw.bytecode, wallet);
+    const pcvContract = await pcvFactory.deploy(ARBITRUM_SEPOLIA_USDC, treasury, insuranceReserve);
+    console.log(`Submitted PerformanceCollateralVault tx: ${pcvContract.deploymentTransaction().hash}`);
+    await pcvContract.waitForDeployment();
+    const pcvAddress = await pcvContract.getAddress();
+    console.log(`PerformanceCollateralVault deployed at: ${pcvAddress}`);
+    console.log(`Arbiscan Explorer: https://sepolia.arbiscan.io/address/${pcvAddress}`);
 
     console.log('\n' + '='.repeat(70));
-    console.log('[SUCCESS] CONTRACT DEPLOYED TO ARBITRUM SEPOLIA');
+    console.log('[SUCCESS] ALL CONTRACTS DEPLOYED TO ARBITRUM SEPOLIA');
     console.log('='.repeat(70));
-    console.log(`Contract Address: ${deployedAddress}`);
-    console.log(`Arbiscan Explorer: https://sepolia.arbiscan.io/address/${deployedAddress}`);
-    console.log(`Tx Explorer Link:  https://sepolia.arbiscan.io/tx/${contract.deploymentTransaction().hash}`);
-
-    // Save deployed contract info
-    const deploymentReceipt = {
-        network: 'Arbitrum Sepolia',
-        chainId: CHAIN_ID,
-        contractAddress: deployedAddress,
-        deployer: wallet.address,
-        txHash: contract.deploymentTransaction().hash,
-        usdcToken: ARBITRUM_SEPOLIA_USDC,
-        treasury: treasury,
-        insuranceReserve: insuranceReserve,
-        deployedAt: new Date().toISOString()
-    };
-
-    const receiptPath = path.resolve(__dirname, 'deployment_receipt_arbitrum_sepolia.json');
-    fs.writeFileSync(receiptPath, JSON.stringify(deploymentReceipt, null, 2));
-    console.log(`Saved deployment receipt to scripts/deployment_receipt_arbitrum_sepolia.json`);
+    console.log(`SwarmDelegationVault:       ${swarmAddress}`);
+    console.log(`PerformanceCollateralVault: ${pcvAddress}`);
 }
 
 main().catch((err) => {

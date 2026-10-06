@@ -26,6 +26,7 @@ dependencies = [
     "ecdsa>=0.13",
     "prompt_toolkit>=3.0.36",
     "rich>=13.0.0",
+    "httpx>=0.25.0",
 ]
 
 [project.optional-dependencies]

@@ -16,7 +16,7 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(_ROOT, "sdk"))
 sys.path.insert(0, _ROOT)
 
-from agentkit_provider import CausalSlashActionProvider
+from causal_agentkit import CausalSlashActionProvider
 from causal_slash import CausalAgentWallet, CausalVendorNode, CSLS_OK
 
 

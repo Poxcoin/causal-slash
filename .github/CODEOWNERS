@@ -1,0 +1,15 @@
+# Global ownership for Causal-Slash Protocol
+* @holdguard @causal-slash-core
+
+# EVM Smart Contracts & Formal Invariants
+/contracts/ @holdguard
+/tests/invariants/ @holdguard
+
+# Native C11 Cryptographic Engine & Bloodhound
+/src/ @holdguard
+/tests/c/ @holdguard
+
+# Python Native SDK & Multi-Agent Simulations
+/sdk/ @holdguard
+/csls/ @holdguard
+/tests/ @holdguard

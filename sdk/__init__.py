@@ -31,8 +31,10 @@ from .debt_cycle_mesh import (
     MutualCloseCertificate,
     DebtCycleMeshError,
 )
-from .causal_agentkit import CausalAgentKit
-from .agentkit_provider import CausalSlashActionProvider
+from .causal_agentkit import (
+    CausalAgentKit,
+    CausalSlashActionProvider,
+)
 from .slash_proxy import SlashSidecarProxy
 from .guardrails import EdgeSafetyGuardrail
 from .channel_store import (

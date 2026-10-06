@@ -23,9 +23,11 @@ cache/
 # Internal research and draft scratchpad
 .internal/
 
-# Markdown policy: strictly ONLY root README.md is tracked
+# Markdown policy: public docs whitelist
 *.md
 !/README.md
+!/CONTRIBUTING.md
+!.github/**/*.md
 
 # Evidence archives & OTS timestamps
 CAUSAL_SLASH_IP_EVIDENCE_BUNDLE.*
