@@ -1,0 +1,17 @@
+# GitHub Linguist Overrides
+# Exclude vendored Foundry dependencies, compiler caches, and large JSONs from repo language statistics
+
+lib/** linguist-vendored
+out/** linguist-generated
+cache/** linguist-generated
+*.json linguist-generated
+*.min.js linguist-generated
+*.pdf linguist-documentation
+docs/** linguist-documentation
+
+# Ensure core protocol code and tests are tracked accurately
+contracts/** linguist-detectable=true
+src/** linguist-detectable=true
+sdk/** linguist-detectable=true
+csls/** linguist-detectable=true
+tests/** linguist-detectable=true

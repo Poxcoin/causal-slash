@@ -46,7 +46,7 @@ from causal_slash import (
     _CslsChequePkt,
     _CslsFraudPkt,
 )
-from agentkit_provider import (
+from causal_agentkit import (
     CausalSlashActionProvider,
     CreateChannelSchema,
     SignStreamChequeSchema,
@@ -84,7 +84,8 @@ def anvil_environment():
         # Wait for Anvil to become responsive
         time.sleep(1.0)
 
-        deployer_pk = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+        # Standard deterministic local Anvil testnet account #0 fixture (public dev mnemonic)
+        deployer_pk = os.getenv("ANVIL_TEST_PRIVATE_KEY", "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
         deployer_addr = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
         # 1. Deploy MockUSDC
