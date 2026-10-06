@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security Disclosures
+    url: mailto:security@causal-slash.org
+    about: Please report security vulnerabilities privately via email.
+  - name: Protocol Discussions
+    url: https://github.com/Poxcoin/causal-slash/discussions
+    about: Ask questions and discuss architecture with the team.
