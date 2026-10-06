@@ -68,9 +68,8 @@ def anvil_environment():
     forge_bin = shutil.which("forge") or os.path.expanduser("~/.foundry/bin/forge")
     anvil_bin = shutil.which("anvil") or os.path.expanduser("~/.foundry/bin/anvil")
 
-    assert os.path.exists(anvil_bin), f"anvil binary not found: {anvil_bin}"
-    assert os.path.exists(forge_bin), f"forge binary not found: {forge_bin}"
-    assert os.path.exists(cast_bin), f"cast binary not found: {cast_bin}"
+    if not (os.path.exists(anvil_bin) and os.path.exists(forge_bin) and os.path.exists(cast_bin)):
+        pytest.skip(f"Foundry suite (anvil/forge/cast) not found in PATH or ~/.foundry/bin")
 
     port = _find_free_port()
     rpc_url = f"http://127.0.0.1:{port}"
