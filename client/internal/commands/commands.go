@@ -50,8 +50,6 @@ var Registry = []CommandInfo{
 	{Name: "/bond", Description: "collateral bond and free margin", ArgsSpec: ""},
 	{Name: "/wallet", Description: "create agent wallet (secp256k1 public key)", ArgsSpec: "[new | info]"},
 	{Name: "/model", Description: "select or view active frontier model", ArgsSpec: "[model_name]"},
-	{Name: "/vendor", Description: "vendor connection and settlement status", ArgsSpec: "[status | ping | url]"},
-	{Name: "/provider", Description: "independent provider discovery, capability execution and settlement", ArgsSpec: "[status | set <url> | exec <cap> <input>]"},
 	{Name: "/memory", Description: "inspect persistent chat conversation memory", ArgsSpec: "[compact]"},
 	{Name: "/clear", Description: "reset agent conversation memory", ArgsSpec: ""},
 	{Name: "/copy", Description: "copy conversation or last response to clipboard", ArgsSpec: "[last | all]"},
