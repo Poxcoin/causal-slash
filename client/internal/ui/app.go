@@ -406,7 +406,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historyIdx = len(m.history)
 
 			promptMarker := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true).Render("> ")
-			userText := lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0")).Render(line)
+			userText := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true).Render(line)
 			m.lines = append(m.lines, promptMarker+userText)
 			m.enforceScrollbackCap()
 			m.viewport.SetContent(strings.Join(m.lines, "\n"))
@@ -505,22 +505,24 @@ func (m AppModel) renderInput() string {
 		cursorStr = whiteStyle.Render("⎕")
 	}
 
+	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt))
+
 	var text string
 	if pos < len(runes) {
 		char := string(runes[pos])
 		var cursorChar string
 		if m.focused {
 			if m.input.Cursor.Blink {
-				cursorChar = whiteStyle.Render(char)
+				cursorChar = " "
 			} else {
-				cursorChar = lipgloss.NewStyle().Background(lipgloss.Color("#FFFFFF")).Foreground(lipgloss.Color("#000000")).Render(char)
+				cursorChar = lipgloss.NewStyle().Background(lipgloss.Color(colorPrompt)).Foreground(lipgloss.Color("#000000")).Render(char)
 			}
 		} else {
-			cursorChar = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Underline(true).Render(char)
+			cursorChar = blueStyle.Underline(true).Render(char)
 		}
-		text = string(runes[:pos]) + cursorChar + string(runes[pos+1:])
+		text = blueStyle.Render(string(runes[:pos])) + cursorChar + blueStyle.Render(string(runes[pos+1:]))
 	} else {
-		text = string(runes) + cursorStr
+		text = blueStyle.Render(string(runes)) + cursorStr
 	}
 	return prompt + text
 }
