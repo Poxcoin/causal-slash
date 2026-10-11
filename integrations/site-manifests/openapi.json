@@ -1,0 +1,313 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Causal-Slash Protocol Sovereign M2M Gateway API",
+    "version": "1.0.0",
+    "description": "Sub-microsecond cryptographic clearing and compute streaming gateway for autonomous AI agents on Base L2. Authenticated exclusively via 167-byte Session MAC micro-cheques over HTTP headers. Zero Web2 API keys, zero custodial credit cards, zero KYC.",
+    "contact": {
+      "name": "Causal-Slash Protocol Architecture Group",
+      "url": "https://kadoclub.net",
+      "email": "protocol@kadoclub.net"
+    },
+    "license": {
+      "name": "Apache-2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://kadoclub.net",
+      "description": "Production Sovereign Gateway (kadoclub.net)"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "CausalWireChequeAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Causal-Cheque",
+        "description": "Hex-encoded 167-byte Session MAC micro-cheque (csls_cheque_wire_t) signed by autonomous agent secp256k1 key. Zero Web2 API keys required."
+      }
+    },
+    "schemas": {
+      "SessionInitRequest": {
+        "type": "object",
+        "required": [
+          "agentPkHex",
+          "vendorPkHex"
+        ],
+        "properties": {
+          "agentPkHex": {
+            "type": "string",
+            "description": "33-byte compressed secp256k1 public key of agent (66 hex characters).",
+            "example": "0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+          },
+          "vendorPkHex": {
+            "type": "string",
+            "description": "33-byte compressed secp256k1 public key of vendor.",
+            "example": "0x03c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+          }
+        }
+      },
+      "SessionInitResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "sessionMacKeyHex",
+          "wirePacketSize"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "session_established"
+          },
+          "sessionMacKeyHex": {
+            "type": "string",
+            "description": "16-byte SipHash-128 MAC key derived via static-static ECDH."
+          },
+          "wirePacketSize": {
+            "type": "integer",
+            "example": 167
+          }
+        }
+      },
+      "ChequeVerifyRequest": {
+        "type": "object",
+        "required": [
+          "chequeHex"
+        ],
+        "properties": {
+          "chequeHex": {
+            "type": "string",
+            "description": "Hex-encoded 167-byte wire packet (334 hex characters)."
+          }
+        }
+      },
+      "ChequeVerifyResponse": {
+        "type": "object",
+        "required": [
+          "accepted",
+          "height",
+          "cumulativeMicroUsdc",
+          "status"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "example": true
+          },
+          "height": {
+            "type": "integer",
+            "example": 42
+          },
+          "cumulativeMicroUsdc": {
+            "type": "integer",
+            "example": 21000
+          },
+          "cumulativeUsdc": {
+            "type": "number",
+            "example": 0.021
+          },
+          "status": {
+            "type": "string",
+            "example": "VERIFIED_OK"
+          },
+          "verificationLatencyUs": {
+            "type": "number",
+            "example": 1.62
+          }
+        }
+      },
+      "VaultStatusResponse": {
+        "type": "object",
+        "required": [
+          "vaultAddress",
+          "network",
+          "masterBondUsdc",
+          "freeMarginUsdc"
+        ],
+        "properties": {
+          "vaultAddress": {
+            "type": "string",
+            "example": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+          },
+          "network": {
+            "type": "string",
+            "example": "Base L2 (Chain ID 8453)"
+          },
+          "masterBondUsdc": {
+            "type": "number",
+            "example": 10000000.0
+          },
+          "freeMarginUsdc": {
+            "type": "number",
+            "example": 9850000.0
+          },
+          "allocatedExposureUsdc": {
+            "type": "number",
+            "example": 150000.0
+          },
+          "yieldStrategy": {
+            "type": "string",
+            "example": "80/20 Morpho/Aave ERC-4626 (8.5% APY)"
+          },
+          "subagentQuotaIsolation": {
+            "type": "string",
+            "example": "Axiom 1 Active (Merkle Subagent Quotas $5-$10)"
+          }
+        }
+      },
+      "MeshReconcileResponse": {
+        "type": "object",
+        "required": [
+          "engine",
+          "grossVolumeUsdc",
+          "eliminationRatio",
+          "gasSaved"
+        ],
+        "properties": {
+          "engine": {
+            "type": "string",
+            "example": "Tarjan Strongly Connected Components (C11 In-RAM)"
+          },
+          "grossVolumeUsdc": {
+            "type": "number",
+            "example": 450120.0
+          },
+          "residualSettledUsdc": {
+            "type": "number",
+            "example": 315.0
+          },
+          "eliminationRatio": {
+            "type": "string",
+            "example": "99.93%"
+          },
+          "gasSaved": {
+            "type": "string",
+            "example": "100% (Zero L2 Gas for Cleared Cycles)"
+          },
+          "treasuryFeeUsdc": {
+            "type": "number",
+            "example": 45.01
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "error",
+          "statusCode"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "statusCode": {
+            "type": "integer"
+          },
+          "errorCode": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/v1/session/init": {
+      "post": {
+        "summary": "Initiate Session MAC Handshake",
+        "description": "Establishes ECDH authenticated session key between agent and vendor.",
+        "operationId": "initSession",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionInitRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session established successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInitResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cheque/verify": {
+      "post": {
+        "summary": "Verify 167-Byte Wire Cheque",
+        "description": "Validates 167-byte Session MAC micro-cheque in RAM at 1.62 us latency.",
+        "operationId": "verifyCheque",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChequeVerifyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verification result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChequeVerifyResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/vault/status": {
+      "get": {
+        "summary": "Query Base L2 Collateral Vault Status",
+        "description": "Inspects master bond, free margin, and 80/20 yield status on Base L2.",
+        "operationId": "getVaultStatus",
+        "responses": {
+          "200": {
+            "description": "Vault status report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/mesh/reconcile": {
+      "post": {
+        "summary": "Trigger In-RAM Kirchhoff Debt Netting",
+        "description": "Cancels cyclic multi-agent obligations via Tarjan SCC engine.",
+        "operationId": "reconcileMesh",
+        "responses": {
+          "200": {
+            "description": "Netting execution report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeshReconcileResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

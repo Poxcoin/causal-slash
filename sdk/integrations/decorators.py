@@ -20,7 +20,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Union
 
 if TYPE_CHECKING:
-    from ..causal_slash import CausalAgentWallet, CausalVendorNode, Cheque, DebtCycleMesh
+    from ..causal_slash import CausalAgentWallet, Cheque, DebtCycleMesh
     from ..swarm_subagent import SubagentSession
 
 logger = logging.getLogger("causal_slash.integrations.decorators")
@@ -30,7 +30,7 @@ def causal_paid(
     price_usdc: float = 0.001,
     vendor_pk: Optional[Union[str, bytes]] = None,
     wallet: Optional[CausalAgentWallet] = None,
-    vendor_node: Optional[CausalVendorNode] = None,
+    vendor_node: Optional[CausalAgentWallet] = None,
     subagent_session: Optional[SubagentSession] = None,
     mesh: Optional[DebtCycleMesh] = None,
     session_mac: bool = False,
@@ -54,7 +54,7 @@ def causal_paid(
             active_wallet: Optional[CausalAgentWallet],
             active_vendor_pk: Optional[Union[str, bytes]],
             active_subagent: Optional[SubagentSession],
-            active_vendor_node: Optional[CausalVendorNode],
+            active_vendor_node: Optional[CausalAgentWallet],
             active_mesh: Optional[DebtCycleMesh],
         ) -> Optional[Cheque]:
             if active_wallet is None:

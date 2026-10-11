@@ -1,0 +1,32 @@
+{
+  "name": "@causal-slash/agentkit-action-provider",
+  "version": "1.0.0",
+  "description": "Coinbase AgentKit Action Provider for Causal-Slash Protocol - Sovereign M2M Micro-Payments and Remote Compute Clearing on Base L2",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/test/actionProvider.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "agentkit",
+    "coinbase",
+    "causal-slash",
+    "m2m",
+    "micropayments",
+    "base-l2",
+    "autonomous-agents",
+    "state-channels",
+    "zero-gas"
+  ],
+  "author": "Causal-Slash Protocol Contributors",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  }
+}

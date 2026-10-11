@@ -7,7 +7,7 @@ LDFLAGS ?= -lcrypto
 
 SRCS = src/causal_daemon.c src/causal_daemon.h
 
-all: causal_daemon csls_daemon libcausal_slash.so sdk/libbloodhound.so
+all: causal_daemon csls_daemon libcausal_slash.so libcausal_slash.a sdk/libbloodhound.so
 
 # Standalone network daemon (Terminal 1): TCP frontend over the frozen core.
 # The daemon's CLI main is guarded by CSLS_DAEMON_NO_MAIN so the in-process
@@ -28,6 +28,10 @@ libcausal_slash.so: $(SRCS)
 	$(CC) $(CFLAGS) -shared src/causal_daemon.c $(LDFLAGS) -o sdk/libcausal_slash.so
 	cp -f sdk/libcausal_slash.so libcausal_slash.so
 
+libcausal_slash.a: $(SRCS)
+	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -c src/causal_daemon.c -o src/causal_daemon.o
+	ar rcs libcausal_slash.a src/causal_daemon.o
+
 test: causal_daemon
 	./causal_daemon --all
 	rm -f causal_daemon
@@ -40,30 +44,30 @@ test-asan:
 	./causal_daemon_asan --all
 	rm -f causal_daemon_asan
 
-test-concurrency:
-	$(CC) $(CFLAGS) tests/c/test_concurrency.c $(LDFLAGS) -o test_concurrency
-	./test_concurrency
-	rm -f test_concurrency
+test-poc-dos:
+	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -Isrc tests/c/poc_tcp_dos.c src/causal_daemon.c src/csls_daemon.c $(LDFLAGS) -o test_poc_tcp_dos
+	./test_poc_tcp_dos
+	rm -f test_poc_tcp_dos
 
-test-agent-concurrency:
-	$(CC) $(CFLAGS) -DCSLS_NO_MAIN tests/c/test_agent_concurrency.c src/causal_daemon.c $(LDFLAGS) -o test_agent_concurrency
-	./test_agent_concurrency
-	rm -f test_agent_concurrency
+test-poc-eots:
+	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -Isrc tests/c/poc_tcp_eots.c src/causal_daemon.c src/csls_daemon.c $(LDFLAGS) -o test_poc_tcp_eots
+	./test_poc_tcp_eots
+	rm -f test_poc_tcp_eots
 
-test-bloat:
-	$(CC) $(CFLAGS) tests/c/test_state_bloat.c $(LDFLAGS) -o test_state_bloat
-	./test_state_bloat
-	rm -f test_state_bloat
+test-poc-fuzz:
+	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -Isrc tests/c/poc_tcp_fuzz.c src/causal_daemon.c src/csls_daemon.c $(LDFLAGS) -o test_poc_tcp_fuzz
+	./test_poc_tcp_fuzz
+	rm -f test_poc_tcp_fuzz
 
-test-redteam:
-	$(CC) -fsanitize=address,undefined -g -Wall -Wextra -pthread -DCSLS_NO_MAIN -Isrc tests/c/test_redteam_exploit.c src/causal_daemon.c $(LDFLAGS) -o test_redteam_exploit
-	./test_redteam_exploit
-	rm -f test_redteam_exploit
+test-redteam-handshake:
+	$(CC) $(CFLAGS) -DCSLS_NO_MAIN -Isrc tests/c/test_redteam_handshake.c src/causal_daemon.c $(LDFLAGS) -o test_redteam_handshake
+	./test_redteam_handshake
+	rm -f test_redteam_handshake
 
-test-competitor:
-	$(CC) -fsanitize=address,undefined -g -Wall -Wextra -pthread -DCSLS_NO_MAIN -Isrc tests/c/test_competitor_griefing.c src/causal_daemon.c $(LDFLAGS) -o test_competitor_griefing
-	./test_competitor_griefing
-	rm -f test_competitor_griefing
+test-redteam-hound-race:
+	$(CC) -O1 -g -fsanitize=thread -Wall -Wextra -pthread -DCSLS_NO_MAIN -Isrc tests/c/test_redteam_hound_race.c src/schnorr_bloodhound.c $(LDFLAGS) -o test_redteam_hound_race
+	setarch $$(uname -m) -R ./test_redteam_hound_race
+	rm -f test_redteam_hound_race
 
 test-audit:
 	$(CC) -fsanitize=address,undefined -g -Wall -Wextra -pthread -DCSLS_NO_MAIN -Isrc tests/c/test_reliability_audit.c src/causal_daemon.c $(LDFLAGS) -o test_reliability_audit
@@ -152,4 +156,14 @@ test-redteam-lock-dos:
 	$(CC) -O2 -Isrc -DCSLS_NO_MAIN tests/c/test_redteam_lock_dos.c src/causal_daemon.c src/schnorr_bloodhound.c $(LDFLAGS) -o test_redteam_lock_dos
 	./test_redteam_lock_dos
 	rm -f test_redteam_lock_dos
+
+GO ?= $(shell which go 2>/dev/null || echo $(HOME)/.local/bin/go)
+
+# Go terminal client (client/): builds standalone csls binary and installs to ~/.local/bin/csls
+csls-client: libcausal_slash.a
+	@mkdir -p bin
+	cd client && $(GO) build -o ../bin/csls ./cmd/csls
+	cp -f bin/csls bin/csls-go
+	@mkdir -p $(HOME)/.local/bin
+	cp -f bin/csls $(HOME)/.local/bin/csls
 

@@ -314,8 +314,10 @@ static void *csls_refiller_main(void *arg) {
         g_refiller.count--;
         // Hold mu for the whole renewal: serializes O_DSYNC writes and pins the
         // agent against csls_agent_destroy for the duration (no use-after-free).
-        if (a) csls_wal_renew(a);
-        atomic_store_explicit(&a->renew_requested, 0, memory_order_relaxed);
+        if (a) {
+            csls_wal_renew(a);
+            atomic_store_explicit(&a->renew_requested, 0, memory_order_relaxed);
+        }
         pthread_mutex_unlock(&g_refiller.mu);
     }
     return NULL;
@@ -1093,10 +1095,12 @@ int csls_vendor_enable_mac(csls_vendor_ctx_t *vendor, int enable) {
 int csls_vendor_session_init(csls_vendor_ctx_t *vendor, const csls_session_init_pkt_t *init) {
     if (!vendor || !init) return -1;
     if (init->magic != CSLS_MAGIC || init->type != CSLS_PKT_SESSION_INIT) return -10;
-    pthread_mutex_lock(&vendor->lock);
+
+    // SEC-A-011: Compute ECDH shared secret and verify HMAC auth outside the
+    // critical section so that expensive curve point ops (~30-70 us) or spoofed
+    // packet floods do not starve the vendor mutex and collapse streaming throughput.
     uint8_t x[32];
     if (csls_ecdh_x(vendor->sk, init->agent_pk, x) != 0) {
-        pthread_mutex_unlock(&vendor->lock);
         return -1;
     }
     uint8_t auth[16];
@@ -1104,9 +1108,10 @@ int csls_vendor_session_init(csls_vendor_ctx_t *vendor, const csls_session_init_
     if (memcmp(auth, init->auth_mac, 16) != 0) {
         // Spoofed INIT: the attacker does not hold the claimed agent's key.
         OPENSSL_cleanse(x, sizeof(x));
-        pthread_mutex_unlock(&vendor->lock);
         return CSLS_ERR_BAD_MAC;
     }
+
+    pthread_mutex_lock(&vendor->lock);
     csls_channel_t *chan = csls_channel_get_or_create(&vendor->channels, init->agent_pk);
     if (!chan) {
         OPENSSL_cleanse(x, sizeof(x));

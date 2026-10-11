@@ -607,7 +607,7 @@ class CausalAgentKit:
         if name in self._providers:
             raise ValueError(f"provider '{name}' already registered")
         vendor_wallet = CausalAgentWallet(secret_key=bytes(node._ctx.sk))
-        node_delta_micro = int(node._ctx.max_exposure_delta_v)
+        node_delta_micro = int(getattr(node, "max_exposure_delta_v", getattr(getattr(node, "_recv_ctx", None), "max_exposure_delta_v", 1000000)))
         if node_delta_micro < self._lifetime_sent_micro:
             raise ValueError(
                 f"provider node delta_v ({node_delta_micro} micro) is below the "

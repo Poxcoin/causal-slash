@@ -27,9 +27,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 try:
-    from .causal_slash import CausalAgentWallet, CausalVendorNode, Cheque
+    from .causal_slash import CausalAgentWallet, Cheque
 except ImportError:
-    from causal_slash import CausalAgentWallet, CausalVendorNode, Cheque
+    from causal_slash import CausalAgentWallet, Cheque
 
 ChequeStatusError = RuntimeError
 
@@ -48,7 +48,7 @@ class StreamCoordinator:
     """Global height lanes + integer ledger over the native C engine."""
 
     wallets: Dict[str, CausalAgentWallet] = field(default_factory=dict)
-    payee_nodes: Dict[bytes, CausalVendorNode] = field(default_factory=dict)
+    payee_nodes: Dict[bytes, CausalAgentWallet] = field(default_factory=dict)
     ledger: Dict[Tuple[bytes, bytes], int] = field(default_factory=dict)
     channel_stats: Dict[Tuple[bytes, bytes], ChannelStats] = field(default_factory=dict)
     _last_cum_by_payer: Dict[bytes, int] = field(default_factory=dict)
@@ -62,7 +62,7 @@ class StreamCoordinator:
             raise ValueError(f"wallet '{name}' already registered")
         self.wallets[name] = wallet
 
-    def register_payee(self, node: CausalVendorNode) -> bytes:
+    def register_payee(self, node: CausalAgentWallet) -> bytes:
         pk = node.public_key
         if pk in self.payee_nodes:
             raise ValueError("payee node already registered")
@@ -74,7 +74,7 @@ class StreamCoordinator:
     def stream(
         self,
         payer_wallet: CausalAgentWallet,
-        payee_node: CausalVendorNode,
+        payee_node: CausalAgentWallet,
         amount_micro: int,
         lane_height: Optional[int] = None,
         purpose: str = "",
@@ -168,7 +168,7 @@ class StreamCoordinator:
         self.next_height = lane_height + 1
         return cheque
 
-    def deliver(self, payee_node: CausalVendorNode, cheque: Cheque,
+    def deliver(self, payee_node: CausalAgentWallet, cheque: Cheque,
                 amount_micro: Optional[int] = None):
         """
         Delivers a previously signed (offline) cheque; records on acceptance.

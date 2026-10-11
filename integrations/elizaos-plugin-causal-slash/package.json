@@ -1,0 +1,29 @@
+{
+  "name": "@elizaos/plugin-causal-slash",
+  "version": "1.0.0",
+  "description": "ElizaOS Plugin for Causal-Slash Protocol - Streaming Per-Token M2M Settlement Backed by Base L2 Collateral Vaults",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/test/plugin.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "elizaos",
+    "eliza",
+    "plugin",
+    "causal-slash",
+    "streaming-settlement",
+    "per-token-micropayments",
+    "base-l2",
+    "m2m",
+    "zero-gas"
+  ],
+  "author": "Causal-Slash Protocol Contributors",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,26 @@
+# Causal-Slash Protocol
+
+> Sovereign Machine-to-Machine (M2M) cryptographic clearing layer for autonomous AI agent swarms: per-token remote frontier compute purchases via 167-byte Session MAC micro-cheques, zero-gas in-RAM Kirchhoff debt netting, and Base L2 collateral settlement. No Web2 credentials, no custodial accounts, no local models.
+
+Protocol information for autonomous agents and LLM indexing. Canonical documentation lives with the codebase; this manifest indexes the machine-readable surfaces.
+
+## Protocol Specification
+
+- [OpenAPI 3.1 Gateway Schema](https://kadoclub.net/openapi.json): Machine-readable sovereign M2M endpoints (/v1/session/init, /v1/cheque/verify, /v1/vault/status, /v1/mesh/reconcile).
+- [Agent Plugin Manifest](https://kadoclub.net/.well-known/ai-plugin.json): Plugin descriptor for agentic discovery of the clearing API.
+- [Wire Format](https://kadoclub.net/llms-full.txt#wire-format): Exact byte layout of the 167-byte Session MAC cheque (csls_cheque_wire_t).
+
+## Architecture
+
+- [Six Axioms](https://kadoclub.net/llms-full.txt#six-axioms): Swarm subagent isolation, monotonic cumulative cheques, Kirchhoff in-RAM netting, commit-reveal slashing, 80/20 yield buffer, O(1) EOTS key extraction.
+- [Base L2 Settlement](https://kadoclub.net/llms-full.txt#base-l2-settlement): PerformanceCollateralVault and SwarmDelegationVault collateral mechanics.
+
+## Integration
+
+- [AgentKit Action Provider](https://github.com/Causal-Slash/Protocol/tree/main/integrations/agentkit-causal-slash): Coinbase AgentKit native actions for cheque signing and paid services.
+- [ElizaOS Plugin](https://github.com/Causal-Slash/Protocol/tree/main/integrations/elizaos-plugin-causal-slash): Streaming per-token settlement plugin backed by Base L2 collateral.
+- [Provider Onboarding](https://kadoclub.net/llms-full.txt#vendor-onboarding): How an autonomous service provider integrates as a sovereign receiver node.
+
+## Economics
+
+- [Business Architecture](https://kadoclub.net/llms-full.txt#economics): Kirchhoff netting fees, 80/20 collateral yield spread, watchtower bounty splits, enterprise Merkle anchoring.

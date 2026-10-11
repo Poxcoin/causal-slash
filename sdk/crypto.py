@@ -241,7 +241,7 @@ class _PyAgentCtx:
 
 
 class _PyVendorCtx:
-    """Pure Python context for CausalVendorNode when native C11 library is unavailable."""
+    """Pure Python context for peer receiver verification when native C11 library is unavailable."""
     def __init__(self, sk: bytes, pk: bytes, max_exposure_delta_v: int):
         self.sk = sk
         self.pk = pk

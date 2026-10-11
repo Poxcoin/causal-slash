@@ -1,0 +1,58 @@
+# Causal-Slash Protocol
+
+> Sovereign Machine-to-Machine (M2M) cryptographic clearing layer for autonomous AI agent swarms. Agents pay sovereign vendor nodes per token for remote frontier compute with 167-byte Session MAC micro-cheques; mutual obligations cancel in RAM via Kirchhoff debt netting; the net residual settles on Base L2. No Web2 credentials, no custodial accounts, no local inference.
+
+Causal-Slash Protocol (CSLS) is designed for machine commerce: autonomous agents operating through non-custodial self-sovereign accounts with on-chain sanctions screening, without custodial intermediaries or Web2 subscription rails. A vendor is defined purely by a 33-byte compressed secp256k1 public key and a network endpoint. A buyer is defined by its key and the collateral it locks on Base L2.
+
+## Wire Format
+
+The unit of payment is the 167-byte Session MAC wire cheque (`csls_cheque_wire_t`), transmitted on raw TCP sockets or the `X-Causal-Cheque` HTTP header as raw hex:
+
+- Bytes 0-3: magic `0x43534C53` ("CSLS", little-endian).
+- Byte 4: packet type `0x01` (cheque).
+- Bytes 5-37: agent public key (33-byte compressed secp256k1).
+- Bytes 38-70: vendor public key (33-byte compressed secp256k1).
+- Bytes 71-78: height `h` (uint64 little-endian, globally monotonic per agent).
+- Bytes 79-86: cumulative amount (uint64 little-endian, integer micro-USDC, 6 decimals; cumulative and monotonic per agent-vendor channel).
+- Bytes 87-118: challenge scalar `e = SHA256(agent_pk || vendor_pk || h_BE || cumulative_BE) mod q`.
+- Bytes 119-150: signature scalar `s = (k + e * sk) mod q` with deterministic nonce `k = HMAC-SHA256(sk, vendor_pk || h_BE || counter) mod q`.
+- Bytes 151-166: 16-byte SipHash-2-4 session MAC over the first 151 bytes, keyed by `session_key = HMAC-SHA256(ecdh_x, nonce_BE || "CSLS-MAC-v1")`.
+
+Channel bootstrap uses a 95-byte SESSION_INIT packet carrying an HMAC-SHA256 authentication tag over the ECDH-derived secret (the C2 gate). Vendors running the MAC-mandating mode reject any cheque without a valid session MAC with error -24. Heights must strictly increase per channel; cumulative amounts must never decrease. Exact-duplicate replays return -21; regressions return -22.
+
+## Six Axioms
+
+1. Swarm Delegation Isolation: a master bond (for example $10,000,000 USDC) anchors millions of Merkle-committed subagent quotas ($5-$10). An equivocating subagent is slashed only from its own quota within free margin; the master bond is preserved for honest direct vendors.
+2. Monotonic Cumulative Cheques: cheques are cumulative counters on the wire. They never reset between sessions; the next session continues with strictly higher height and non-decreasing cumulative amount. On-chain settlement consumes only the difference.
+3. Kirchhoff Debt Cycle Mesh: cyclic agent-vendor obligations (A to B to C to A) are detected with Tarjan's strongly connected components algorithm and cancelled in RAM with zero gas. Over 99.9 percent of gross volume is compressed off-chain; only the net residual reaches Base L2.
+4. Commit-Reveal Fraud Proofs: slashing requires `commitFraudProof` with a 1 USDC bond, then `revealAndSlash` after the commit delay. This protects watchtower bounty hunters (15 percent finder bounty) from mempool front-running.
+5. 80/20 Yield Buffer: idle collateral is split 20 percent liquid USDC (instant unbonding) and 80 percent streamed to Morpho/Aave ERC-4626 vaults.
+6. O(1) Algebraic Foreclosure: two cheques signed at the same height leak the private key: `sk = (s1 - s2) * (e1 - e2)^(-1) mod q`. The extracted key is verified against the claimed agent identity and submitted on-chain to foreclose the collateral bond.
+
+## Base L2 Settlement
+
+Collateral lives in `PerformanceCollateralVault.sol` and `SwarmDelegationVault.sol` on Base L2. Cheque clearance itself costs zero gas; only net residuals, fraud foreclosures, and Merkle root anchoring touch the chain. The 167-byte cheque verifies locally in low single-digit microseconds per core (hardware-qualified measurement; sub-2 microseconds on the reference build) at hundreds of thousands of cheques per second per core.
+
+## Vendor Onboarding
+
+Any machine can become a sovereign vendor node:
+
+1. Generate a secp256k1 identity (33-byte compressed public key).
+2. Run the C11 daemon (raw TCP, default port 9444) or the HTTP B2B gateway.
+3. Advertise a `delta_v` optimistic credit window (default $1.00 USDC): the maximum unconfirmed compute extended to a channel before settlement is required.
+4. Stream compute; the vendor's hot path verifies each cheque in constant time (session MAC, monotonic heights, exposure cap, challenge recomputation) and traps double-signs in O(1).
+
+There is no registration portal, no e-mail verification, no hosted account: identity is the key, collateral lives on Base L2.
+
+## Integration
+
+- Coinbase AgentKit: `CausalSlashActionProvider` exposes `causal_create_channel`, `causal_sign_stream_cheque`, `causal_invoke_paid_inference`, and `causal_inspect_vault_bond` as native agent actions.
+- ElizaOS: `@elizaos/plugin-causal-slash` provides `STREAM_TOKEN_SETTLEMENT` and `GET_CHANNEL_BALANCE` actions plus a collateral state provider, settling per token against Base L2 vaults.
+- HTTP: Transport 167-byte Session MAC cheques over the `X-Causal-Cheque` header; sessions bootstrap at `/v1/session/init`; receiver verification at `/v1/cheque/verify`.
+
+## Economics
+
+- Kirchhoff netting fee: 1 to 5 basis points of gross in-RAM cleared volume.
+- 80/20 yield spread: protocol participation in collateral yield.
+- Bloodhound bounty splits: 60 percent of liquidated bonds to the insurance reserve, 40 percent to the treasury; finders earn 15 percent of the forfeited bond.
+- Enterprise Merkle anchoring: on-chain registration of swarm delegation roots.

@@ -19,7 +19,7 @@ def run_agent_workflow():
 
     print(f"[agent] wallet_pk:  {agent.public_key_hex[:22]}...")
     print(f"[vendor] endpoint:  {vendor.public_key_hex[:22]}...")
-    print(f"[channel] buffer:   ${vendor._ctx.max_exposure_delta_v / 1e6:.2f} USDC")
+    print(f"[channel] buffer:   ${vendor.max_exposure_delta_v / 1e6:.2f} USDC")
 
     # Authenticated Session MAC channel (C2 gate): vendors mandate Session MAC
     # by default because wire cheques omit the Schnorr point R.
