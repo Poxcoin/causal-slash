@@ -61,7 +61,9 @@ func (r *UpstreamRouter) fetchModels(ctx context.Context, url, key, provider str
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s models: %w", provider, err)
@@ -89,9 +91,6 @@ func (r *UpstreamRouter) fetchModels(ctx context.Context, url, key, provider str
 
 // ListModels returns the live model catalogue of every configured upstream.
 func (r *UpstreamRouter) ListModels(ctx context.Context) ([]ModelEntry, error) {
-	if r.groqKey == "" && r.openRouterKey == "" {
-		return nil, fmt.Errorf("no inference upstream configured: set GROQ_API_KEY or OPENROUTER_API_KEY")
-	}
 	var all []ModelEntry
 	var errs []string
 	if r.groqKey != "" {
@@ -101,13 +100,12 @@ func (r *UpstreamRouter) ListModels(ctx context.Context) ([]ModelEntry, error) {
 		}
 		all = append(all, m...)
 	}
-	if r.openRouterKey != "" {
-		m, err := r.fetchModels(ctx, "https://openrouter.ai/api/v1/models", r.openRouterKey, "openrouter")
-		if err != nil {
-			errs = append(errs, err.Error())
-		}
-		all = append(all, m...)
+	// The OpenRouter catalogue is public; no key is needed to list it.
+	m, err := r.fetchModels(ctx, "https://openrouter.ai/api/v1/models", r.openRouterKey, "openrouter")
+	if err != nil {
+		errs = append(errs, err.Error())
 	}
+	all = append(all, m...)
 	if len(all) == 0 {
 		return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
