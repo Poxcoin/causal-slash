@@ -102,13 +102,15 @@
      - Ограниченную кредитную линию мерчанта ($100–$500 capped credit exposure).
      - Merchant-funded trial с последующей автоматической сверкой чеков на Base L2.
   4. **Zero On-Chain x402 Micro-Transactions:** Прямые ончейн-транзакции за каждый HTTP/токен запрос запрещены: комиссии L1/L2 ($0.003–$0.01) и задержки финализации блоков уничтожают экономику микростриминга. Потоковый расчет ведется 167-байтными Session MAC чеками в RAM, на L2 отправляется только неттинг.
-  5. **Zero Localhost LLM Fantasies:** Пограничные MoE модели на 1.6T–2.7T параметров (Claude Opus 5.5, GPT-6, DeepSeek-V4-Pro) развертываются исключительно в специализированных облачных API и Enterprise-каналах.
+  5. **Zero Self-Hosting & Zero GPU-Rental Fantasies (Полный запрет аренды серверов и ручного хостинга весов):**
+     Никаких арендованных GPU-серверов (RunPod, Lambda) для самостоятельного развертывания моделей или ручного поднятия API. Закрытые передовые сервисы 2026 года (Claude Opus 5.5, GPT-6.1 Sol, Kling 4.0, ElevenLabs v4, DeepSeek-V4-Pro) являются проприетарными облачными платформами. Вендоры CSLS — это исключительно клиринговые шлюзы ликвидности и API-брокеры с корпоративным биллингом. Клиент платит за каждый вызов микро-чеками USDC, вендор исполняет запрос через официальные API без кредитных карт и подписок на стороне пользователя.
 
-* **Классы сервисов и мерчантов:**
-  - **Inference & Intelligence APIs (P0):** Специализированные inference endpoints (DeepSeek, Llama, Anthropic, OpenAI API).
-  - **Data, Search & Memory (P1):** Веб-скрапинг (Firecrawl), поиск, векторные базы данных (Qdrant, Pinecone).
-  - **Agent-to-Agent Micro-Services (P1):** Координация и субподряды между автономными агентами в рое.
-  - **Multimodal & Voice Services (P2):** Генерация речи и медиа (ElevenLabs API).
+* **Классы сервисов и мерчантов (Октябрь 2026):**
+  - **Inference & Intelligence APIs (P0):** Официальные endpoints (Anthropic Claude Opus 5.5 / Sonnet 5.5 / Haiku 5.5, OpenAI GPT-6.1 Sol / Luna, DeepSeek-V4-Pro / V4.1-Flash, Google Gemini 4 Argon).
+  - **Video Generation APIs (P1):** Генерация видео (Kling 4.0 и Kling 4.0 Flash — до 30 секунд в 4K HDR, multi-keyframe control до 10 кадров, Omni Reference).
+  - **Voice & Audio APIs (P1):** Синтез речи и голосовые агенты (ElevenLabs Eleven v4, Eleven v4 Turbo, платформа ElevenAgents / Architect на 90+ языках).
+  - **Data, Search & Memory (P1):** Веб-скрапинг (Firecrawl), векторные базы данных (Qdrant, Pinecone).
+  - **Agent-to-Agent Micro-Services (P1):** Координация и взаимный субподряд между автономными агентами в рое.
 
 ---
 
