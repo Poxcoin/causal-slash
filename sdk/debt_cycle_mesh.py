@@ -104,6 +104,36 @@ class NettingSummary:
     def mutual_close_acts(self) -> List[NettingCancellationCertificate]:
         return self.certificates
 
+    @property
+    def cycles_eliminated_count(self) -> int:
+        return self.cycles_resolved
+
+    @property
+    def total_cleared_micro_usdc(self) -> int:
+        return self.annihilated_volume_micro
+
+    @property
+    def gross_volume_micro_usdc(self) -> int:
+        return self.gross_volume_micro
+
+    @property
+    def net_volume_micro_usdc(self) -> int:
+        return self.residual_volume_micro
+
+    @property
+    def volume_compression_ratio(self) -> float:
+        return self.compression_ratio
+
+    @property
+    def tx_compression_ratio(self) -> float:
+        if self.edges_before <= 0:
+            return 0.0
+        return max(0.0, 1.0 - (self.edges_after / self.edges_before))
+
+    def __iter__(self):
+        # Allow unpacking as: cycles_elim, cleared = mesh.reduce_kirchhoff_cycles()
+        return iter((self.cycles_resolved, self.annihilated_volume_micro))
+
 
 class DebtCycleMesh:
     """
@@ -114,9 +144,13 @@ class DebtCycleMesh:
 
     def __init__(self, treasury_node: Optional[bytes] = None,
                  fee_numerator: int = FEE_NUMERATOR,
-                 fee_denominator: int = FEE_DENOMINATOR):
+                 fee_denominator: int = FEE_DENOMINATOR,
+                 auto_bilateral_netting: bool = True):
         if fee_denominator <= 0 or fee_numerator < 0:
             raise ValueError("invalid fee configuration")
+        self.auto_bilateral_netting = auto_bilateral_netting
+        self._cumulative_gross_injected = 0
+        self._initial_edges_count = 0
         self._edges: Dict[EdgeKey, int] = {}
         self._nodes: Set[bytes] = set()
         self._gross_volume = 0
@@ -171,6 +205,8 @@ class DebtCycleMesh:
         key = self._key(payer, payee)
         self._edges[key] = self._edges.get(key, 0) + amount_micro
         self._gross_volume += amount_micro
+        self._cumulative_gross_injected += amount_micro
+        self._initial_edges_count += 1
         self._nodes.update(key)
         self._assert_conservation()
 
@@ -281,6 +317,11 @@ class DebtCycleMesh:
                             break
                     sccs.append(scc)
         return sccs
+
+    @property
+    def is_dag(self) -> bool:
+        """Returns True if the directed obligation graph is an acyclic DAG (no cycles)."""
+        return all(len(scc) <= 1 for scc in self.tarjan_sccs())
 
     def find_cycle(self) -> Optional[List[bytes]]:
         """Deterministically finds one directed cycle (path closed to its head)."""
@@ -479,12 +520,14 @@ class DebtCycleMesh:
                 for (payer, payee), amount in sorted(self._edges.items(), key=repr)]
 
     def summary(self) -> NettingSummary:
+        gross_vol = self._cumulative_gross_injected if self._cumulative_gross_injected > 0 else self._gross_volume
+        initial_edges = self._initial_edges_count if self._initial_edges_count > 0 else len(self._edges)
         return NettingSummary(
-            gross_volume_micro=self._gross_volume,
+            gross_volume_micro=gross_vol,
             residual_volume_micro=self.total_system_debt(),
             annihilated_volume_micro=self._annihilated_volume,
             cycles_resolved=self._cycles_resolved,
-            edges_before=len(self._edges),
+            edges_before=initial_edges,
             edges_after=len(self._edges),
             treasury_fee_micro=self._treasury_fee,
             conservation_ok=True,
@@ -511,3 +554,12 @@ class DebtCycleMesh:
     def resolve_cycles(self) -> NettingSummary:
         """Alias for net_all() to provide uniform API across legacy and v3 interfaces."""
         return self.net_all()
+
+    def get_summary(self) -> NettingSummary:
+        """Alias for summary() to provide uniform API across legacy and v3 interfaces."""
+        return self.summary()
+
+    def get_all_net_balances(self) -> Dict[bytes, int]:
+        """Alias for all_net_balances() to provide uniform API across legacy and v3 interfaces."""
+        return self.all_net_balances()
+

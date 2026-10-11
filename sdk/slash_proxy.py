@@ -25,7 +25,6 @@ from typing import Optional, Tuple, Union, Dict, List, Callable
 try:
     from .causal_slash import (
         CausalAgentWallet,
-        CausalVendorNode,
         Cheque,
         CslsCheque,
         DebtCycleMesh,
@@ -43,7 +42,6 @@ try:
 except ImportError:
     from causal_slash import (
         CausalAgentWallet,
-        CausalVendorNode,
         Cheque,
         CslsCheque,
         DebtCycleMesh,
@@ -81,7 +79,8 @@ class SlashSidecarProxy:
         custom_network_transport: Optional[Callable[[bytes], None]] = None,
         delegation_vault: Optional[SwarmDelegationVault] = None,
         upstream_url: Optional[str] = None,
-        vendor_node: Optional[CausalVendorNode] = None,
+        receiver_wallet: Optional[CausalAgentWallet] = None,
+        vendor_node: Optional[CausalAgentWallet] = None,
         spend_rate_per_sec_usdc: float = 0.0001,
         guardrail: Optional[EdgeSafetyGuardrail] = None,
         enable_guardrail: bool = True,
@@ -96,7 +95,8 @@ class SlashSidecarProxy:
         self.custom_transport = custom_network_transport
         self.delegation_vault = delegation_vault
         self.upstream_url = upstream_url or os.environ.get("CAUSAL_UPSTREAM_URL")
-        self.vendor_node = vendor_node
+        self.vendor_node = receiver_wallet or vendor_node
+        self.receiver_wallet = self.vendor_node
         self.spend_rate_per_sec_usdc = spend_rate_per_sec_usdc
         if guardrail is not None:
             self.guardrail: Optional[EdgeSafetyGuardrail] = guardrail
@@ -129,7 +129,9 @@ class SlashSidecarProxy:
         Reduction = 1.0 - (external_network_packets_sent / gross_obligations).
         """
         with self._lock:
-            gross = self.mesh._gross_tx_count
+            gross = getattr(self.mesh, "_gross_tx_count", None)
+            if gross is None:
+                gross = len(getattr(self.mesh, "_edges", {}))
             if gross == 0:
                 return 1.0
             ratio = 1.0 - (self.external_network_packets_sent / gross)

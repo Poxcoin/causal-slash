@@ -556,6 +556,15 @@ contract SwarmDelegationVault is PerformanceCollateralVault {
 
         vault.collateralBond = masterBond - penalty;
         swarmSlashedTotals[args.masterAgent] += penalty;
+
+        // Dynamic clamping of pending emergency withdrawal: the bond shrank, so a
+        // withdrawal queued earlier must not reach into collateral reserved for vendors.
+        uint256 postSlashFreeMargin = vault.collateralBond > totalAllocatedExposure[args.masterAgent]
+            ? vault.collateralBond - totalAllocatedExposure[args.masterAgent]
+            : 0;
+        if (vault.pendingWithdrawal > postSlashFreeMargin) {
+            vault.pendingWithdrawal = postSlashFreeMargin;
+        }
         slashTimestamps[args.masterAgent] = block.timestamp;
 
         _ensureLiquidCash(penalty);

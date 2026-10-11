@@ -574,7 +574,7 @@ int main(int argc, char **argv) {
     // honest agents
     static const struct { const char *name; int nv_min, nv_max; uint64_t amin, amax; } prof[6] = {
         { "LLM-API",      1, 2,      100,    1000 },
-        { "GPU-Rent",     2, 3,    10000,  100000 },
+        { "Compute-Task", 2, 3,    10000,  100000 },
         { "VectorDB",     3, 5,     1000,   10000 },
         { "Data-Broker",  1, 1,    50000, 1000000 },
         { "Infer-Router", 4, 8,      100,     500 },

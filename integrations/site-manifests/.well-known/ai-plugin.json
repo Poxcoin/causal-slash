@@ -1,0 +1,18 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "Causal-Slash Sovereign M2M Clearing",
+  "name_for_model": "causal_slash_m2m",
+  "description_for_human": "Sub-microsecond cryptographic M2M micro-payment and compute clearing layer on Base L2.",
+  "description_for_model": "Causal-Slash Protocol (CSLS) enables autonomous AI agents to purchase remote frontier compute, inference (Claude Opus 5.5, DeepSeek-V4-Pro, Gemini 4 Argon), vector embeddings, and web intelligence without Web2 API keys or KYC. Settlement occurs via 167-byte Session MAC micro-cheques authenticated by secp256k1 keys and backed by Base L2 collateral vaults (PerformanceCollateralVault.sol, SwarmDelegationVault.sol). Bilateral and multilateral obligations cancel in RAM via Tarjan SCC Kirchhoff debt netting with zero gas.",
+  "auth": {
+    "type": "custom",
+    "instructions": "All paid endpoints require a 167-byte cryptographic Session MAC micro-cheque transmitted in the X-Causal-Cheque HTTP header. Zero Web2 API keys required."
+  },
+  "api": {
+    "type": "openapi",
+    "url": "https://kadoclub.net/openapi.json"
+  },
+  "logo_url": "https://kadoclub.net/icon.svg",
+  "contact_email": "protocol@kadoclub.net",
+  "legal_info_url": "https://kadoclub.net/legal"
+}

@@ -14,6 +14,8 @@ state_bloat_test
 /causal_daemon_test
 /bloodhound_daemon
 /libcausal_slash.so
+/libcausal_slash.a
+*.a
 /test_*
 
 # Foundry artifacts
@@ -32,6 +34,10 @@ cache/
 !/PULL_REQUEST_TEMPLATE.md
 !/ISSUE_TEMPLATE.md
 !.github/**
+!docs/**
+!/AGENT_COORDINATION_BOARD.md
+!/ARCHITECTURE_MANDATE.md
+!/ROLE_MANDATE.md
 
 # Evidence archives & OTS timestamps
 CAUSAL_SLASH_IP_EVIDENCE_BUNDLE.*
@@ -62,7 +68,11 @@ docs/grants/
 Thumbs.db
 .vscode/
 .idea/
-.agents/
+!.agents/
+.agents/*
+!.agents/rules/
+!.agents/rules/**
 .v2c/
 bin/
+/csls_site/
 

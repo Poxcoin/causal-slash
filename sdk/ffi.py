@@ -223,6 +223,10 @@ class _AgentCtxHandle(ctypes.c_void_p):
             return b""
         return bytes((ctypes.c_uint8 * 33).from_address(self.value + 32))
 
+    @property
+    def max_exposure_delta_v(self) -> int:
+        return 0
+
 AgentCtxHandle = _AgentCtxHandle
 
 

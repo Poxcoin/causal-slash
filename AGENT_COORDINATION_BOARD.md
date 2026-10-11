@@ -1,0 +1,1 @@
+.internal/AGENT_COORDINATION_BOARD.md

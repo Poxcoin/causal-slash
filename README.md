@@ -1,36 +1,71 @@
-# Causal-Slash Protocol
+# CSLS — Streaming Micropayments for AI Agents
+
+**Pay-per-request infrastructure for autonomous agents and machine-to-machine services.**
 
 [![License: Apache-2.0 / MIT](https://img.shields.io/badge/License-Apache--2.0%20%2F%20MIT-blue.svg)](LICENSE)
-[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-100%2F100_Passing-brightgreen?logo=solidity)](tests/)
-[![Python SDK Tests](https://img.shields.io/badge/Pytest-102%2F102_Passing-brightgreen?logo=pytest)](tests/)
+[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-82%2F82_Passing-brightgreen?logo=solidity)](tests/)
+[![Python SDK Tests](https://img.shields.io/badge/Pytest-74%2F74_Passing-brightgreen?logo=pytest)](tests/)
 [![Base Sepolia](https://img.shields.io/badge/Base_Sepolia-0x901c...2253-success?logo=ethereum)](https://sepolia.basescan.org/address/0x901c98Da847DD24ff23FcC37B6D1549A17F12253#code)
 [![Arbitrum Sepolia](https://img.shields.io/badge/Arbitrum_Sepolia-0x45Cd...1f1F-blue?logo=arbitrum)](https://sepolia.arbiscan.io/address/0x45Cd2B0d1319C158a5B37B74DcBE3D78C9861f1F#code)
-[![C11 Engine Latency](https://img.shields.io/badge/C11_Latency-1.68_%C2%B5s-blue)](src/causal_daemon.c)
-[![Throughput](https://img.shields.io/badge/Throughput-596k_ops%2Fsec-orange)](src/causal_daemon.c)
+[![Local Benchmark](https://img.shields.io/badge/Local_Benchmark-~290k_cheques%2Fsec-orange)](benchmarks/)
 
-> Sovereign high-frequency machine-to-machine streaming settlement. Single shared bond, zero gas per request, sub-microsecond wire latency, ERC4626 yield-bearing collateral, Swarm Merkle delegations, in-RAM Kirchhoff debt netting, and game-theoretic $O(1)$ Schnorr slashing.
+CSLS lets an AI agent pay for APIs, inference, data, compute and other services continuously without submitting an on-chain transaction for every payment.
 
+---
 
-## 1. System Overview
+### The Problem
 
-### What is Causal-Slash?
-**Causal-Slash** is a high-throughput micro-settlement protocol operating directly at the L4 transport layer. It enables autonomous agent meshes, DePIN compute providers, and machine-to-machine services to stream payments per token or per API request with sub-microsecond execution latency and zero gas overhead during active streaming.
+In typical multi-agent architectures, an agent communicating with 50 external service providers (LLM providers, vector databases, web scrapers, compute clouds) must maintain 50 separate prefunded centralized balances:
+* **Capital Inefficiency:** $10 deposit x 50 vendors = $500 in locked idle capital to execute cents worth of work.
+* **Fragmented Custody:** Funds remain locked in centralized balances with manual top-ups and zero recovery upon vendor downtime.
+* **Web2 Barrier:** Autonomous software agents cannot hold human credit cards or pass personal KYC.
 
-Causal-Slash operates as a non-custodial protocol with zero custodial intermediaries and on-chain sanctions screening. Agent identity is defined strictly by a secp256k1 public key, while bilateral trust is established through a bond-based performance collateral vault on Base L2 and Arbitrum. Payment streams over raw sockets as signed 167-byte cheques per token.
+---
 
-### Core Problem: Fragmented Liquidity & Idle Capital
-In typical multi-agent architectures, an agent communicating with 50 external vendors (LLM providers, vector databases, web scrapers, GPU clusters) must deposit pre-funded balances into 50 separate centralized accounts:
-* **$10 deposit x 50 vendors = $500 in locked idle capital** to execute cents worth of work.
-* Funds remain in centralized custody on third-party servers with zero recovery upon counterparty downtime.
-* Direct on-chain transactions are cost-prohibitive for continuous streaming, while bilateral state channels require dedicated liquidity locked per peer and suffer from route failures.
+### How It Works
 
-### The Solution: Shared Bond with Multi-Agent Swarms & Yield Streaming
-Causal-Slash replaces fragmented deposits with a **single performance collateral bond**:
-1. **Zero-Gas Streaming:** The agent streams signed binary micro-cheques (151-byte standard or 167-byte session-MAC authenticated) peer-to-peer over raw TCP/QUIC sockets at ~1.68 us local cryptographic latency.
-2. **Yield-Streaming Collateral (ERC4626):** Unallocated margin in `PerformanceCollateralVault.sol` automatically generates yield in yield-bearing vaults (e.g. Morpho / Aave) while maintaining an automated 20% liquid cash buffer for instant, zero-second unbonding.
-3. **Swarm Merkle Delegations:** Through `SwarmDelegationVault.sol`, a master agent delegates spending power to up to 1,024+ subagents via keccak-256 sorted Merkle trees with individual spending caps, 7-day generational root rotation grace periods, and isolated subagent slashing.
-4. **In-RAM Kirchhoff Debt Netting:** Cycles of mutual obligations across agent meshes are continuously detected and netted off-chain in RAM (Tarjan strongly connected components + cycle elimination), reducing settled volume by >99.9% before batch settlement.
-5. **Economic Deterrence ($O(1)$ Slashing):** Equivocation (signing two conflicting cheques at the identical sequence height) algebraically reveals the signer's private key. Anyone can submit this mathematical proof on-chain to foreclose the bond, making double-spend attacks strictly negative-EV ($\mathbb{E}[\text{Payoff}] < 0$, $\text{ROI} \le -95\%$).
+```text
+AI Agent
+   │
+   │ signed micropayment (167B Session MAC)
+   ▼
+CSLS Streaming Layer
+   │
+   ├── Agent-to-Agent Services (Tool Execution, Subagents)
+   ├── Data & Oracle Services (Web Search, Scraping, Feeds)
+   └── Specialized Service Providers (Inference APIs, Compute Tasks)
+   │
+   ▼
+Settlement on Base / Arbitrum
+```
+
+---
+
+### Why CSLS
+- **Streaming Payments:** Pay per request or per generated token instead of monthly fixed subscriptions.
+- **Zero Gas on the Payment Hot Path:** Payments stream peer-to-peer off-chain and settle residuals in batches on Base L2 or Arbitrum.
+- **Collateral-Backed Security:** Participants lock collateral once in a non-custodial vault, removing bilateral counterparty risk.
+- **Cryptographic Slashing:** Provable equivocation (double-signing on the same sequence height) triggers automated collateral forfeiture.
+- **Agent-Native SDK:** Designed for autonomous agents, supporting Coinbase AgentKit, ElizaOS, and direct Python/Go integrations.
+
+---
+
+### Current Status
+
+| Component | Status | Network / Location |
+| :--- | :--- | :--- |
+| **Base Sepolia Vault** | Deployed & Verified | [`0x901c98Da847DD24ff23FcC37B6D1549A17F12253`](https://sepolia.basescan.org/address/0x901c98Da847DD24ff23FcC37B6D1549A17F12253#code) |
+| **Arbitrum Sepolia Vault** | Deployed & Verified | [`0x45Cd2B0d1319C158a5B37B74DcBE3D78C9861f1F`](https://sepolia.arbiscan.io/address/0x45Cd2B0d1319C158a5B37B74DcBE3D78C9861f1F#code) |
+| **Core Clearing Engine** | Active | C11 Native Engine (`src/causal_daemon.c`) |
+| **Terminal Client** | Active | Go Bubble Tea TUI (`client/`, binary `csls`) |
+| **AgentKit Integration** | Available | [`integrations/agentkit-causal-slash`](integrations/agentkit-causal-slash/) |
+| **Python SDK** | Available | [`sdk/`](sdk/) (`causal-slash-sdk`) |
+| **Foundry Test Suite** | 82/82 Passing | Unit, Fuzzing, Invariant, and Halmos SMT proofs |
+| **Early Access Program** | Open | Cohort #001 (Limited to 25 developer & provider teams) |
+
+> **Early Access:** We are onboarding the first 25 developers and machine-to-machine service providers. See [`docs/roadmap.md`](docs/roadmap.md) for details.
+
+---
 
 ## 2. Protocol Architecture & Invariants
 
@@ -51,7 +86,7 @@ flowchart TD
     end
 
     subgraph Infrastructure["Resource Providers & MEV Searchers"]
-        Vendor["Vendor Node (GPU / LLM / Data)\n(Hotpath Ring Buffer Verification)"]
+        Vendor["Peer Service Node / Receiver\n(Hotpath Ring Buffer Verification)"]
         Bloodhound["Schnorr Bloodhound MEV Daemon\n(35 ns Equivocation Hunter)"]
     end
 
@@ -59,7 +94,7 @@ flowchart TD
     SwarmVault -->|Anchors Swarm Root| MasterAgent
     MasterAgent -->|Merkle Path & Quota| SubAgents
     SubAgents -->|Local Requests| SlashProxy
-    SlashProxy -->|151/167-Byte Binary Stream (~1.68 µs)| Vendor
+    SlashProxy -->|"151/167-Byte Binary Stream (~1.68 us)"| Vendor
     SlashProxy -.->|Circular Netting| DebtMesh
     SlashProxy -.->|Broadcast / Wire Tap| Bloodhound
     Bloodhound -->|Commit & Reveal Fraud Proof| SlashingEngine
@@ -77,15 +112,15 @@ To stream a payment cheque for sequence height $h$ binding vendor, height, and c
 $$e_h = \text{SHA256}(PK_{\text{agent}} \parallel PK_{\text{vendor}} \parallel h \parallel \text{cumAmount}) \pmod q$$
 $$s_h = (k_h + e_h \cdot sk) \pmod q$$
 
-### 2.2 Optimistic Bounded Credit ($\delta_v$) & Algebraic Key Extraction
+### 2.2 Optimistic Bounded Credit ($\delta_v$) & Cryptographic Equivocation Slashing
 1. **Hotpath Processing:** The vendor accepts incoming cheques within an unconfirmed local credit buffer $\delta_v \le \$1.00$ without blocking on elliptic curve scalar multiplications.
 2. **Equivocation Detection:** If an agent signs two distinct cheques $M_1 \neq M_2$ at the identical height $h$:
    $$s_1 = k_h + e_1 \cdot sk \pmod q$$
    $$s_2 = k_h + e_2 \cdot sk \pmod q$$
    $$s_1 - s_2 = (e_1 - e_2) \cdot sk \pmod q$$
-3. **$O(1)$ Algebraic Extraction:**
+3. **Cryptographic Proof of Equivocation:**
    $$sk = (s_1 - s_2) \cdot (e_1 - e_2)^{-1} \pmod q$$
-   The recovered $sk$ is submitted on-chain via commit-reveal, foreclosing the agent's collateral bond.
+   The mathematical proof of conflicting signatures is submitted on-chain via commit-reveal, making equivocation strictly slashable and foreclosing the offender's collateral bond without exposing honest parties.
 
 ### 2.3 Slashing Priority Waterfall
 Foreclosed collateral is liquidated according to strict protocol invariants:
@@ -164,25 +199,23 @@ Benchmarks executed on x86_64 Linux (AMD Ryzen / Intel Xeon environment):
 
 The protocol is validated through a comprehensive multi-tier test suite with 100% pass rate:
 
-### 1. Foundry Test Suites (100/100 Passing):
+### 1. Foundry Test Suites (82/82 Passing):
 * `tests/PerformanceCollateralVault.t.sol`: 26 unit, state-machine, and fuzzing invariant tests.
 * `tests/SwarmDelegationVault.t.sol`: 16 multi-agent delegation, Merkle tree quota, and restitution tests.
-* `tests/AdversarialExploits.t.sol`: 28 adversarial exploit tests (signature malleability, replay, self-slashing economics, optimistic forge, restitution race, swarm delegation).
+* `tests/AdversarialExploits.t.sol`: 23 adversarial exploit tests (signature malleability, replay, self-slashing economics, restitution race, swarm delegation).
 * `tests/YieldStreamingCollateral.t.sol`: 4 ERC4626 yield-bearing collateral and liquidity buffer tests.
-* `tests/CompetitorGriefingAttacks.t.sol`: 5 MEV frontrunning and DoS griefing resistance tests.
-* `tests/ReliabilityInvariantsAudit.t.sol`: 4 unbonding race and haircut solvency tests.
 * `tests/invariants/ProtocolInvariants.t.sol`: 5 comprehensive stateful invariant suites (16,384 calls across runs, 0 reverts).
 * `tests/invariants/HalmosProtocolInvariants.t.sol`: 12 formal SMT mathematical theorems proven.
 
 ### 2. C Core Memory & Concurrency Audits (ASan, TSan & UBSan):
-* `make test`: High-frequency cryptographic engine, equivocation trap, and TCP loopback tests (1.68 µs latency, 596k ops/sec).
+* `make test`: High-frequency cryptographic engine, equivocation trap, and TCP loopback tests (1.68 µs latency, >500k ops/sec).
 * `make test-asan`: Full memory sanitizer check ensuring zero memory leaks or buffer overflows.
 * `make test-tsan`: ThreadSanitizer data-race check across multi-threaded agent and refiller threads (0 races).
 * `make test-bloodhound`: MEV searcher Keccak-256 vector verification and equivocation extraction test under AddressSanitizer.
 * `benchmarks/stress_tcp_swarm.c`: High-load multi-client TCP streaming audit under ASan/TSan.
 
-### 3. Python SDK & Integration Tests (102/102 Passing):
-* `pytest -v`: 102 passing tests covering high-speed `ChannelStore`, AsyncIO Actor Queue, secp256k1 honest PK, Circuit Breaker, Edge Guardrails, and On-chain Settlement.
+### 3. Python SDK & Integration Tests (74/74 Passing):
+* `pytest -v`: 74 passing tests covering high-speed `ChannelStore`, AsyncIO Actor Queue, secp256k1 honest PK, Circuit Breaker, Edge Guardrails, and On-chain Settlement.
 * `tests/test_e2e_full_stack.py`: Full-stack end-to-end integration test suite.
 
 ## 7. Repository Structure
@@ -220,22 +253,18 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 │   └── telemetry.py                          # Latency, percentiles and throughput metrics
 ├── tests/                                    # Comprehensive Test Suites
 │   ├── AdversarialExploits.t.sol             # Adversarial exploit test suite
-│   ├── CompetitorGriefingAttacks.t.sol       # MEV griefing and race tests
 │   ├── PerformanceCollateralVault.t.sol      # Core vault unit and fuzz tests
-│   ├── ReliabilityInvariantsAudit.t.sol      # Solvency and haircut invariant tests
 │   ├── SwarmDelegationVault.t.sol            # Swarm Merkle quotas and grace period tests
 │   ├── YieldStreamingCollateral.t.sol        # ERC4626 yield and buffer tests
 │   ├── invariants/                           # Invariant & Formal Verification Suites
 │   ├── test_causal_agentkit.py               # AgentKit provider tests
 │   ├── test_channel_store_and_async.py       # Channel storage and async actor tests
-│   ├── test_csls.py                          # CLI command and UI theme tests
 │   ├── test_debt_cycle_stress.py             # Large-scale debt cycle netting stress tests
 │   ├── test_e2e_full_stack.py                # Full-stack end-to-end integration tests
 │   ├── test_guardrail.py                     # Edge safety guardrail tests
 │   ├── test_onchain_settler.py               # EIP-712 and calldata differential tests
 │   ├── test_redteam_debt_mesh.py             # Red team debt netting conservation tests
 │   ├── test_redteam_sdk_forgery.py           # Signature and session MAC security tests
-│   ├── test_remote_wire_clearing.py          # Remote wire clearing tests
 │   ├── test_sdk_unified.py                   # Unified SDK FFI and streaming tests
 │   ├── test_sdk_v3_features.py               # 167-byte MAC wire and session tests
 │   └── c/                                    # C Sanitizer & Concurrency Audits
@@ -244,7 +273,6 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 │   ├── run_kirchhoff_netting.py              # In-RAM Kirchhoff debt netting benchmark
 │   ├── slashbench.py                         # High-frequency quantile latency profiler
 │   ├── stress_tcp_swarm.c                    # C11 multi-agent 1.2M cheque TCP benchmark
-│   ├── swarm_2026_industrial.py              # Industrial swarm workload generator
 │   └── swarm_onchain_stress.py               # On-chain multi-agent batch stress harness
 ├── examples/                                 # Executable Quickstarts
 │   ├── agentkit_provider_demo.py             # AgentKit provider integration demo
@@ -254,8 +282,7 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 ├── scripts/                                  # Deployment Scripts & Receipts
 │   ├── deploy_base_sepolia.js                # Base Sepolia contract deployer
 │   ├── deploy_arbitrum_sepolia.js            # Arbitrum Sepolia contract deployer
-│   ├── deploy_optimism_sepolia.js            # Optimism Sepolia contract deployer
-│   └── launch_b2b_gateway.py                 # B2B vendor gateway runner
+│   └── deploy_optimism_sepolia.js            # Optimism Sepolia contract deployer
 ├── Makefile                                  # Build and audit orchestration
 ├── LICENSE                                   # Dual Licensing Specification (Apache-2.0 / MIT)
 └── README.md                                 # Technical Specification
@@ -267,13 +294,13 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 ```bash
 forge test -vvv
 ```
-Expected: `Ran 13 test suites: 100 tests passed, 0 failed, 0 skipped (100 total tests)`
+Expected: `Ran 10 test suites: 82 tests passed, 0 failed, 0 skipped (82 total tests)`
 
 ### 2. Execute Python SDK Test Suite:
 ```bash
 pytest -v
 ```
-Expected: `102 passed`
+Expected: `74 passed`
 
 ### 3. Run C11 Cryptographic Daemon & Socket Benchmarks:
 ```bash
@@ -297,46 +324,35 @@ python3 benchmarks/slashbench.py
 python3 examples/quickstart_agent.py
 ```
 
-### 7. Run Sovereign Frontier Vendor Gateway (Compute Providers):
-Launch high-throughput gateway proxying frontier models with 167B Session MAC micro-cheques:
-```bash
-python3 scripts/launch_b2b_gateway.py --host 0.0.0.0 --port 8402 --delta-v 10.0 --price 0.0005
+### 7. Sovereign Go Terminal Client (`csls` CLI):
+Zero manual gateways, zero local background daemons, zero configuration required. The client works out of the box:
 ```
-Or execute the automated self-verification test suite:
-```bash
-python3 scripts/launch_b2b_gateway.py --verify
+Client visits site -> Installs terminal -> Funds bond -> Works like clockwork.
 ```
 
-### 8. Interactive Terminal Shell (`csls` CLI):
-Install the CLI and package in editable mode:
+Build and install the native Go terminal client:
 ```bash
-pip install -e .
-# or on externally managed environments:
-pip install --break-system-packages -e .
-```
-
-Launch the sovereign interactive terminal shell:
-```bash
+make csls-client
 csls
 ```
+*(Installs directly to `~/.local/bin/csls` in your `$PATH`. Simply run `csls` from anywhere).*
 
-The shell renders inline in your terminal's standard scrollback (no fullscreen takeover or alternate screen) with persistent input history (`~/.csls/history`) and status indicators:
+The terminal shell renders with Charm Bubble Tea & Lip Gloss, featuring persistent input history (`~/.csls/history`), project memory, and live cryptoeconomic settlement:
 * `/help` — show command reference table
-* `/wallet new` — create agent wallet (secp256k1 keypair)
-* `/wallet info` — display loaded wallet and address
-* `/model [model_id]` — switch or view active late 2026 frontier models (Claude Opus 5.5, Opus 4.6, DeepSeek V4.1 Flash, DeepSeek V4 Pro, GLM 5.3, GLM 5.2, Gemini 3.8 Flash, Gemini 3.8 Live)
-* `/vendor` — inspect connected M2M inference vendor, latency, settled micro-USDC, and public key
-* `/memory` — inspect persistent project conversation context, storage file, and remembered turns
-* `/clear` — clear persistent rolling conversation memory context
+* `/deposit [amount]` — fund or top up Base L2 collateral bond (5.0 USDC starter bond active by default)
+* `/status` — live node status and sovereign upstream routing summary
 * `/bond` — query Base L2 collateral bond and free margin
-* `/status` — live node status and streaming monitor
-* `/stream` — listen for live 167-byte session-MAC cheques
+* `/wallet [new|info]` — inspect or create agent wallet (secp256k1 keypair)
+* `/model [model_id]` — select or view active frontier models (Claude Opus 5.5, DeepSeek V4.1, GLM 5.3, etc.)
+* `/memory` — inspect persistent project conversation context and remembered turns
+* `/clear` — reset persistent rolling conversation memory context
+* `/vendor` — inspect connected M2M inference routing and public key
+* `/hound` — Schnorr Bloodhound equivocation hunter status
 * `/net` — in-RAM Kirchhoff debt netting summary
-* `/hound` — Schnorr Bloodhound equivocation hunter
 * `/test` — run C11, Foundry, and pytest suites
 * `/bench` — latency and throughput benchmark
 * `/verify` — on-chain contract addresses and EIP-170 bytecode limits
-* `/exit` — quit CSLS (or `Ctrl+D`, or double `Ctrl+C`)
+* `/exit` — quit CSLS shell (or `Ctrl+D` / `Ctrl+C`)
 
 ## 9. Deployed & Verified Contracts
  

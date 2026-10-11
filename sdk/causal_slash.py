@@ -9,7 +9,7 @@ This module serves as a lightweight backward-compatible facade re-exporting symb
 - sdk.ffi: Native C11 shared library loading (libcausal_slash.so, libbloodhound.so) and C ctypes structures.
 - sdk.crypto: secp256k1 mathematics, SipHash-128 MAC, ECDH, and fallback cryptography.
 - sdk.packet: Binary envelope packing/unpacking and protocol wire-level framing validation.
-- sdk.wallet: CausalAgentWallet, CausalVendorNode, and DebtCycleMesh.
+- sdk.wallet: CausalAgentWallet and DebtCycleMesh.
 """
 
 from __future__ import annotations
@@ -343,21 +343,21 @@ if __name__ == "__main__":
 
     # 1. Initialize
     agent = CausalAgentWallet()
-    vendor = CausalVendorNode(delta_v_usdc=1000.0)  # High buffer for benchmark
-    # Authenticated Session MAC channel (C2 gate): vendors mandate Session MAC
+    receiver = CausalAgentWallet(delta_v_usdc=1000.0)  # High buffer for benchmark
+    # Authenticated Session MAC channel (C2 gate): peer receivers mandate Session MAC
     # by default because wire cheques omit the Schnorr point R.
-    assert vendor.init_session(agent.create_session(vendor.public_key))
+    assert receiver.init_session(agent.create_session(receiver.public_key))
 
-    print(f"Agent PK:  {agent.public_key_hex[:18]}...")
-    print(f"Vendor PK: {vendor.public_key_hex[:18]}...")
+    print(f"Agent PK:    {agent.public_key_hex[:18]}...")
+    print(f"Receiver PK: {receiver.public_key_hex[:18]}...")
 
     # 2. Benchmark streaming 50,000 cheques
     n = 50000
     print(f"\n[1] Streaming {n:,} micro-cheques from Python through native C engine...")
     t0 = time.perf_counter()
     for _ in range(n):
-        c = agent.sign_cheque(vendor.public_key, amount_usdc=0.0001, session_mac=True)
-        r = vendor.process_cheque(c)
+        c = agent.sign_cheque(receiver.public_key, amount_usdc=0.0001, session_mac=True)
+        r = receiver.process_cheque(c)
         assert r.accepted
 
     t1 = time.perf_counter()
@@ -368,29 +368,29 @@ if __name__ == "__main__":
     print(f"  [OK] Completed {n:,} cheques in {total_time:.4f} seconds")
     print(f"  Latency: {us_per_op:.2f} microseconds per full cycle (Sign + Verify)")
     print(f"  Throughput: {ops_per_sec:,.0f} operations/second in Python!")
-    print(f"  Settled Volume: ${vendor.accumulated_usdc:.4f} USDC")
+    print(f"  Settled Volume: ${receiver.accumulated_usdc:.4f} USDC")
 
     # 3. Equivocation Detection & Key Extraction Test
     print("\n[2] Testing Equivocation Trap from Python...")
     attacker_agent = CausalAgentWallet()
-    v2 = CausalVendorNode(delta_v_usdc=1.0)
-    assert v2.init_session(attacker_agent.create_session(v2.public_key))
-    legit_cheque = attacker_agent.sign_cheque(v2.public_key, amount_usdc=0.05, session_mac=True)
-    r1 = v2.process_cheque(legit_cheque)
+    receiver_peer = CausalAgentWallet(delta_v_usdc=1.0)
+    assert receiver_peer.init_session(attacker_agent.create_session(receiver_peer.public_key))
+    legit_cheque = attacker_agent.sign_cheque(receiver_peer.public_key, amount_usdc=0.05, session_mac=True)
+    r1 = receiver_peer.process_cheque(legit_cheque)
     assert r1.accepted, f"Legitimate cheque failed: {r1.error_message}"
     print(f"  Legitimate cheque at height h={legit_cheque.height} accepted: True")
 
     # Tamper height back to duplicate for double-spending attack
     attacker_agent._ctx.height = legit_cheque.height
-    fork_cheque = attacker_agent.sign_cheque(v2.public_key, amount_usdc=0.07, session_mac=True)
+    fork_cheque = attacker_agent.sign_cheque(receiver_peer.public_key, amount_usdc=0.07, session_mac=True)
 
-    r2 = v2.process_cheque(fork_cheque)
-    assert not r2.accepted
-    assert r2.fraud_proof is not None
-    assert r2.fraud_proof.extracted_secret_key == bytes(attacker_agent._ctx.sk)
+    res2 = receiver_peer.process_cheque(fork_cheque)
+    assert not res2.accepted
+    assert res2.fraud_proof is not None
+    assert res2.fraud_proof.extracted_secret_key == bytes(attacker_agent._ctx.sk)
     print("  [ALERT] Equivocation detected and private key extracted successfully")
-    print(f"  Offender PK:  {r2.fraud_proof.offender_pk.hex()[:18]}...")
-    print(f"  Extracted SK: {r2.fraud_proof.extracted_secret_key.hex()[:18]}...")
+    print(f"  Offender PK:  {res2.fraud_proof.offender_pk.hex()[:18]}...")
+    print(f"  Extracted SK: {res2.fraud_proof.extracted_secret_key.hex()[:18]}...")
     print(f"  True SK:      {bytes(attacker_agent._ctx.sk).hex()[:18]}...")
     print("  [PASS] Mathematical Invariant Verified: Extracted key matches agent secret key")
 
