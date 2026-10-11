@@ -351,7 +351,7 @@ class SlashSidecarProxy:
                                     "error": f"Payment cheque rejected: {proc_res.error_message}",
                                     "status_code": proc_res.status_code
                                 }).encode("utf-8")
-                                self.send_response(402)
+                                self.send_response(403)
                                 self.send_header("Content-Type", "application/json")
                                 self.send_header("Content-Length", str(len(err_payload)))
                                 self.end_headers()
@@ -456,7 +456,10 @@ class SlashSidecarProxy:
                                 pass
                             return
                         except Exception as e:
-                            err_data = json.dumps({"error": f"Upstream forward failed: {e}"}).encode("utf-8")
+                            err_data = json.dumps({
+                                "error": "UPSTREAM_GATEWAY_UNAVAILABLE",
+                                "message": f"Upstream forward failed: {e}"
+                            }).encode("utf-8")
                             self.send_response(502)
                             self.send_header("Content-Type", "application/json")
                             self.send_header("Content-Length", str(len(err_data)))
@@ -467,54 +470,17 @@ class SlashSidecarProxy:
                                 pass
                             return
                     else:
-                        # Fallback simulated streaming forward with per-second micro-USDC metering
-                        # Used for local loopback testing, quickstarts, and offline agent development
-                        self.send_response(200)
-                        self.send_header("Content-Type", "text/event-stream")
-                        self.send_header("Cache-Control", "no-cache")
-                        self.send_header("Connection", "close")
-                        self.send_header("X-Causal-Proxy-Mode", "simulated-streaming-forward")
-                        self.send_header("X-Causal-Model", "causal-slash-routed-llm")
+                        # Zero-Mock Fail-Fast Policy: Upstream URL must be explicitly configured
+                        err_data = json.dumps({
+                            "error": "UPSTREAM_GATEWAY_UNAVAILABLE",
+                            "message": "SlashSidecarProxy requires a valid upstream_url; synthetic token simulation is strictly forbidden under protocol mandate."
+                        }).encode("utf-8")
+                        self.send_response(502)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(err_data)))
                         self.end_headers()
-                        # SSE ends with data: [DONE] and has no length framing;
-                        # keep-alive here makes every stdlib client hang on read().
-                        self.close_connection = True
-
-                        stream_chunks = [
-                            "Streaming", " compute", " verified", " via", " CSLS", " micro-cheque."
-                        ]
-                        t_start = time.time()
-                        last_meter_sec = int(t_start)
-
-                        for i, token in enumerate(stream_chunks):
-                            payload = {
-                                "id": f"chatcmpl-stream-{i}",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": "causal-slash-routed-llm",
-                                "choices": [{
-                                    "index": 0,
-                                    "delta": {"content": token},
-                                    "finish_reason": None if i < len(stream_chunks) - 1 else "stop"
-                                }]
-                            }
-                            line = f"data: {json.dumps(payload)}\n\n".encode("utf-8")
-                            try:
-                                self.wfile.write(line)
-                                self.wfile.flush()
-                            except (BrokenPipeError, ConnectionResetError):
-                                break
-                            time.sleep(0.01)
-                            curr_sec = int(time.time())
-                            if curr_sec > last_meter_sec:
-                                delta_sec = curr_sec - last_meter_sec
-                                last_meter_sec = curr_sec
-                                with proxy_self._lock:
-                                    proxy_self.total_settled_usdc += delta_sec * proxy_self.spend_rate_per_sec_usdc
-
                         try:
-                            self.wfile.write(b"data: [DONE]\n\n")
-                            self.wfile.flush()
+                            self.wfile.write(err_data)
                         except (BrokenPipeError, ConnectionResetError):
                             pass
                         return
@@ -637,7 +603,10 @@ class SlashSidecarProxy:
                                     break
                             return
                     except Exception as e:
-                        err_data = json.dumps({"error": f"Upstream forward failed: {e}"}).encode("utf-8")
+                        err_data = json.dumps({
+                            "error": "UPSTREAM_GATEWAY_UNAVAILABLE",
+                            "message": f"Upstream forward failed: {e}"
+                        }).encode("utf-8")
                         self.send_response(502)
                         self.send_header("Content-Type", "application/json")
                         self.send_header("Content-Length", str(len(err_data)))

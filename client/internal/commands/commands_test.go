@@ -13,7 +13,9 @@ import (
 
 func setupTestSession(t *testing.T) (*session.State, *agent.Client, string) {
 	t.Helper()
+	t.Setenv("CSLS_HOME", t.TempDir())
 	sess := session.NewState()
+	sess.CurrentModel = ""
 	sess.Memory.Clear()
 	agentClient := agent.NewClient(sess)
 	repoRoot := "../../.." // points to repository root from client/internal/commands
@@ -260,6 +262,8 @@ func TestSlashSend(t *testing.T) {
 	defer client.Close()
 
 	sess.Wallet.CollateralBond = 5.0
+	sess.Wallet.FreeMargin = 5.0
+	sess.Wallet.Status = "ready"
 	if err := session.SaveWallet(sess.Wallet); err != nil {
 		t.Fatalf("failed to save wallet: %v", err)
 	}

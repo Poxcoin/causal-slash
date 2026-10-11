@@ -6,7 +6,6 @@ package ui
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -59,7 +58,7 @@ func (b *testBackend) StreamQuery(ctx context.Context, query string) (<-chan str
 	go func() {
 		defer close(tCh)
 		defer close(eCh)
-		tCh <- "Echo response for query: " + query
+		tCh <- "Streaming response: " + query
 	}()
 	return tCh, eCh
 }
@@ -117,12 +116,11 @@ func TestAppPipedInput(t *testing.T) {
 
 	// Verify no panic occurred and history contains both commands
 	content := strings.Join(model.lines, "\n")
-	fmt.Printf("--- Final Viewport Content ---\n%s\n------------------------------\n", content)
 
 	if !strings.Contains(content, "hello") {
 		t.Errorf("Expected content to contain 'hello', got:\n%s", content)
 	}
-	if !strings.Contains(content, "Echo response for query: hello") {
+	if !strings.Contains(content, "Streaming response: hello") {
 		t.Errorf("Expected content to contain agent response, got:\n%s", content)
 	}
 	if !strings.Contains(content, "/help") {

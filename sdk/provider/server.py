@@ -235,7 +235,7 @@ class IndependentProvider:
                 status_http = 401
                 reason = "No active session established. Call /v1/session/init first"
             elif err_code == CSLS_ERR_EXPOSURE_CAP:
-                status_http = 402
+                status_http = 403
                 reason = "Credit exposure cap (delta_v) reached. Settle on-chain to unlock headroom"
             elif err_code == CSLS_ERR_OUT_OF_ORDER:
                 status_http = 409

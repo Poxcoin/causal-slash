@@ -369,7 +369,7 @@ def test_atexit_cleanup_registration():
 def test_slash_proxy_streaming_http_forward_and_cheque_verification():
     """
     Verifies that when SlashSidecarProxy receives X-Causal-Cheque:
-    1. It verifies the cheque via vendor_node (rejects forged/tampered cheques with HTTP 402).
+    1. It verifies the cheque via vendor_node (rejects forged/tampered cheques with HTTP 403).
     2. Forwards valid requests to upstream LLM in streaming mode with per-second micro-USDC metering.
     """
     import http.server
@@ -450,7 +450,7 @@ def test_slash_proxy_streaming_http_forward_and_cheque_verification():
         assert len(upstream_received) == 1
         assert upstream_received[0]["model"] == "mock-llama"
 
-        # B. Test forged/tampered cheque rejection (HTTP 402)
+        # B. Test forged/tampered cheque rejection (HTTP 403)
         tampered_cheque_bytes = bytearray(valid_cheque.raw_packet)
         tampered_cheque_bytes[10] ^= 0xFF  # Corrupt packet
 
@@ -465,7 +465,7 @@ def test_slash_proxy_streaming_http_forward_and_cheque_verification():
         )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(bad_req, timeout=5.0)
-        assert exc_info.value.code == 402
+        assert exc_info.value.code == 403
         exc_info.value.close()
 
     finally:

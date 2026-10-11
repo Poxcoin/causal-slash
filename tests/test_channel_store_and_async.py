@@ -379,7 +379,7 @@ def test_proxy_subagent_header_integration():
     try:
         import json
         url = "http://127.0.0.1:19099/v1/chat/completions"
-        payload = json.dumps({"model": "gpt-4o", "messages": [{"role": "user", "content": "test"}]}).encode()
+        payload = json.dumps({"model": "gpt-6.1-sol", "messages": [{"role": "user", "content": "test"}]}).encode()
 
         # Test 1: Request WITHOUT subagent header — master wallet (existing behavior)
         req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})

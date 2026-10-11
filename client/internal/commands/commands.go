@@ -794,11 +794,14 @@ func runModel(sess *session.State, agentClient *agent.Client, args []string) Res
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorError))
 
 	if len(args) > 0 {
-		if _, _, ok := agent.ParseModelRef(args[0]); !ok {
-			return Result{Output: errStyle.Render(fmt.Sprintf("Invalid model '%s': expected groq:<id> or openrouter:<id>; type /model and pick from the list", args[0]))}
+		p, id, ok := agent.ParseModelRef(args[0])
+		if !ok {
+			return Result{Output: errStyle.Render(fmt.Sprintf("Invalid model '%s': expected <provider>:<model_id> (e.g. anthropic:claude-opus-5.5, openai:gpt-6.1-sol); type /model and pick from the list", args[0]))}
 		}
-		sess.CurrentModel = args[0]
-		return Result{Output: green.Render("Active model set to: ") + teal.Render(args[0])}
+		canonicalRef := p + ":" + id
+		sess.CurrentModel = canonicalRef
+		session.SaveActiveModel(canonicalRef)
+		return Result{Output: green.Render("Active model set to: ") + teal.Render(canonicalRef)}
 	}
 
 	active := sess.CurrentModel
@@ -883,7 +886,7 @@ func runProvider(sess *session.State, agentClient *agent.Client, args []string) 
 	switch sub {
 	case "set", "url", "add":
 		if len(args) < 2 {
-			return Result{Output: errStyle.Render("Usage: /provider set <url> (e.g. /provider set http://127.0.0.1:8422)")}
+			return Result{Output: errStyle.Render("Usage: /provider set <url> (e.g. /provider set https://provider.causal-slash.net)")}
 		}
 		targetURL := args[1]
 		if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
@@ -975,8 +978,8 @@ func runProvider(sess *session.State, agentClient *agent.Client, args []string) 
 		sb.WriteString(fmt.Sprintf("  %-24s %s\n", teal.Render("Configured Endpoint:"), sess.VendorURL))
 		if err != nil {
 			sb.WriteString(fmt.Sprintf("  %-24s %s\n", teal.Render("Status:"), warn.Render("OFFLINE / UNREACHABLE")))
-			sb.WriteString("\n" + dim.Render("Connect a live provider with: ") + teal.Render("/provider set http://<host>:<port>") + "\n")
-			sb.WriteString(dim.Render("Example: ") + dim.Render("/provider set http://127.0.0.1:8422") + "\n")
+			sb.WriteString("\n" + dim.Render("Connect a live provider with: ") + teal.Render("/provider set https://<host>") + "\n")
+			sb.WriteString(dim.Render("Example: ") + dim.Render("/provider set https://provider.causal-slash.net") + "\n")
 			return Result{Output: sb.String()}
 		}
 

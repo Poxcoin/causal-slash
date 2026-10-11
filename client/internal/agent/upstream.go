@@ -5,40 +5,53 @@ package agent
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
 
 // UpstreamRouter provides resilient frontier inference via non-custodial sovereign routing.
+// Client terminal maintains ZERO client Web2 API keys (pure 167-byte Session MAC clearing).
 type UpstreamRouter struct {
-	httpClient    *http.Client
-	groqKey       string
-	openRouterKey string
+	httpClient *http.Client
 }
 
-// NewUpstreamRouter initializes the upstream provider router from environment.
+// NewUpstreamRouter initializes the upstream router.
 func NewUpstreamRouter() *UpstreamRouter {
 	return &UpstreamRouter{
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
-		groqKey:       os.Getenv("GROQ_API_KEY"),
-		openRouterKey: os.Getenv("OPENROUTER_API_KEY"),
 	}
 }
 
 // ModelEntry is one model offered by a real upstream provider.
 type ModelEntry struct {
-	Provider string // "groq" or "openrouter"
+	Provider string // e.g. "anthropic", "openai", "deepseek", "google"
 	ID       string
 	Name     string
+}
+
+// Canonical2026Models returns the official October 2026 model directory.
+func Canonical2026Models() []ModelEntry {
+	return []ModelEntry{
+		{Provider: "anthropic", ID: "claude-opus-5.5", Name: "Claude Opus 5.5 (1M context)"},
+		{Provider: "anthropic", ID: "claude-sonnet-5.5", Name: "Claude Sonnet 5.5"},
+		{Provider: "anthropic", ID: "claude-haiku-5.5", Name: "Claude Haiku 5.5"},
+		{Provider: "openai", ID: "gpt-6.1-sol", Name: "GPT-6.1 Sol"},
+		{Provider: "openai", ID: "gpt-6-luna", Name: "GPT-6 Luna"},
+		{Provider: "deepseek", ID: "deepseek-v4-pro", Name: "DeepSeek-V4-Pro (1.6T MoE)"},
+		{Provider: "deepseek", ID: "deepseek-v4.1-flash", Name: "DeepSeek-V4.1-Flash"},
+		{Provider: "google", ID: "gemini-4-argon", Name: "Gemini 4 Argon (1M context)"},
+		{Provider: "google", ID: "gemini-3.8-live", Name: "Gemini 3.8 Live"},
+		{Provider: "qwen", ID: "qwen-3.8-coder", Name: "Qwen 3.8 Coder"},
+		{Provider: "meta-llama", ID: "llama-4-scout", Name: "Llama 4 Scout"},
+		{Provider: "mistralai", ID: "mistral-large-4", Name: "Mistral Large 4"},
+	}
 }
 
 // Ref returns the "provider:id" reference stored as the active model.
@@ -50,190 +63,26 @@ func ParseModelRef(ref string) (provider, id string, ok bool) {
 	if i <= 0 || i == len(ref)-1 {
 		return "", "", false
 	}
-	p := ref[:i]
-	if p != "groq" && p != "openrouter" {
-		return "", "", false
-	}
-	return p, ref[i+1:], true
+	return ref[:i], ref[i+1:], true
 }
 
-func (r *UpstreamRouter) fetchModels(ctx context.Context, url, key, provider string) ([]ModelEntry, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	if key != "" {
-		req.Header.Set("Authorization", "Bearer "+key)
-	}
-	resp, err := r.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%s models: %w", provider, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s models: HTTP %d", provider, resp.StatusCode)
-	}
-	var body struct {
-		Data []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("%s models: %w", provider, err)
-	}
-	out := make([]ModelEntry, 0, len(body.Data))
-	for _, d := range body.Data {
-		if d.ID != "" {
-			out = append(out, ModelEntry{Provider: provider, ID: d.ID, Name: d.Name})
-		}
-	}
-	return out, nil
-}
-
-// ListModels returns the live model catalogue of every configured upstream.
+// ListModels returns the official October 2026 canonical model catalogue.
 func (r *UpstreamRouter) ListModels(ctx context.Context) ([]ModelEntry, error) {
-	var all []ModelEntry
-	var errs []string
-	if r.groqKey != "" {
-		m, err := r.fetchModels(ctx, "https://api.groq.com/openai/v1/models", r.groqKey, "groq")
-		if err != nil {
-			errs = append(errs, err.Error())
-		}
-		all = append(all, m...)
-	}
-	// The OpenRouter catalogue is public; no key is needed to list it.
-	m, err := r.fetchModels(ctx, "https://openrouter.ai/api/v1/models", r.openRouterKey, "openrouter")
-	if err != nil {
-		errs = append(errs, err.Error())
-	}
-	all = append(all, m...)
-	if len(all) == 0 {
-		return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
-	}
-	return all, nil
+	return Canonical2026Models(), nil
 }
 
-// ExecuteStreaming executes inference query, streaming tokens to onChunk.
-// Tries Groq LPU first, then OpenRouter. Fails fast with clean error if unavailable.
+// ExecuteStreaming is strictly disabled on client terminals to enforce Zero Client Web2 Keys.
+// All inference requests must route via CSLS clearing vendor gateways using 167-byte Session MAC micro-cheques.
 func (r *UpstreamRouter) ExecuteStreaming(
 	ctx context.Context,
 	model string,
 	messages []map[string]string,
 	onChunk StreamCallback,
 ) (string, error) {
-	provider, modelID, ok := ParseModelRef(model)
-	if !ok {
-		return "", fmt.Errorf("no model selected: pick one with /model")
-	}
-
-	// Inject system prompt if missing
-	hasSystem := false
-	for _, m := range messages {
-		if m["role"] == "system" {
-			hasSystem = true
-			break
-		}
-	}
-	payloadMessages := make([]map[string]string, 0, len(messages)+1)
-	if !hasSystem {
-		payloadMessages = append(payloadMessages, map[string]string{
-			"role":    "system",
-			"content": "You are CSLS Sovereign Agent, an autonomous frontier AI coding and cryptoeconomic reasoning assistant operating on the Causal-Slash Protocol (Base L2). You provide concise, technically rigorous, and direct answers.",
-		})
-	}
-	payloadMessages = append(payloadMessages, messages...)
-
-	switch provider {
-	case "groq":
-		if r.groqKey == "" {
-			return "", fmt.Errorf("GROQ_API_KEY is not set")
-		}
-		return r.streamGroq(ctx, modelID, payloadMessages, onChunk)
-	default:
-		if r.openRouterKey == "" {
-			return "", fmt.Errorf("OPENROUTER_API_KEY is not set")
-		}
-		return r.streamOpenRouter(ctx, modelID, payloadMessages, onChunk)
-	}
+	return "", fmt.Errorf("502 DIRECT_WEB2_INVOCATION_BANNED: client terminal cannot bypass wire clearing; must connect to CSLS vendor node with 167-byte Session MAC micro-cheques")
 }
 
-func (r *UpstreamRouter) streamGroq(
-	ctx context.Context,
-	model string,
-	messages []map[string]string,
-	onChunk StreamCallback,
-) (string, error) {
-	body, err := json.Marshal(map[string]any{
-		"model":       model,
-		"messages":    messages,
-		"stream":      true,
-		"max_tokens":  2048,
-		"temperature": 0.6,
-	})
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.groq.com/openai/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+r.groqKey)
-
-	resp, err := r.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("groq HTTP %d", resp.StatusCode)
-	}
-
-	return parseSSEStream(resp.Body, onChunk)
-}
-
-func (r *UpstreamRouter) streamOpenRouter(
-	ctx context.Context,
-	model string,
-	messages []map[string]string,
-	onChunk StreamCallback,
-) (string, error) {
-	body, err := json.Marshal(map[string]any{
-		"model":       model,
-		"messages":    messages,
-		"stream":      true,
-		"max_tokens":  2048,
-		"temperature": 0.6,
-	})
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://openrouter.ai/api/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+r.openRouterKey)
-	req.Header.Set("HTTP-Referer", "https://causal-slash.io")
-	req.Header.Set("X-Title", "Causal-Slash Terminal")
-
-	resp, err := r.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("openrouter HTTP %d", resp.StatusCode)
-	}
-
-	return parseSSEStream(resp.Body, onChunk)
-}
-
+// parseSSEStream decodes incoming Server-Sent Events from the CSLS vendor node.
 func parseSSEStream(r io.Reader, onChunk StreamCallback) (string, error) {
 	var full strings.Builder
 	scanner := bufio.NewScanner(r)
