@@ -20,7 +20,7 @@ const (
 type menuItem struct {
 	label string
 	desc  string
-	value string // empty means non-selectable info row
+	value string // empty means non-selectable info row / back
 }
 
 type modelsMsg struct {
@@ -50,6 +50,80 @@ func (m AppModel) menuKind() string {
 	return "command"
 }
 
+// Known top AI companies
+var Companies = []struct {
+	ID   string
+	Name string
+	Desc string
+}{
+	{"anthropic", "Anthropic", "Claude 3.7 / 3.5 Sonnet, Opus frontier reasoning"},
+	{"openai", "OpenAI", "o3, o1, GPT-4o, GPT-4.5 frontier models"},
+	{"google", "Google", "Gemini 2.5 Pro / Flash ultra-fast multimodel"},
+	{"deepseek", "DeepSeek", "DeepSeek R1 reasoning, V3 open frontier"},
+	{"meta", "Meta (Llama)", "Llama 3.3 70B, Llama 3.1 405B open weights"},
+	{"qwen", "Qwen (Alibaba)", "Qwen 2.5 72B, QwQ frontier code & math"},
+	{"mistral", "Mistral AI", "Mistral Large 4, Codestral premier coding"},
+}
+
+// isJunkModel filters out batch, toy, embedding, and outdated small models (< 14B)
+func isJunkModel(id, name string) bool {
+	lowerID := strings.ToLower(id)
+	lowerName := strings.ToLower(name)
+
+	// Filter out non-interactive batch & utility models
+	if strings.Contains(lowerID, ":batch") ||
+		strings.Contains(lowerID, "embed") ||
+		strings.Contains(lowerID, "whisper") ||
+		strings.Contains(lowerID, "guard") ||
+		strings.Contains(lowerID, "moderation") ||
+		strings.Contains(lowerID, "image") {
+		return true
+	}
+
+	// Filter out small toy models (< 14B)
+	toyTokens := []string{
+		"-1b", "/1b", " 1b",
+		"-2b", "/2b", " 2b",
+		"-3b", "/3b", " 3b",
+		"-4b", "/4b", " 4b",
+		"-7b", "/7b", " 7b",
+		"-8b", "/8b", " 8b",
+		"nano", "mini", "tiny", "lite",
+	}
+	// Exception: o3-mini and o1-mini from OpenAI are strong frontier models
+	if strings.Contains(lowerID, "o3-mini") || strings.Contains(lowerID, "o1-mini") {
+		return false
+	}
+
+	for _, t := range toyTokens {
+		if strings.Contains(lowerID, t) || strings.Contains(lowerName, t) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesCompany(companyID, ref, family string) bool {
+	lowerRef := strings.ToLower(ref)
+	switch companyID {
+	case "anthropic":
+		return strings.Contains(lowerRef, "anthropic") || strings.Contains(lowerRef, "claude")
+	case "openai":
+		return strings.Contains(lowerRef, "openai") || strings.Contains(lowerRef, "gpt") || strings.Contains(lowerRef, "o1") || strings.Contains(lowerRef, "o3")
+	case "google":
+		return strings.Contains(lowerRef, "google") || strings.Contains(lowerRef, "gemini")
+	case "deepseek":
+		return strings.Contains(lowerRef, "deepseek")
+	case "meta":
+		return strings.Contains(lowerRef, "meta-llama") || strings.Contains(lowerRef, "llama")
+	case "qwen":
+		return strings.Contains(lowerRef, "qwen") || strings.Contains(lowerRef, "qwq")
+	case "mistral":
+		return strings.Contains(lowerRef, "mistral") || strings.Contains(lowerRef, "codestral")
+	}
+	return false
+}
+
 func (m AppModel) menuItems() []menuItem {
 	val := m.input.Value()
 	switch m.menuKind() {
@@ -66,6 +140,7 @@ func (m AppModel) menuItems() []menuItem {
 			}
 		}
 		return items
+
 	case "model":
 		if m.modelsErr != "" {
 			return []menuItem{{label: "model list unavailable: " + m.modelsErr}}
@@ -73,63 +148,67 @@ func (m AppModel) menuItems() []menuItem {
 		if !m.modelsLoaded {
 			return []menuItem{{label: "loading models..."}}
 		}
-		filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(val, modelPrefix)))
-		var items []menuItem
 
-		// Group order for clean structured browsing
-		familyOrder := []string{
-			"Claude (Anthropic)",
-			"ChatGPT (OpenAI)",
-			"Gemini (Google)",
-			"DeepSeek",
-			"Llama (Meta)",
-			"Qwen (Alibaba)",
-			"Mistral AI",
-			"Other / Community",
+		filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(val, modelPrefix)))
+
+		// LEVEL 1: If no company selected and no active text search, show Company List
+		if m.selectedCompany == "" && filter == "" {
+			var items []menuItem
+			for _, comp := range Companies {
+				items = append(items, menuItem{
+					label: comp.Name,
+					desc:  comp.Desc,
+					value: "company:" + comp.ID,
+				})
+			}
+			return items
 		}
 
-		for _, fam := range familyOrder {
-			var famItems []menuItem
-			for _, mi := range m.models {
-				if mi.Family != fam && fam != "Other / Community" {
-					continue
-				}
-				if fam == "Other / Community" && mi.Family != "" && mi.Family != "Other / Community" {
-					continue
-				}
+		// LEVEL 2: Show curated models for selected company OR global search results
+		var items []menuItem
+		if m.selectedCompany != "" {
+			items = append(items, menuItem{
+				label: "◄ Back to Companies",
+				desc:  "Press Enter or Esc to return",
+				value: "back:companies",
+			})
+		}
 
-				// Match by filter across ref, friendly name, or family tag
-				match := filter == "" ||
-					strings.Contains(strings.ToLower(mi.Ref), filter) ||
+		for _, mi := range m.models {
+			if isJunkModel(mi.Ref, mi.Name) {
+				continue
+			}
+
+			if m.selectedCompany != "" {
+				if !matchesCompany(m.selectedCompany, mi.Ref, mi.Family) {
+					continue
+				}
+			}
+
+			// Filter check
+			if filter != "" {
+				searchMatch := strings.Contains(strings.ToLower(mi.Ref), filter) ||
 					strings.Contains(strings.ToLower(mi.Name), filter) ||
 					strings.Contains(strings.ToLower(mi.Family), filter)
-
-				if match {
-					displayName := mi.Ref
-					if mi.Name != "" {
-						displayName = mi.Name
-					}
-					famItems = append(famItems, menuItem{
-						label: displayName,
-						desc:  "[" + fam + "] " + mi.Ref,
-						value: mi.Ref,
-					})
+				if !searchMatch {
+					continue
 				}
 			}
 
-			if len(famItems) > 0 {
-				// Category header row (non-selectable)
-				items = append(items, menuItem{
-					label: "--- " + fam + " ---",
-					desc:  "",
-					value: "",
-				})
-				items = append(items, famItems...)
+			displayName := mi.Ref
+			if mi.Name != "" {
+				displayName = mi.Name
 			}
+
+			items = append(items, menuItem{
+				label: displayName,
+				desc:  mi.Ref,
+				value: mi.Ref,
+			})
 		}
 
 		if len(items) == 0 {
-			return []menuItem{{label: "no model matches '" + filter + "'"}}
+			return []menuItem{{label: "no frontier models match '" + filter + "'"}}
 		}
 		return items
 	}
@@ -172,7 +251,6 @@ func (m AppModel) renderMenu() []string {
 	sel := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
 	norm := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
-	categoryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
 	currentTag := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Italic(true)
 
 	labelW := 0
@@ -189,7 +267,16 @@ func (m AppModel) renderMenu() []string {
 
 	var out []string
 	if kind == "model" {
-		out = append(out, "  "+titleStyle.Render("Switch Model"))
+		headerText := "Switch Model"
+		if m.selectedCompany != "" {
+			for _, c := range Companies {
+				if c.ID == m.selectedCompany {
+					headerText = "Switch Model › " + c.Name
+					break
+				}
+			}
+		}
+		out = append(out, "  "+titleStyle.Render(headerText))
 		searchQuery := strings.TrimPrefix(m.input.Value(), modelPrefix)
 		cursorBlock := lipgloss.NewStyle().Background(lipgloss.Color("#FFFFFF")).Foreground(lipgloss.Color("#000000")).Render(" ")
 		out = append(out, fmt.Sprintf("    Search: %s%s", lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Render(searchQuery), cursorBlock))
@@ -204,12 +291,6 @@ func (m AppModel) renderMenu() []string {
 	activeModel := m.backend.ActiveModel()
 	for i := start; i < end; i++ {
 		it := items[i]
-		if it.value == "" {
-			// Header section like --- Claude (Anthropic) ---
-			out = append(out, "  "+categoryStyle.Render(it.label))
-			continue
-		}
-
 		marker := "  "
 		style := norm
 		if i == idx {
@@ -258,7 +339,7 @@ func renderEffortSlider(effort string) (bar string, subtext string) {
 
 	arrowL := dim.Render("◄")
 	arrowR := dim.Render("►")
-	segment := "────────────" // 12 chars
+	segment := "────────────"
 	dimSeg := dim.Render(segment)
 
 	var dLow, dMed, dHigh string
@@ -313,8 +394,7 @@ func (m AppModel) effort() string {
 	return "medium"
 }
 
-// applyMenu handles navigation keys. handled reports whether the key was consumed;
-// execute reports that the input has been rewritten and must now be submitted.
+// applyMenu handles navigation keys.
 func (m *AppModel) applyMenu(key string) (handled, execute bool) {
 	kind := m.menuKind()
 	if kind == "" {
@@ -327,6 +407,7 @@ func (m *AppModel) applyMenu(key string) (handled, execute bool) {
 	if m.menuIdx >= len(items) {
 		m.menuIdx = len(items) - 1
 	}
+
 	if kind == "model" {
 		switch key {
 		case "left":
@@ -343,24 +424,26 @@ func (m *AppModel) applyMenu(key string) (handled, execute bool) {
 				m.setEffort("high")
 			}
 			return true, false
+		case "esc":
+			if m.selectedCompany != "" {
+				m.selectedCompany = ""
+				m.menuIdx = 0
+				return true, false
+			}
+			m.dismissed = m.input.Value()
+			return true, false
 		}
 	}
 
 	switch key {
 	case "up":
-		for m.menuIdx > 0 {
+		if m.menuIdx > 0 {
 			m.menuIdx--
-			if items[m.menuIdx].value != "" {
-				break
-			}
 		}
 		return true, false
 	case "down":
-		for m.menuIdx < len(items)-1 {
+		if m.menuIdx < len(items)-1 {
 			m.menuIdx++
-			if items[m.menuIdx].value != "" {
-				break
-			}
 		}
 		return true, false
 	case "esc":
@@ -371,11 +454,24 @@ func (m *AppModel) applyMenu(key string) (handled, execute bool) {
 		if sel.value == "" {
 			return true, false
 		}
+
 		if kind == "model" {
+			if strings.HasPrefix(sel.value, "company:") {
+				m.selectedCompany = strings.TrimPrefix(sel.value, "company:")
+				m.menuIdx = 0
+				return true, false
+			}
+			if sel.value == "back:companies" {
+				m.selectedCompany = ""
+				m.menuIdx = 0
+				return true, false
+			}
+
 			m.input.SetValue(modelPrefix + sel.value)
 			m.input.CursorEnd()
 			return true, key != "tab"
 		}
+
 		val := strings.TrimSpace(m.input.Value())
 		if val != sel.value || (sel.value == "/model" && key != "tab") || key == "tab" {
 			next := sel.value
@@ -391,6 +487,14 @@ func (m *AppModel) applyMenu(key string) (handled, execute bool) {
 	return false, false
 }
 
+func (m *AppModel) setEffort(effort string) {
+	if m.backend != nil {
+		if s, ok := m.backend.(interface{ SetReasoningEffort(string) }); ok {
+			s.SetReasoningEffort(effort)
+		}
+	}
+}
+
 // styleInput colors a leading slash command token differently from its arguments.
 func styleInput(s string) string {
 	blue := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true)
@@ -403,12 +507,4 @@ func styleInput(s string) string {
 		return cmd.Render(s)
 	}
 	return cmd.Render(s[:i]) + blue.Render(s[i:])
-}
-
-func (m *AppModel) setEffort(effort string) {
-	if m.backend != nil {
-		if s, ok := m.backend.(interface{ SetReasoningEffort(string) }); ok {
-			s.SetReasoningEffort(effort)
-		}
-	}
 }

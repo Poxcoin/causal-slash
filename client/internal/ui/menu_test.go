@@ -40,13 +40,21 @@ func TestModelPickerSelectsWithArrows(t *testing.T) {
 	if got := m.(AppModel).input.Value(); got != "/model " {
 		t.Fatalf("enter on /model must open picker, got %q", got)
 	}
-	m, _ = m.Update(modelsMsg{items: []ModelItem{{Ref: "groq:alpha"}, {Ref: "openrouter:beta/gamma"}}})
+	m, _ = m.Update(modelsMsg{items: []ModelItem{
+		{Ref: "anthropic/claude-3.5-sonnet", Name: "Claude 3.5 Sonnet", Family: "Claude (Anthropic)"},
+		{Ref: "openai/gpt-4o", Name: "GPT-4o", Family: "ChatGPT (OpenAI)"},
+	}})
 	view := ansi.Strip(m.View())
-	if !strings.Contains(view, "groq:alpha") || !strings.Contains(view, "openrouter:beta/gamma") {
-		t.Fatalf("model list missing:\n%s", view)
+	if !strings.Contains(view, "Anthropic") || !strings.Contains(view, "OpenAI") {
+		t.Fatalf("company list missing:\n%s", view)
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if got := m.(AppModel).menuIdx; got != 1 {
-		t.Fatalf("down must move selection, got %d", got)
+	// Select Anthropic
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.(AppModel).selectedCompany != "anthropic" {
+		t.Fatalf("expected selectedCompany anthropic, got %q", m.(AppModel).selectedCompany)
+	}
+	viewCompany := ansi.Strip(m.View())
+	if !strings.Contains(viewCompany, "Claude 3.5 Sonnet") {
+		t.Fatalf("models for company missing:\n%s", viewCompany)
 	}
 }
