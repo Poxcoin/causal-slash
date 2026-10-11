@@ -135,6 +135,10 @@ func (m *AppModel) appendToken(token string) {
 }
 
 func (m AppModel) bottomHeight() int {
+	if m.menuKind() == "model" {
+		// 1 border line + menu content
+		return 1 + m.menuHeight()
+	}
 	return 4 + m.menuHeight()
 }
 

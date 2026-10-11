@@ -4,6 +4,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -190,7 +191,13 @@ func (m AppModel) renderMenu() []string {
 	if kind == "model" {
 		out = append(out, "  "+titleStyle.Render("Switch Model"))
 		searchQuery := strings.TrimPrefix(m.input.Value(), modelPrefix)
-		out = append(out, "  "+dim.Render("Search: ")+lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Render(searchQuery))
+		cursorBlock := lipgloss.NewStyle().Background(lipgloss.Color("#FFFFFF")).Foreground(lipgloss.Color("#000000")).Render(" ")
+		out = append(out, fmt.Sprintf("    Search: %s%s", lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Render(searchQuery), cursorBlock))
+		underlineW := lipgloss.Width(searchQuery) + 8
+		if underlineW < 22 {
+			underlineW = 22
+		}
+		out = append(out, "            "+dim.Render(strings.Repeat("─", underlineW)))
 		out = append(out, "")
 	}
 
@@ -228,19 +235,9 @@ func (m AppModel) renderMenu() []string {
 			effort = e
 		}
 
-		bar := renderEffortSlider(effort)
+		bar, subtext := renderEffortSlider(effort)
 		out = append(out, "  "+dim.Render("Effort ")+bar)
-
-		var effortSubtext string
-		switch effort {
-		case "low":
-			effortSubtext = "Fast response with minimal reasoning latency"
-		case "high":
-			effortSubtext = "Deepest reasoning for complex problems - slower but strongest"
-		default:
-			effortSubtext = "Balanced speed and reasoning quality for most tasks"
-		}
-		out = append(out, "         "+lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim)).Italic(true).Render(effortSubtext))
+		out = append(out, "  "+lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim)).Italic(true).Render(subtext))
 		out = append(out, "")
 		navLegend := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true).Render("Keyboard: ") +
 			sel.Render("↑/↓") + dim.Render(" Navigate  ") +
@@ -253,26 +250,41 @@ func (m AppModel) renderMenu() []string {
 	return out
 }
 
-func renderEffortSlider(effort string) string {
+func renderEffortSlider(effort string) (bar string, subtext string) {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
-	warn := lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn)).Bold(true)
-	line := lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn)).Render("──────────────")
+	green := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981")).Bold(true)
+	yellow := lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Bold(true)
+	salmon := lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")).Bold(true)
 
-	lowDot := "○"
-	medDot := "○"
-	highDot := "○"
+	arrow := dim.Render("◄")
+	arrowR := dim.Render("►")
 
 	switch effort {
 	case "low":
-		lowDot = "●"
-		return dim.Render("◄ ") + warn.Render(lowDot) + line + dim.Render(medDot) + line + dim.Render(highDot) + dim.Render(" ►")
+		activeDot := green.Render("◎")
+		inactiveDot := dim.Render("○")
+		barLine := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981")).Render("──────────────")
+		dimLine := dim.Render("──────────────")
+		labels := "      " + green.Render("low") + "           " + dim.Render("medium") + "          " + dim.Render("high")
+		bar = fmt.Sprintf("%s   %s%s%s%s%s   %s\n%s", arrow, activeDot, barLine, inactiveDot, dimLine, inactiveDot, arrowR, labels)
+		subtext = "Faster responses, lighter reasoning - great for simpler tasks"
 	case "high":
-		highDot = "●"
-		return dim.Render("◄ ") + dim.Render(lowDot) + line + dim.Render(medDot) + line + warn.Render(highDot) + dim.Render(" ►")
-	default:
-		medDot = "●"
-		return dim.Render("◄ ") + dim.Render(lowDot) + line + warn.Render(medDot) + line + dim.Render(highDot) + dim.Render(" ►")
+		inactiveDot := dim.Render("○")
+		activeDot := salmon.Render("◎")
+		fullLine := lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")).Render("────────────────────────────")
+		labels := "      " + dim.Render("low") + "          " + dim.Render("medium") + "          " + salmon.Render("high")
+		bar = fmt.Sprintf("%s   %s%s%s   %s\n%s", arrow, inactiveDot, fullLine, activeDot, arrowR, labels)
+		subtext = "Deepest reasoning for complex problems - slower but strongest"
+	default: // medium
+		activeDot := yellow.Render("◎")
+		inactiveDot := dim.Render("○")
+		halfLine := lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render("──────────────")
+		dimLine := dim.Render("──────────────")
+		labels := "      " + dim.Render("low") + "          " + yellow.Render("medium") + "          " + dim.Render("high")
+		bar = fmt.Sprintf("%s   %s%s%s%s%s   %s\n%s", arrow, inactiveDot, halfLine, activeDot, dimLine, inactiveDot, arrowR, labels)
+		subtext = "Balanced speed and reasoning quality for most tasks"
 	}
+	return bar, subtext
 }
 
 func (m AppModel) effort() string {
