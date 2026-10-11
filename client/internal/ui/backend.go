@@ -14,7 +14,10 @@ type CommandItem struct {
 
 // ModelItem is one live model from an upstream provider; Ref is "provider:id".
 type ModelItem struct {
-	Ref string
+	Ref      string
+	Provider string
+	Name     string
+	Family   string
 }
 
 // Backend abstracts all agent, wallet, cheque, and command logic away from the TUI.

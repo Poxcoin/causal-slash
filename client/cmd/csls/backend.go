@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"csls/internal/agent"
@@ -42,6 +43,32 @@ func (b *appBackend) Commands() []ui.CommandItem {
 	return out
 }
 
+func detectFamily(id string) string {
+	lower := strings.ToLower(id)
+	if strings.Contains(lower, "claude") || strings.HasPrefix(lower, "anthropic/") {
+		return "Claude (Anthropic)"
+	}
+	if strings.Contains(lower, "gpt") || strings.Contains(lower, "o1") || strings.Contains(lower, "o3") || strings.HasPrefix(lower, "openai/") {
+		return "ChatGPT (OpenAI)"
+	}
+	if strings.Contains(lower, "gemini") || strings.HasPrefix(lower, "google/") {
+		return "Gemini (Google)"
+	}
+	if strings.Contains(lower, "deepseek") {
+		return "DeepSeek"
+	}
+	if strings.Contains(lower, "llama") || strings.HasPrefix(lower, "meta-llama/") {
+		return "Llama (Meta)"
+	}
+	if strings.Contains(lower, "qwen") {
+		return "Qwen (Alibaba)"
+	}
+	if strings.Contains(lower, "mistral") || strings.Contains(lower, "codestral") {
+		return "Mistral AI"
+	}
+	return "Other / Community"
+}
+
 func (b *appBackend) ListModels() ([]ui.ModelItem, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -51,7 +78,12 @@ func (b *appBackend) ListModels() ([]ui.ModelItem, error) {
 	}
 	out := make([]ui.ModelItem, 0, len(models))
 	for _, m := range models {
-		out = append(out, ui.ModelItem{Ref: m.Ref()})
+		out = append(out, ui.ModelItem{
+			Ref:      m.Ref(),
+			Provider: m.Provider,
+			Name:     m.Name,
+			Family:   detectFamily(m.ID),
+		})
 	}
 	return out, nil
 }

@@ -74,11 +74,59 @@ func (m AppModel) menuItems() []menuItem {
 		}
 		filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(val, modelPrefix)))
 		var items []menuItem
-		for _, mi := range m.models {
-			if filter == "" || strings.Contains(strings.ToLower(mi.Ref), filter) {
-				items = append(items, menuItem{label: mi.Ref, value: mi.Ref})
+
+		// Group order for clean structured browsing
+		familyOrder := []string{
+			"Claude (Anthropic)",
+			"ChatGPT (OpenAI)",
+			"Gemini (Google)",
+			"DeepSeek",
+			"Llama (Meta)",
+			"Qwen (Alibaba)",
+			"Mistral AI",
+			"Other / Community",
+		}
+
+		for _, fam := range familyOrder {
+			var famItems []menuItem
+			for _, mi := range m.models {
+				if mi.Family != fam && fam != "Other / Community" {
+					continue
+				}
+				if fam == "Other / Community" && mi.Family != "" && mi.Family != "Other / Community" {
+					continue
+				}
+
+				// Match by filter across ref, friendly name, or family tag
+				match := filter == "" ||
+					strings.Contains(strings.ToLower(mi.Ref), filter) ||
+					strings.Contains(strings.ToLower(mi.Name), filter) ||
+					strings.Contains(strings.ToLower(mi.Family), filter)
+
+				if match {
+					displayName := mi.Ref
+					if mi.Name != "" {
+						displayName = mi.Name
+					}
+					famItems = append(famItems, menuItem{
+						label: displayName,
+						desc:  "[" + fam + "] " + mi.Ref,
+						value: mi.Ref,
+					})
+				}
+			}
+
+			if len(famItems) > 0 {
+				// Category header row (non-selectable)
+				items = append(items, menuItem{
+					label: "--- " + fam + " ---",
+					desc:  "",
+					value: "",
+				})
+				items = append(items, famItems...)
 			}
 		}
+
 		if len(items) == 0 {
 			return []menuItem{{label: "no model matches '" + filter + "'"}}
 		}
@@ -164,13 +212,19 @@ func (m *AppModel) applyMenu(key string) (handled, execute bool) {
 	}
 	switch key {
 	case "up":
-		if m.menuIdx > 0 {
+		for m.menuIdx > 0 {
 			m.menuIdx--
+			if items[m.menuIdx].value != "" {
+				break
+			}
 		}
 		return true, false
 	case "down":
-		if m.menuIdx < len(items)-1 {
+		for m.menuIdx < len(items)-1 {
 			m.menuIdx++
+			if items[m.menuIdx].value != "" {
+				break
+			}
 		}
 		return true, false
 	case "esc":
