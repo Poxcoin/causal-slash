@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"csls/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -62,6 +63,16 @@ func (b *testBackend) StreamQuery(ctx context.Context, query string) (<-chan str
 	}()
 	return tCh, eCh
 }
+
+func (b *testBackend) InitialLines() []string {
+	return nil
+}
+
+func (b *testBackend) CommandHistory() []string {
+	return nil
+}
+
+var _ Backend = (*testBackend)(nil)
 
 func TestAppPipedInput(t *testing.T) {
 	backend := &testBackend{}
@@ -135,3 +146,72 @@ func TestScrollbackCap(t *testing.T) {
 		t.Fatalf("expected exactly %d lines after cap, got %d", maxScrollbackLines, len(app.lines))
 	}
 }
+
+func TestFormatInitialTurns(t *testing.T) {
+	msgs := []session.ChatMessage{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "world reply"},
+		{Role: "system", Content: "summary note"},
+	}
+	lines := FormatInitialTurns(msgs)
+	if len(lines) == 0 {
+		t.Fatalf("expected formatted lines, got empty")
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "hello") {
+		t.Errorf("expected 'hello' in lines, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "world reply") {
+		t.Errorf("expected 'world reply' in lines, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "summary note") {
+		t.Errorf("expected 'summary note' in lines, got:\n%s", joined)
+	}
+}
+
+type historyBackend struct {
+	testBackend
+	lines   []string
+	history []string
+}
+
+func (h *historyBackend) InitialLines() []string {
+	return h.lines
+}
+
+func (h *historyBackend) CommandHistory() []string {
+	return h.history
+}
+
+func TestAppInitialLinesAndHistory(t *testing.T) {
+	backend := &historyBackend{
+		lines:   []string{"> previous question", "previous answer"},
+		history: []string{"/help", "previous question"},
+	}
+	app := NewApp(backend, "0.3.0", "/test/cwd")
+
+	if len(app.lines) != 2 {
+		t.Fatalf("expected 2 initial lines, got %d", len(app.lines))
+	}
+	if len(app.history) != 2 {
+		t.Fatalf("expected 2 history items, got %d", len(app.history))
+	}
+	if app.historyIdx != 2 {
+		t.Fatalf("expected historyIdx to be 2, got %d", app.historyIdx)
+	}
+
+	// Press Up arrow -> should recall "previous question"
+	u1, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m1 := u1.(AppModel)
+	if m1.input.Value() != "previous question" {
+		t.Fatalf("expected input 'previous question' after Up arrow, got '%s'", m1.input.Value())
+	}
+
+	// Press Up arrow again -> should recall "/help"
+	u2, _ := m1.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m2 := u2.(AppModel)
+	if m2.input.Value() != "/help" {
+		t.Fatalf("expected input '/help' after Up arrow, got '%s'", m2.input.Value())
+	}
+}
+

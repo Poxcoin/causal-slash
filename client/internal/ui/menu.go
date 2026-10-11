@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"csls/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -507,4 +508,28 @@ func styleInput(s string) string {
 		return cmd.Render(s)
 	}
 	return cmd.Render(s[:i]) + blue.Render(s[i:])
+}
+
+// FormatInitialTurns converts loaded chat messages into styled terminal lines.
+func FormatInitialTurns(messages []session.ChatMessage) []string {
+	if len(messages) == 0 {
+		return nil
+	}
+	var lines []string
+	promptMarker := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true).Render("> ")
+	for _, m := range messages {
+		switch m.Role {
+		case "user":
+			lines = append(lines, promptMarker+styleInput(m.Content))
+		case "assistant":
+			parts := strings.Split(m.Content, "\n")
+			lines = append(lines, parts...)
+			lines = append(lines, "")
+		case "system":
+			sysStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim)).Italic(true)
+			lines = append(lines, sysStyle.Render(m.Content))
+			lines = append(lines, "")
+		}
+	}
+	return lines
 }

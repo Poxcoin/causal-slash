@@ -169,3 +169,50 @@ func (m *MemoryManager) CompactMemory(keepTurns int) (int, error) {
 	}
 	return purged, nil
 }
+
+
+// InputHistoryFile returns ~/.csls/input_history
+func InputHistoryFile() string {
+	return filepath.Join(ConfigDir(), "input_history")
+}
+
+// LoadInputHistory loads past shell inputs from disk.
+func LoadInputHistory() []string {
+	raw, err := os.ReadFile(InputHistoryFile())
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(raw), "\n")
+	var out []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			out = append(out, l)
+		}
+	}
+	if len(out) > 500 {
+		out = out[len(out)-500:]
+	}
+	return out
+}
+
+// AppendInputHistory appends a single command/prompt to ~/.csls/input_history.
+// Consecutive duplicate commands are suppressed.
+func AppendInputHistory(input string) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return
+	}
+	if raw, err := os.ReadFile(InputHistoryFile()); err == nil {
+		lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+		if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == input {
+			return
+		}
+	}
+	f, err := os.OpenFile(InputHistoryFile(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(input + "\n")
+}
