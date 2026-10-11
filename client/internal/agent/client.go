@@ -232,7 +232,7 @@ func (c *Client) DiscoverVendor(ctx context.Context) (string, []byte, error) {
 		}
 	}
 
-	return "", nil, fmt.Errorf("no vendor reachable: connect one with /vendor url <url>")
+	return "", nil, fmt.Errorf("no vendor reachable")
 }
 
 // ListModels returns the live model catalogue of the configured upstreams.
@@ -263,7 +263,7 @@ func (c *Client) ProcessQuery(ctx context.Context, query string, onChunk StreamC
 	if derr != nil {
 		reply, err := c.upstreamRouter.ExecuteStreaming(ctx, c.sess.CurrentModel, messages, onChunk)
 		if err != nil {
-			return "", 0, fmt.Errorf("no vendor (%v); %w", derr, err)
+			return "", 0, err
 		}
 		_ = c.sess.Memory.AddTurn(query, reply)
 		c.sess.TotalQueries++
