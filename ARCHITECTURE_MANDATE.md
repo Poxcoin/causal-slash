@@ -106,6 +106,8 @@
      Никаких арендованных GPU-серверов (RunPod, Lambda) для самостоятельного развертывания моделей или ручного поднятия API. Закрытые передовые сервисы 2026 года (Claude Opus 5.5, GPT-6.1 Sol, Kling 4.0, ElevenLabs v4, DeepSeek-V4-Pro) являются проприетарными облачными платформами. Вендоры CSLS — это исключительно клиринговые шлюзы ликвидности и API-брокеры с корпоративным биллингом. Клиент платит за каждый вызов микро-чеками USDC, вендор исполняет запрос через официальные API без кредитных карт и подписок на стороне пользователя.
 
 * **Классы сервисов и мерчантов (Октябрь 2026):**
+  - Полный реестр 37 аккредитованных мерчантов и каналов зафиксирован в [`docs/merchant/CSLS_MERCHANT_NETWORK_2026_SPECIFICATION.md`](docs/merchant/CSLS_MERCHANT_NETWORK_2026_SPECIFICATION.md).
+  - **Канальная стратегия:** Прямой контракт с Anthropic/OpenAI на старте для крипто-протокола закрыт из-за фиатного коммитмента ($50k+) и KYC. CSLS работает через **крипто-френдли мерчантов, агрегаторов и авторизованных ресейлеров** (UsePod, DeepInfra, Novita, Together AI, Fireworks, Baseten, Groq, Hyperbolic, fal.ai, ElevenLabs, Claude/OpenAI Partner Networks), готовых принимать офчейн-клиринг в USDC без банковских карт на стороне агента.
   - **Inference & Intelligence APIs (P0):** Официальные endpoints (Anthropic Claude Opus 5.5 / Sonnet 5.5 / Haiku 5.5, OpenAI GPT-6.1 Sol / Luna, DeepSeek-V4-Pro / V4.1-Flash, Google Gemini 4 Argon).
   - **Video Generation APIs (P1):** Генерация видео (Kling 4.0 и Kling 4.0 Flash — до 30 секунд в 4K HDR, multi-keyframe control до 10 кадров, Omni Reference).
   - **Voice & Audio APIs (P1):** Синтез речи и голосовые агенты (ElevenLabs Eleven v4, Eleven v4 Turbo, платформа ElevenAgents / Architect на 90+ языках).
