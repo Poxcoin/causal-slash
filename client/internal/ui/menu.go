@@ -144,7 +144,7 @@ func (m AppModel) menuItems() []menuItem {
 			return []menuItem{{label: "model list unavailable: " + m.modelsErr}}
 		}
 		if !m.modelsLoaded {
-			return []menuItem{{label: "loading live models from OpenRouter..."}}
+			return []menuItem{{label: "loading canonical models..."}}
 		}
 
 		filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(val, modelPrefix)))
