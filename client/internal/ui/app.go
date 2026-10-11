@@ -292,26 +292,6 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC || msg.String() == "ctrl+c" {
 			now := time.Now()
-			// If input has text, copy input to clipboard and clear
-			if m.input.Value() != "" {
-				val := m.input.Value()
-				if err := session.CopyToClipboard(val); err != nil {
-					m.flashMsg = "clipboard error: " + err.Error()
-				} else {
-					m.flashMsg = "input copied to clipboard"
-				}
-				m.input.SetValue("")
-				m.lastCtrlC = now
-				m.flashUntil = now.Add(2 * time.Second)
-				return m, nil
-			}
-			if now.Sub(m.lastCtrlC) < doubleCtrlC {
-				if m.streamCancel != nil {
-					m.streamCancel()
-				}
-				return m, tea.Quit
-			}
-			m.lastCtrlC = now
 			if m.streaming && m.streamCancel != nil {
 				m.streamCancel()
 				m.streaming = false
@@ -319,22 +299,19 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.enforceScrollbackCap()
 				m.viewport.SetContent(strings.Join(m.lines, "\n"))
 				m.viewport.GotoBottom()
+				m.lastCtrlC = now
 				return m, nil
 			}
-			// Copy last response on first Ctrl+C
-			textToCopy := m.getLastResponse()
-			if textToCopy == "" && len(m.lines) > 0 {
-				textToCopy = ansi.Strip(strings.Join(m.lines, "\n"))
+			if m.input.Value() != "" {
+				m.input.SetValue("")
+				m.lastCtrlC = now
+				return m, nil
 			}
-			if textToCopy != "" {
-				if err := session.CopyToClipboard(textToCopy); err != nil {
-					m.flashMsg = "clipboard error: " + err.Error()
-				} else {
-					m.flashMsg = "copied (Ctrl+C again to exit)"
-				}
-			} else {
-				m.flashMsg = "Press Ctrl+C again to exit"
+			if now.Sub(m.lastCtrlC) < doubleCtrlC {
+				return m, tea.Quit
 			}
+			m.lastCtrlC = now
+			m.flashMsg = "Press Ctrl+C again to exit"
 			m.flashUntil = now.Add(doubleCtrlC)
 			return m, nil
 		}
