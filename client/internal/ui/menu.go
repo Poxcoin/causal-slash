@@ -50,78 +50,77 @@ func (m AppModel) menuKind() string {
 	return "command"
 }
 
-// Known top AI companies
+// Known top AI companies with clear, modern 2026 flagship descriptions
 var Companies = []struct {
 	ID   string
 	Name string
 	Desc string
 }{
-	{"anthropic", "Anthropic", "Claude 3.7 / 3.5 Sonnet, Opus frontier reasoning"},
-	{"openai", "OpenAI", "o3, o1, GPT-4o, GPT-4.5 frontier models"},
-	{"google", "Google", "Gemini 2.5 Pro / Flash ultra-fast multimodel"},
-	{"deepseek", "DeepSeek", "DeepSeek R1 reasoning, V3 open frontier"},
-	{"meta", "Meta (Llama)", "Llama 3.3 70B, Llama 3.1 405B open weights"},
-	{"qwen", "Qwen (Alibaba)", "Qwen 2.5 72B, QwQ frontier code & math"},
-	{"mistral", "Mistral AI", "Mistral Large 4, Codestral premier coding"},
+	{"anthropic", "Anthropic", "Claude Opus 5.5, Sonnet 5.5, Haiku 5.5"},
+	{"openai", "OpenAI", "GPT-6.1 Sol, GPT-5.6, o3 Pro, o1"},
+	{"google", "Google", "Gemini 3.8 Flash, 3.7 Flash, 3.1 Pro"},
+	{"deepseek", "DeepSeek", "DeepSeek V4 Pro, V4 Flash, R1"},
+	{"qwen", "Qwen (Alibaba)", "Qwen 3.8 Flash, 3.8 27B, 3.5 Plus"},
+	{"meta", "Meta (Llama)", "Llama 3.3 70B, Llama 4 Maverick"},
+	{"mistral", "Mistral AI", "Mistral Large 4, Codestral 2508"},
 }
 
-// isJunkModel filters out batch, toy, embedding, and outdated small models (< 14B)
-func isJunkModel(id, name string) bool {
-	lowerID := strings.ToLower(id)
-	lowerName := strings.ToLower(name)
-
-	// Filter out non-interactive batch & utility models
-	if strings.Contains(lowerID, ":batch") ||
-		strings.Contains(lowerID, "embed") ||
-		strings.Contains(lowerID, "whisper") ||
-		strings.Contains(lowerID, "guard") ||
-		strings.Contains(lowerID, "moderation") ||
-		strings.Contains(lowerID, "image") {
-		return true
-	}
-
-	// Filter out small toy models (< 14B)
-	toyTokens := []string{
-		"-1b", "/1b", " 1b",
-		"-2b", "/2b", " 2b",
-		"-3b", "/3b", " 3b",
-		"-4b", "/4b", " 4b",
-		"-7b", "/7b", " 7b",
-		"-8b", "/8b", " 8b",
-		"nano", "mini", "tiny", "lite",
-	}
-	// Exception: o3-mini and o1-mini from OpenAI are strong frontier models
-	if strings.Contains(lowerID, "o3-mini") || strings.Contains(lowerID, "o1-mini") {
-		return false
-	}
-
-	for _, t := range toyTokens {
-		if strings.Contains(lowerID, t) || strings.Contains(lowerName, t) {
-			return true
-		}
-	}
-	return false
-}
-
-func matchesCompany(companyID, ref, family string) bool {
-	lowerRef := strings.ToLower(ref)
-	switch companyID {
-	case "anthropic":
-		return strings.Contains(lowerRef, "anthropic") || strings.Contains(lowerRef, "claude")
-	case "openai":
-		return strings.Contains(lowerRef, "openai") || strings.Contains(lowerRef, "gpt") || strings.Contains(lowerRef, "o1") || strings.Contains(lowerRef, "o3")
-	case "google":
-		return strings.Contains(lowerRef, "google") || strings.Contains(lowerRef, "gemini")
-	case "deepseek":
-		return strings.Contains(lowerRef, "deepseek")
-	case "meta":
-		return strings.Contains(lowerRef, "meta-llama") || strings.Contains(lowerRef, "llama")
-	case "qwen":
-		return strings.Contains(lowerRef, "qwen") || strings.Contains(lowerRef, "qwq")
-	case "mistral":
-		return strings.Contains(lowerRef, "mistral") || strings.Contains(lowerRef, "codestral")
-	}
-	return false
+// Curated 2026 flagship models per company - no toys, no ancient models
+var CuratedCompanyModels = map[string][]struct {
+	Name string
+	Ref  string
+	Desc string
+}{
+	"anthropic": {
+		{"Claude Opus 5.5", "openrouter:anthropic/claude-opus-5.5", "Frontier architecture, maximum reasoning (Flagship)"},
+		{"Claude Sonnet 5.5", "openrouter:anthropic/claude-sonnet-5.5", "Elite software engineering & deep coding"},
+		{"Claude Haiku 5.5", "openrouter:anthropic/claude-haiku-5.5", "High-speed lightweight agent execution"},
+		{"Claude Opus 5", "openrouter:anthropic/claude-opus-5", "Deep multi-step reasoning & formal proof"},
+		{"Claude Sonnet 5", "openrouter:anthropic/claude-sonnet-5", "High-throughput complex agent synthesis"},
+		{"Claude Fable 5.1", "openrouter:anthropic/claude-fable-5.1", "Creative synthesis & long-context logic"},
+	},
+	"openai": {
+		{"GPT-6.1 Sol Pro", "openrouter:openai/gpt-6.1-sol-pro", "Next-gen supreme reasoning & multi-agent orchestration"},
+		{"GPT-6.1 Sol", "openrouter:openai/gpt-6.1-sol", "High-efficiency frontier logic (Flagship)"},
+		{"GPT-5.6 Luna Pro", "openrouter:openai/gpt-5.6-luna-pro", "Deep algorithmic reasoning & mathematics"},
+		{"GPT-5.6 Sol", "openrouter:openai/gpt-5.6-sol", "Fast frontier general intelligence"},
+		{"o3 Pro", "openrouter:openai/o3-pro", "Maximum chain-of-thought mathematical proof"},
+		{"o3", "openrouter:openai/o3", "Frontier STEM reasoning & autonomous coding"},
+		{"o1 Pro", "openrouter:openai/o1-pro", "Extended deep-thought reasoning engine"},
+		{"GPT-4o", "openrouter:openai/gpt-4o", "Multimodal standard benchmark model"},
+	},
+	"google": {
+		{"Gemini 3.8 Flash", "openrouter:google/gemini-3.8-flash", "Sub-10ms ultra-fast multimodal streaming (Flagship)"},
+		{"Gemini 3.7 Flash", "openrouter:google/gemini-3.7-flash", "High-speed reasoning & code generation"},
+		{"Gemini 3.6 Flash", "openrouter:google/gemini-3.6-flash", "Fast agent execution & large context"},
+		{"Gemini 3.1 Pro", "openrouter:google/gemini-3.1-pro-preview", "Deep research & multi-million token context"},
+		{"Gemini 2.5 Pro", "openrouter:google/gemini-2.5-pro", "Long-context architecture verification"},
+		{"Gemini 2.5 Flash", "openrouter:google/gemini-2.5-flash", "Ultra-low-latency high-efficiency model"},
+	},
+	"deepseek": {
+		{"DeepSeek V4 Pro", "openrouter:deepseek/deepseek-v4-pro", "State-of-the-art coding & mathematical reasoning"},
+		{"DeepSeek V4 Flash", "openrouter:deepseek/deepseek-v4-flash", "Sub-second inference & agentic execution"},
+		{"DeepSeek R1", "openrouter:deepseek/deepseek-r1", "Open frontier chain-of-thought reasoning"},
+		{"DeepSeek V3.2", "openrouter:deepseek/deepseek-v3.2", "Large-scale mixture-of-experts general model"},
+		{"DeepSeek V3", "openrouter:deepseek/deepseek-chat", "General coding and dialogue"},
+	},
+	"qwen": {
+		{"Qwen 3.8 Flash", "openrouter:qwen/qwen3.8-flash", "Instant agentic coding & high-speed reasoning"},
+		{"Qwen 3.8 27B", "openrouter:qwen/qwen3.8-27b", "High-efficiency frontier dense model"},
+		{"Qwen 3.7 Max", "openrouter:qwen/qwen3.7-max", "Maximum scale reasoning & mathematics"},
+		{"Qwen 3.5 Plus", "openrouter:qwen/qwen3.5-plus-02-15", "Advanced reasoning & multilingual synthesis"},
+		{"Qwen 2.5 72B", "openrouter:qwen/qwen-2.5-72b-instruct", "Heavy open-weight coding flagship"},
+	},
+	"meta": {
+		{"Llama 3.3 70B", "openrouter:meta-llama/llama-3.3-70b-instruct", "Premier open-weights flagship coding model"},
+		{"Hermes 3 405B", "openrouter:nousresearch/hermes-3-llama-3.1-405b", "Full-scale 405B uncensored reasoning engine"},
+		{"Hermes 3 70B", "openrouter:nousresearch/hermes-3-llama-3.1-70b", "High-capability general open agent model"},
+	},
+	"mistral": {
+		{"Mistral Large 4", "openrouter:mistralai/mistral-large-4-0", "Premier European frontier model for complex tasks"},
+		{"Mistral Large 3", "openrouter:mistralai/mistral-large-2512", "High-accuracy reasoning & agent orchestration"},
+		{"Codestral 2508", "openrouter:mistralai/codestral-2508", "State-of-the-art specialized code intelligence"},
+	},
 }
 
 func (m AppModel) menuItems() []menuItem {
@@ -142,16 +141,9 @@ func (m AppModel) menuItems() []menuItem {
 		return items
 
 	case "model":
-		if m.modelsErr != "" {
-			return []menuItem{{label: "model list unavailable: " + m.modelsErr}}
-		}
-		if !m.modelsLoaded {
-			return []menuItem{{label: "loading models..."}}
-		}
-
 		filter := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(val, modelPrefix)))
 
-		// LEVEL 1: If no company selected and no active text search, show Company List
+		// LEVEL 1: If no company selected and no active search, show Companies
 		if m.selectedCompany == "" && filter == "" {
 			var items []menuItem
 			for _, comp := range Companies {
@@ -164,47 +156,53 @@ func (m AppModel) menuItems() []menuItem {
 			return items
 		}
 
-		// LEVEL 2: Show curated models for selected company OR global search results
+		// LEVEL 2: Show curated models for selected company OR search results
 		var items []menuItem
+		if m.selectedCompany != "" && filter == "" {
+			items = append(items, menuItem{
+				label: "◄ Back to Companies",
+				desc:  "Press Enter or Esc to return",
+				value: "back:companies",
+			})
+			for _, mod := range CuratedCompanyModels[m.selectedCompany] {
+				items = append(items, menuItem{
+					label: mod.Name,
+					desc:  mod.Desc,
+					value: mod.Ref,
+				})
+			}
+			return items
+		}
+
+		// Search mode (either inside company or global)
 		if m.selectedCompany != "" {
 			items = append(items, menuItem{
 				label: "◄ Back to Companies",
 				desc:  "Press Enter or Esc to return",
 				value: "back:companies",
 			})
-		}
-
-		for _, mi := range m.models {
-			if isJunkModel(mi.Ref, mi.Name) {
-				continue
-			}
-
-			if m.selectedCompany != "" {
-				if !matchesCompany(m.selectedCompany, mi.Ref, mi.Family) {
-					continue
+			for _, mod := range CuratedCompanyModels[m.selectedCompany] {
+				if strings.Contains(strings.ToLower(mod.Name), filter) || strings.Contains(strings.ToLower(mod.Ref), filter) {
+					items = append(items, menuItem{
+						label: mod.Name,
+						desc:  mod.Desc,
+						value: mod.Ref,
+					})
 				}
 			}
-
-			// Filter check
-			if filter != "" {
-				searchMatch := strings.Contains(strings.ToLower(mi.Ref), filter) ||
-					strings.Contains(strings.ToLower(mi.Name), filter) ||
-					strings.Contains(strings.ToLower(mi.Family), filter)
-				if !searchMatch {
-					continue
+		} else {
+			// Global search across all curated company models
+			for _, comp := range Companies {
+				for _, mod := range CuratedCompanyModels[comp.ID] {
+					if strings.Contains(strings.ToLower(mod.Name), filter) || strings.Contains(strings.ToLower(mod.Ref), filter) || strings.Contains(strings.ToLower(comp.Name), filter) {
+						items = append(items, menuItem{
+							label: mod.Name,
+							desc:  "[" + comp.Name + "] " + mod.Desc,
+							value: mod.Ref,
+						})
+					}
 				}
 			}
-
-			displayName := mi.Ref
-			if mi.Name != "" {
-				displayName = mi.Name
-			}
-
-			items = append(items, menuItem{
-				label: displayName,
-				desc:  mi.Ref,
-				value: mi.Ref,
-			})
 		}
 
 		if len(items) == 0 {
