@@ -540,7 +540,7 @@ func (m AppModel) renderInput() string {
 		cursorStr = whiteStyle.Render("⎕")
 	}
 
-	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt))
+	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
 	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
 	cmdEnd := 0
 	if len(runes) > 0 && runes[0] == '/' {
@@ -579,7 +579,7 @@ func (m AppModel) renderInput() string {
 			if m.input.Cursor.Blink {
 				cursorChar = " "
 			} else {
-				cursorChar = lipgloss.NewStyle().Background(lipgloss.Color(colorPrompt)).Foreground(lipgloss.Color("#000000")).Render(char)
+				cursorChar = lipgloss.NewStyle().Background(lipgloss.Color("#FFFFFF")).Foreground(lipgloss.Color("#000000")).Render(char)
 			}
 		} else {
 			cursorChar = blueStyle.Underline(true).Render(char)
