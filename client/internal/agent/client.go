@@ -251,6 +251,9 @@ func (c *Client) ProcessQuery(ctx context.Context, query string, onChunk StreamC
 	}
 
 	vendorURL, vendorPK, derr := c.DiscoverVendor(ctx)
+	if derr != nil {
+		return "", 0, fmt.Errorf("502 UPSTREAM_VENDOR_UNREACHABLE: vendor discovery failed: %w (167-byte Session MAC wire clearing required)", derr)
+	}
 
 	history := c.sess.Memory.Messages()
 	messages := make([]map[string]string, 0, len(history)+1)
@@ -258,17 +261,6 @@ func (c *Client) ProcessQuery(ctx context.Context, query string, onChunk StreamC
 		messages = append(messages, map[string]string{"role": m.Role, "content": m.Content})
 	}
 	messages = append(messages, map[string]string{"role": "user", "content": query})
-
-	// No vendor reachable: direct upstream inference, no cheque, no settlement claimed.
-	if derr != nil {
-		reply, err := c.upstreamRouter.ExecuteStreaming(ctx, c.sess.CurrentModel, messages, onChunk)
-		if err != nil {
-			return "", 0, err
-		}
-		_ = c.sess.Memory.AddTurn(query, reply)
-		c.sess.TotalQueries++
-		return reply, 0, nil
-	}
 
 	if !c.sess.SessionInitialized {
 		initPkt, err := agent.SessionBegin(vendorPK)
@@ -300,8 +292,8 @@ func (c *Client) ProcessQuery(ctx context.Context, query string, onChunk StreamC
 	if err != nil {
 		return "", 0, fmt.Errorf("cheque signing failed: %w", err)
 	}
-	chequeHex := "0x" + hex.EncodeToString(wireCheque)
 
+	chequeHex := "0x" + hex.EncodeToString(wireCheque)
 	reqBody, err := json.Marshal(map[string]any{
 		"model":    c.sess.CurrentModel,
 		"messages": messages,

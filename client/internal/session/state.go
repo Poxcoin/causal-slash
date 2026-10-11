@@ -65,12 +65,12 @@ func NewState() *State {
 	}
 
 	s := &State{
-		Cwd:          cwd,
-		CurrentModel: "",
+		Cwd:             cwd,
+		CurrentModel:    LoadActiveModel(),
 		ReasoningEffort: "medium",
-		Memory:       NewMemoryManager(cwd),
-		Wallet:       wallet,
-		VaultAddress: "0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5",
+		Memory:          NewMemoryManager(cwd),
+		Wallet:          wallet,
+		VaultAddress:    "0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5",
 	}
 	return s
 }
@@ -105,4 +105,50 @@ func (s *State) DisplayCwd() string {
 		}
 	}
 	return cwd
+}
+
+// ActiveModelFile returns path to ~/.csls/active_model
+func ActiveModelFile() string {
+	return filepath.Join(ConfigDir(), "active_model")
+}
+
+// LoadActiveModel returns the saved model reference or a sensible default.
+func LoadActiveModel() string {
+	if raw, err := os.ReadFile(ActiveModelFile()); err == nil {
+		m := strings.TrimSpace(string(raw))
+		if m != "" {
+			return m
+		}
+	}
+	// Check config.toml
+	cfgFile := filepath.Join(ConfigDir(), "config.toml")
+	if raw, err := os.ReadFile(cfgFile); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "model") {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					val := strings.Trim(strings.TrimSpace(parts[1]), "\"'")
+					if val != "" && strings.Contains(val, ":") {
+						return val
+					}
+				}
+			}
+		}
+	}
+	if os.Getenv("GROQ_API_KEY") != "" {
+		return "groq:openai/gpt-oss-120b"
+	}
+	return "openai:gpt-6.1-sol"
+}
+
+// SaveActiveModel persists the chosen model reference to disk.
+func SaveActiveModel(model string) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		_ = os.Remove(ActiveModelFile())
+		return
+	}
+	_ = os.MkdirAll(ConfigDir(), 0700)
+	_ = os.WriteFile(ActiveModelFile(), []byte(model+"\n"), 0600)
 }

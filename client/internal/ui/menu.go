@@ -57,12 +57,12 @@ var Companies = []struct {
 	Name string
 	Desc string
 }{
-	{"anthropic", "Anthropic", "Claude Opus, Sonnet, Haiku frontier series"},
-	{"openai", "OpenAI", "GPT-6, GPT-5, o3, o1, GPT-4 series"},
-	{"google", "Google", "Gemini 3.8, 3.7, 3.1, 2.5 Pro & Flash"},
-	{"deepseek", "DeepSeek", "DeepSeek V4 Pro/Flash, R1, V3 series"},
-	{"qwen", "Qwen (Alibaba)", "Qwen 3.8, 3.7, 3.5, 2.5 series"},
-	{"meta-llama", "Meta (Llama)", "Llama 4, Llama 3.3 70B, Hermes 405B"},
+	{"anthropic", "Anthropic", "Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 series"},
+	{"openai", "OpenAI", "GPT-6.1 Sol, GPT-6 Luna series"},
+	{"google", "Google", "Gemini 4 Argon, Project Astra series"},
+	{"deepseek", "DeepSeek", "DeepSeek-V4-Pro, DeepSeek-V4.1-Flash series"},
+	{"qwen", "Qwen (Alibaba)", "Qwen 3.8, 3.7, 3.5 series"},
+	{"meta-llama", "Meta (Llama)", "Llama 4, Llama 3.3 70B series"},
 	{"mistralai", "Mistral AI", "Mistral Large 4, Codestral series"},
 }
 
@@ -89,10 +89,6 @@ func isJunkModel(ref, name string) bool {
 		"-8b", "/8b", " 8b",
 		"nano", "mini",
 	}
-	// Keep o3-mini, o1-mini and gpt-4o-mini as exceptions
-	if strings.Contains(lower, "o3-mini") || strings.Contains(lower, "o1-mini") || strings.Contains(lower, "gpt-4o-mini") {
-		return false
-	}
 	for _, t := range toyTokens {
 		if strings.Contains(lower, t) || strings.Contains(strings.ToLower(name), t) {
 			return true
@@ -111,7 +107,7 @@ func matchesCompany(companyID, ref string) bool {
 	case "anthropic":
 		return strings.HasPrefix(lower, "anthropic/") || strings.Contains(lower, "claude")
 	case "openai":
-		return strings.HasPrefix(lower, "openai/") || strings.Contains(lower, "gpt") || strings.Contains(lower, "o1") || strings.Contains(lower, "o3")
+		return strings.HasPrefix(lower, "openai/") || strings.Contains(lower, "gpt")
 	case "google":
 		return strings.HasPrefix(lower, "google/") || strings.Contains(lower, "gemini")
 	case "deepseek":

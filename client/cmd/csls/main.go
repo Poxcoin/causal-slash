@@ -4,11 +4,9 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -48,14 +46,6 @@ func findRepoRoot() string {
 	return "."
 }
 
-func isCharDevice(f *os.File) bool {
-	fi, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
-}
-
 func main() {
 	if os.Getenv("COLORFGBG") == "" {
 		_ = os.Setenv("COLORFGBG", "15;0")
@@ -80,36 +70,9 @@ func main() {
 			fmt.Println(res.Output)
 			return
 		}
-		if strings.HasPrefix(first, "/") {
-			line := strings.Join(args, " ")
-			res := commands.Execute(line, sess, agentClient, repoRoot)
-			if res.Output != "" {
-				fmt.Println(res.Output)
-			}
-			return
-		}
 	}
 
-	// 2. Non-interactive piped mode
-	if !isCharDevice(os.Stdin) {
-		scanner := bufio.NewScanner(os.Stdin)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			res := commands.Execute(line, sess, agentClient, repoRoot)
-			if res.Quit {
-				break
-			}
-			if res.Output != "" {
-				fmt.Println(res.Output)
-			}
-		}
-		return
-	}
-
-	// 3. Interactive TUI shell (Bubble Tea with AltScreen and MouseCellMotion)
+	// 2. Interactive TUI shell (Bubble Tea with AltScreen and MouseCellMotion)
 	backend := &appBackend{
 		sess:        sess,
 		agentClient: agentClient,

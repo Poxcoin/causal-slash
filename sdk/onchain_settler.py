@@ -8,7 +8,7 @@ Constructs canonical ABI calldata, generates cryptographic EIP-712 / Schnorr pro
 broadcasts transactions via Foundry cast CLI or public Base Sepolia JSON-RPC,
 and enforces real-time on-chain transaction confirmation.
 
-Zero-Mock, Zero-Sleep production architecture compliant with all 6 Protocol Axioms.
+Zero-Mock production architecture with rate-limited on-chain polling compliant with all 6 Protocol Axioms.
 Denominated strictly in micro-USDC (6 decimal places: 1,000,000 = 1.0 USDC).
 """
 
@@ -591,10 +591,16 @@ class BaseOnChainSettler:
         self.wait_for_receipt(tx_hash)
         return str(tx_hash)
 
-    def wait_for_receipt(self, tx_hash: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+    def wait_for_receipt(
+        self,
+        tx_hash: str,
+        timeout: Optional[float] = None,
+        poll_interval: float = 0.25,
+    ) -> Dict[str, Any]:
         """
         Awaits transaction receipt until mined or timeout expires.
-        Zero sleep: uses native blocking cast receipt or non-sleeping deadline loop.
+        Uses native blocking cast receipt when available, or HTTP JSON-RPC polling
+        with bounded backoff interval to prevent public RPC 429 rate limits.
         """
         max_time = timeout or self.timeout
 
@@ -627,7 +633,7 @@ class BaseOnChainSettler:
             except json.JSONDecodeError as ex:
                 raise TransactionRevertedError(f"Failed to parse cast receipt output: {proc.stdout}") from ex
 
-        # Non-blocking JSON-RPC deadline loop (zero time.sleep)
+        # Bounded JSON-RPC deadline loop with 250ms polling interval to prevent public RPC rate limits
         deadline = time.perf_counter() + max_time
         payload = {
             "jsonrpc": "2.0",
@@ -645,9 +651,21 @@ class BaseOnChainSettler:
                     return receipt
                 if status in (0, "0x0", "0", False):
                     raise TransactionRevertedError(f"Transaction {tx_hash} reverted on-chain")
-            time.sleep(0.25)
+            time.sleep(poll_interval)
 
         raise TransactionTimeoutError(f"Timed out waiting for receipt of {tx_hash} after {max_time}s")
+
+    def wait_for_transaction_receipt(
+        self,
+        tx_hash: str,
+        timeout: Optional[float] = None,
+        poll_interval: float = 0.25,
+    ) -> Dict[str, Any]:
+        """
+        Canonical web3-compliant alias for wait_for_receipt.
+        Polls for on-chain inclusion using cast receipt or rate-limited JSON-RPC backoff.
+        """
+        return self.wait_for_receipt(tx_hash, timeout=timeout, poll_interval=poll_interval)
 
     def _json_rpc_call(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Performs raw HTTP JSON-RPC POST request."""

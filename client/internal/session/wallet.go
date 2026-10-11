@@ -181,7 +181,11 @@ func Deposit(amount float64) (*WalletData, error) {
 	}
 	w.CollateralBond += amount
 	w.FreeMargin += amount
-	w.Status = "ready"
+	if w.OnChainBond > 0 && !w.IsSlashed {
+		w.Status = "ready"
+	} else {
+		w.Status = "demo"
+	}
 	if err := SaveWallet(w); err != nil {
 		return nil, err
 	}
