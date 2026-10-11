@@ -46,6 +46,10 @@ This document codifies the operational rules, communication protocols, boundarie
 7. **Single-Writer Worktree Hygiene:**
    - Agents modify only files within their assigned track or designated task scope.
    - No cross-track pollution without explicit handoff logged in the Truth Ledger.
+8. **Strict Ban on GPU Rental & Self-Hosting Fantasies:**
+   - Vendors in CSLS are strictly clearing gateways and API brokers connected to official closed frontier services (Anthropic, OpenAI, DeepSeek, ElevenLabs, Kling).
+   - Zero rented GPU servers or bare-metal instances (RunPod, Lambda) where models are self-hosted. Closed frontier models cannot and will not be hosted manually.
+   - Any agent proposing self-hosted model weights, server rental, or manual API hosting is in direct violation of the protocol architecture.
 
 ---
 
