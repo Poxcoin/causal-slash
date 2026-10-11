@@ -40,6 +40,11 @@ func TestModelPickerSelectsWithArrows(t *testing.T) {
 	if got := m.(AppModel).input.Value(); got != "/model " {
 		t.Fatalf("enter on /model must open picker, got %q", got)
 	}
+	// Deliver loaded models
+	m, _ = m.Update(modelsMsg{items: []ModelItem{
+		{Ref: "openrouter:anthropic/claude-opus-5.5", Name: "Claude Opus 5.5", Family: "Claude (Anthropic)"},
+		{Ref: "openrouter:openai/gpt-6.1-sol-pro", Name: "GPT-6.1 Sol Pro", Family: "ChatGPT (OpenAI)"},
+	}})
 	view := ansi.Strip(m.View())
 	if !strings.Contains(view, "Anthropic") || !strings.Contains(view, "OpenAI") {
 		t.Fatalf("company list missing:\n%s", view)
