@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	menuRows    = 8
+	menuRows    = 10
 	modelPrefix = "/model "
 )
 
@@ -136,14 +136,20 @@ func (m AppModel) menuItems() []menuItem {
 }
 
 func (m AppModel) menuHeight() int {
+	kind := m.menuKind()
 	n := len(m.menuItems())
 	if n > menuRows {
 		n = menuRows
+	}
+	if kind == "model" {
+		// Switch Model header (3) + effort slider & legend (6)
+		n += 9
 	}
 	return n
 }
 
 func (m AppModel) renderMenu() []string {
+	kind := m.menuKind()
 	items := m.menuItems()
 	if len(items) == 0 {
 		return nil
@@ -160,40 +166,122 @@ func (m AppModel) renderMenu() []string {
 	if end > len(items) {
 		end = len(items)
 	}
+
+	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
 	sel := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
 	norm := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
-	kind := m.menuKind()
+	categoryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn)).Bold(true)
+	currentTag := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Italic(true)
 
 	labelW := 0
 	for _, it := range items[start:end] {
-		if w := lipgloss.Width(it.label); w > labelW {
-			labelW = w
+		if it.value != "" {
+			if w := lipgloss.Width(it.label); w > labelW {
+				labelW = w
+			}
 		}
 	}
 	if labelW > m.width/2 && kind == "command" {
 		labelW = m.width / 2
 	}
+
 	var out []string
+	if kind == "model" {
+		out = append(out, "  "+titleStyle.Render("Switch Model"))
+		searchQuery := strings.TrimPrefix(m.input.Value(), modelPrefix)
+		out = append(out, "  "+dim.Render("Search: ")+lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Render(searchQuery))
+		out = append(out, "")
+	}
+
+	activeModel := m.backend.ActiveModel()
 	for i := start; i < end; i++ {
 		it := items[i]
+		if it.value == "" {
+			// Header section like --- Claude (Anthropic) ---
+			out = append(out, "  "+categoryStyle.Render(it.label))
+			continue
+		}
+
 		marker := "  "
 		style := norm
-		if it.value == "" {
-			style = dim
-		} else if i == idx {
+		if i == idx {
 			marker = "> "
 			style = sel
 		}
 		label := ansi.Truncate(it.label, labelW, "")
 		pad := strings.Repeat(" ", labelW-lipgloss.Width(label))
 		line := "  " + marker + style.Render(label) + pad
-		if it.desc != "" {
+
+		if it.value != "" && strings.EqualFold(it.value, activeModel) {
+			line += "  " + currentTag.Render("(current)")
+		} else if it.desc != "" {
 			line += "  " + dim.Render(it.desc)
 		}
 		out = append(out, ansi.Truncate(line, m.width, ""))
 	}
+
+	if kind == "model" {
+		out = append(out, "")
+		effort := "medium"
+		if e := m.effort(); e != "" {
+			effort = e
+		}
+
+		bar := renderEffortSlider(effort)
+		out = append(out, "  "+dim.Render("Effort ")+bar)
+
+		var effortSubtext string
+		switch effort {
+		case "low":
+			effortSubtext = "Fast response with minimal reasoning latency"
+		case "high":
+			effortSubtext = "Deepest reasoning for complex problems - slower but strongest"
+		default:
+			effortSubtext = "Balanced speed and reasoning quality for most tasks"
+		}
+		out = append(out, "         "+lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim)).Italic(true).Render(effortSubtext))
+		out = append(out, "")
+		navLegend := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true).Render("Keyboard: ") +
+			sel.Render("↑/↓") + dim.Render(" Navigate  ") +
+			sel.Render("←/→") + dim.Render(" Effort  ") +
+			sel.Render("enter") + dim.Render(" Select  ") +
+			sel.Render("esc") + dim.Render(" Go Back")
+		out = append(out, "  "+navLegend)
+	}
+
 	return out
+}
+
+func renderEffortSlider(effort string) string {
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
+	warn := lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn)).Bold(true)
+	line := lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn)).Render("──────────────")
+
+	lowDot := "○"
+	medDot := "○"
+	highDot := "○"
+
+	switch effort {
+	case "low":
+		lowDot = "●"
+		return dim.Render("◄ ") + warn.Render(lowDot) + line + dim.Render(medDot) + line + dim.Render(highDot) + dim.Render(" ►")
+	case "high":
+		highDot = "●"
+		return dim.Render("◄ ") + dim.Render(lowDot) + line + dim.Render(medDot) + line + warn.Render(highDot) + dim.Render(" ►")
+	default:
+		medDot = "●"
+		return dim.Render("◄ ") + dim.Render(lowDot) + line + warn.Render(medDot) + line + dim.Render(highDot) + dim.Render(" ►")
+	}
+}
+
+func (m AppModel) effort() string {
+	if m.backend != nil {
+		if s, ok := m.backend.(interface{ ReasoningEffort() string }); ok {
+			return s.ReasoningEffort()
+		}
+	}
+	return "medium"
 }
 
 // applyMenu handles navigation keys. handled reports whether the key was consumed;
@@ -210,6 +298,25 @@ func (m *AppModel) applyMenu(key string) (handled, execute bool) {
 	if m.menuIdx >= len(items) {
 		m.menuIdx = len(items) - 1
 	}
+	if kind == "model" {
+		switch key {
+		case "left":
+			if e := m.effort(); e == "high" {
+				m.setEffort("medium")
+			} else if e == "medium" {
+				m.setEffort("low")
+			}
+			return true, false
+		case "right":
+			if e := m.effort(); e == "low" {
+				m.setEffort("medium")
+			} else if e == "medium" {
+				m.setEffort("high")
+			}
+			return true, false
+		}
+	}
+
 	switch key {
 	case "up":
 		for m.menuIdx > 0 {
@@ -267,4 +374,12 @@ func styleInput(s string) string {
 		return cmd.Render(s)
 	}
 	return cmd.Render(s[:i]) + blue.Render(s[i:])
+}
+
+func (m *AppModel) setEffort(effort string) {
+	if m.backend != nil {
+		if s, ok := m.backend.(interface{ SetReasoningEffort(string) }); ok {
+			s.SetReasoningEffort(effort)
+		}
+	}
 }

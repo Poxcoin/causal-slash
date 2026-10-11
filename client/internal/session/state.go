@@ -15,6 +15,7 @@ type State struct {
 	mu                   sync.RWMutex
 	Cwd                  string
 	CurrentModel         string
+	ReasoningEffort      string // "low", "medium", "high"
 	VendorURL            string
 	Memory               *MemoryManager
 	Wallet               *WalletData
@@ -66,6 +67,7 @@ func NewState() *State {
 	s := &State{
 		Cwd:          cwd,
 		CurrentModel: "",
+		ReasoningEffort: "medium",
 		Memory:       NewMemoryManager(cwd),
 		Wallet:       wallet,
 		VaultAddress: "0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5",
