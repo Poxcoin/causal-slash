@@ -78,6 +78,8 @@ var CuratedCompanyModels = map[string][]struct {
 		{"Claude Opus 5", "openrouter:anthropic/claude-opus-5", "Deep multi-step reasoning & formal proof"},
 		{"Claude Sonnet 5", "openrouter:anthropic/claude-sonnet-5", "High-throughput complex agent synthesis"},
 		{"Claude Fable 5.1", "openrouter:anthropic/claude-fable-5.1", "Creative synthesis & long-context logic"},
+		{"Claude 3.5 Sonnet", "openrouter:anthropic/claude-3.5-sonnet", "Classic 2024 coding flagship"},
+		{"Claude 3 Opus", "openrouter:anthropic/claude-3-opus", "Classic deep reasoning model"},
 	},
 	"openai": {
 		{"GPT-6.1 Sol Pro", "openrouter:openai/gpt-6.1-sol-pro", "Next-gen supreme reasoning & multi-agent orchestration"},
@@ -88,6 +90,8 @@ var CuratedCompanyModels = map[string][]struct {
 		{"o3", "openrouter:openai/o3", "Frontier STEM reasoning & autonomous coding"},
 		{"o1 Pro", "openrouter:openai/o1-pro", "Extended deep-thought reasoning engine"},
 		{"GPT-4o", "openrouter:openai/gpt-4o", "Multimodal standard benchmark model"},
+		{"GPT-4 Turbo", "openrouter:openai/gpt-4-turbo", "Classic GPT-4 high context"},
+		{"GPT-4", "openrouter:openai/gpt-4", "Original GPT-4 baseline"},
 	},
 	"google": {
 		{"Gemini 3.8 Flash", "openrouter:google/gemini-3.8-flash", "Sub-10ms ultra-fast multimodal streaming (Flagship)"},
@@ -96,6 +100,8 @@ var CuratedCompanyModels = map[string][]struct {
 		{"Gemini 3.1 Pro", "openrouter:google/gemini-3.1-pro-preview", "Deep research & multi-million token context"},
 		{"Gemini 2.5 Pro", "openrouter:google/gemini-2.5-pro", "Long-context architecture verification"},
 		{"Gemini 2.5 Flash", "openrouter:google/gemini-2.5-flash", "Ultra-low-latency high-efficiency model"},
+		{"Gemini 1.5 Pro", "openrouter:google/gemini-pro-1.5", "Classic 2M context flagship"},
+		{"Gemini 1.5 Flash", "openrouter:google/gemini-flash-1.5", "Classic fast multimodel"},
 	},
 	"deepseek": {
 		{"DeepSeek V4 Pro", "openrouter:deepseek/deepseek-v4-pro", "State-of-the-art coding & mathematical reasoning"},
@@ -115,6 +121,7 @@ var CuratedCompanyModels = map[string][]struct {
 		{"Llama 3.3 70B", "openrouter:meta-llama/llama-3.3-70b-instruct", "Premier open-weights flagship coding model"},
 		{"Hermes 3 405B", "openrouter:nousresearch/hermes-3-llama-3.1-405b", "Full-scale 405B uncensored reasoning engine"},
 		{"Hermes 3 70B", "openrouter:nousresearch/hermes-3-llama-3.1-70b", "High-capability general open agent model"},
+		{"Llama 3.1 70B", "openrouter:meta-llama/llama-3.1-70b-instruct", "Classic open-weights standard"},
 	},
 	"mistral": {
 		{"Mistral Large 4", "openrouter:mistralai/mistral-large-4-0", "Premier European frontier model for complex tasks"},
