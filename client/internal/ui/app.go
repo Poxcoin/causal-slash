@@ -212,17 +212,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.MouseButtonRight:
 			// Right-click: quick copy of response or chat history to clipboard
-			textToCopy := m.getLastResponse()
-			if textToCopy == "" && len(m.lines) > 0 {
-				textToCopy = ansi.Strip(strings.Join(m.lines, "\n"))
-			}
-			if textToCopy != "" {
-				if err := session.CopyToClipboard(textToCopy); err != nil {
-					m.flashMsg = "clipboard error: " + err.Error()
-				} else {
-					m.flashMsg = "copied to clipboard"
+			if msg.Action != tea.MouseActionMotion {
+				textToCopy := m.getLastResponse()
+				if textToCopy == "" && len(m.lines) > 0 {
+					textToCopy = ansi.Strip(strings.Join(m.lines, "\n"))
 				}
-				m.flashUntil = time.Now().Add(2 * time.Second)
+				if textToCopy != "" {
+					if err := session.CopyToClipboard(textToCopy); err != nil {
+						m.flashMsg = "clipboard error: " + err.Error()
+					} else {
+						m.flashMsg = "copied to clipboard"
+					}
+					m.flashUntil = time.Now().Add(2 * time.Second)
+				}
 			}
 			return m, nil
 		case tea.MouseButtonLeft:
@@ -404,7 +406,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historyIdx = len(m.history)
 
 			promptMarker := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true).Render("> ")
-			userText := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true).Underline(true).Render(line)
+			userText := lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0")).Render(line)
 			m.lines = append(m.lines, promptMarker+userText)
 			m.enforceScrollbackCap()
 			m.viewport.SetContent(strings.Join(m.lines, "\n"))
