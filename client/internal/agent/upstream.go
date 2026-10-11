@@ -34,17 +34,84 @@ func NewUpstreamRouter() *UpstreamRouter {
 	}
 }
 
-// MapModel maps model names to available Groq or OpenRouter model IDs.
-func (r *UpstreamRouter) MapModel(requested string) (groqModel string, openRouterModel string) {
-	lower := strings.ToLower(requested)
-	if strings.Contains(lower, "qwen") {
-		return "qwen/qwen3.8-27b", "nvidia/nemotron-3.5-lightning:free"
+// ModelEntry is one model offered by a real upstream provider.
+type ModelEntry struct {
+	Provider string // "groq" or "openrouter"
+	ID       string
+}
+
+// Ref returns the "provider:id" reference stored as the active model.
+func (e ModelEntry) Ref() string { return e.Provider + ":" + e.ID }
+
+// ParseModelRef splits a "provider:id" reference.
+func ParseModelRef(ref string) (provider, id string, ok bool) {
+	i := strings.Index(ref, ":")
+	if i <= 0 || i == len(ref)-1 {
+		return "", "", false
 	}
-	if strings.Contains(lower, "deepseek") {
-		return "openai/gpt-oss-120b", "nvidia/nemotron-3.5-lightning:free"
+	p := ref[:i]
+	if p != "groq" && p != "openrouter" {
+		return "", "", false
 	}
-	// Default to high-speed LPU model
-	return "qwen/qwen3.8-27b", "nvidia/nemotron-3.5-lightning:free"
+	return p, ref[i+1:], true
+}
+
+func (r *UpstreamRouter) fetchModels(ctx context.Context, url, key, provider string) ([]ModelEntry, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s models: %w", provider, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s models: HTTP %d", provider, resp.StatusCode)
+	}
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("%s models: %w", provider, err)
+	}
+	out := make([]ModelEntry, 0, len(body.Data))
+	for _, d := range body.Data {
+		if d.ID != "" {
+			out = append(out, ModelEntry{Provider: provider, ID: d.ID})
+		}
+	}
+	return out, nil
+}
+
+// ListModels returns the live model catalogue of every configured upstream.
+func (r *UpstreamRouter) ListModels(ctx context.Context) ([]ModelEntry, error) {
+	if r.groqKey == "" && r.openRouterKey == "" {
+		return nil, fmt.Errorf("no inference upstream configured: set GROQ_API_KEY or OPENROUTER_API_KEY")
+	}
+	var all []ModelEntry
+	var errs []string
+	if r.groqKey != "" {
+		m, err := r.fetchModels(ctx, "https://api.groq.com/openai/v1/models", r.groqKey, "groq")
+		if err != nil {
+			errs = append(errs, err.Error())
+		}
+		all = append(all, m...)
+	}
+	if r.openRouterKey != "" {
+		m, err := r.fetchModels(ctx, "https://openrouter.ai/api/v1/models", r.openRouterKey, "openrouter")
+		if err != nil {
+			errs = append(errs, err.Error())
+		}
+		all = append(all, m...)
+	}
+	if len(all) == 0 {
+		return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return all, nil
 }
 
 // ExecuteStreaming executes inference query, streaming tokens to onChunk.
@@ -55,7 +122,10 @@ func (r *UpstreamRouter) ExecuteStreaming(
 	messages []map[string]string,
 	onChunk StreamCallback,
 ) (string, error) {
-	groqModel, orModel := r.MapModel(model)
+	provider, modelID, ok := ParseModelRef(model)
+	if !ok {
+		return "", fmt.Errorf("no model selected: pick one with /model")
+	}
 
 	// Inject system prompt if missing
 	hasSystem := false
@@ -74,34 +144,18 @@ func (r *UpstreamRouter) ExecuteStreaming(
 	}
 	payloadMessages = append(payloadMessages, messages...)
 
-	var lastErr error
-
-	// Attempt 1: Groq LPU
-	if r.groqKey != "" {
-		reply, err := r.streamGroq(ctx, groqModel, payloadMessages, onChunk)
-		if err == nil && len(strings.TrimSpace(reply)) > 0 {
-			return reply, nil
+	switch provider {
+	case "groq":
+		if r.groqKey == "" {
+			return "", fmt.Errorf("GROQ_API_KEY is not set")
 		}
-		if err != nil {
-			lastErr = err
+		return r.streamGroq(ctx, modelID, payloadMessages, onChunk)
+	default:
+		if r.openRouterKey == "" {
+			return "", fmt.Errorf("OPENROUTER_API_KEY is not set")
 		}
+		return r.streamOpenRouter(ctx, modelID, payloadMessages, onChunk)
 	}
-
-	// Attempt 2: OpenRouter
-	if r.openRouterKey != "" {
-		reply, err := r.streamOpenRouter(ctx, orModel, payloadMessages, onChunk)
-		if err == nil && len(strings.TrimSpace(reply)) > 0 {
-			return reply, nil
-		}
-		if err != nil {
-			lastErr = err
-		}
-	}
-
-	if lastErr != nil {
-		return "", fmt.Errorf("upstream inference failed: %w", lastErr)
-	}
-	return "", fmt.Errorf("no inference upstream configured: set GROQ_API_KEY or OPENROUTER_API_KEY")
 }
 
 func (r *UpstreamRouter) streamGroq(

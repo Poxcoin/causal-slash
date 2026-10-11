@@ -148,7 +148,7 @@ func Execute(raw string, sess *session.State, agentClient *agent.Client, repoRoo
 		return runStatus(sess)
 
 	case "/model":
-		return runModel(sess, args)
+		return runModel(sess, agentClient, args)
 
 	case "/vendor":
 		return runVendor(sess, args)
@@ -780,59 +780,33 @@ func runStatus(sess *session.State) Result {
 	return Result{Output: sb.String()}
 }
 
-func runModel(sess *session.State, args []string) Result {
+func runModel(sess *session.State, agentClient *agent.Client, args []string) Result {
 	teal := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
 	green := lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen))
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorError))
 
 	if len(args) > 0 {
-		target := strings.ToLower(args[0])
-		for _, m := range session.SupportedModels {
-			if strings.EqualFold(m.ID, target) {
-				sess.CurrentModel = m.ID
-				return Result{
-					Output: green.Render("Active model set to: ") + teal.Render(m.ID),
-				}
-			}
+		if _, _, ok := agent.ParseModelRef(args[0]); !ok {
+			return Result{Output: errStyle.Render(fmt.Sprintf("Invalid model '%s': expected groq:<id> or openrouter:<id>; type /model and pick from the list", args[0]))}
 		}
-		// Partial match
-		var matches []string
-		for _, m := range session.SupportedModels {
-			if strings.Contains(strings.ToLower(m.ID), target) {
-				matches = append(matches, m.ID)
-			}
-		}
-		if len(matches) == 1 {
-			sess.CurrentModel = matches[0]
-			return Result{
-				Output: green.Render("Active model set to: ") + teal.Render(matches[0]),
-			}
-		}
-		return Result{
-			Output: lipgloss.NewStyle().Foreground(lipgloss.Color(colorError)).Render(fmt.Sprintf("Unknown model '%s'. See available models below:\n", target)) +
-				listModels(sess),
-		}
+		sess.CurrentModel = args[0]
+		return Result{Output: green.Render("Active model set to: ") + teal.Render(args[0])}
 	}
 
-	return Result{Output: listModels(sess)}
-}
-
-func listModels(sess *session.State) string {
-	teal := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
-	green := lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen))
-
+	active := sess.CurrentModel
+	if active == "" {
+		active = "none"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	models, err := agentClient.ListModels(ctx)
+	if err != nil {
+		return Result{Output: teal.Render("Active model: ") + active + "\n" + errStyle.Render("Model list unavailable: "+err.Error())}
+	}
 	var sb strings.Builder
-	sb.WriteString("\n" + teal.Render("Supported Frontier Models (Zero API Keys):") + "\n\n")
-	for _, m := range session.SupportedModels {
-		status := dim.Render("Available")
-		if strings.EqualFold(m.ID, sess.CurrentModel) {
-			status = green.Render("ACTIVE")
-		}
-		padding := strings.Repeat(" ", 24-len(m.ID))
-		sb.WriteString(fmt.Sprintf("  %s%s %-12s %s\n", teal.Render(m.ID), padding, status, dim.Render(m.Description)))
-	}
-	sb.WriteString("\n" + dim.Render("Switch model with: ") + teal.Render("/model <model_id>") + "\n")
-	return sb.String()
+	sb.WriteString(teal.Render("Active model: ") + active + "\n")
+	sb.WriteString(fmt.Sprintf("%d models available. Type /model <provider:id>.\n", len(models)))
+	return Result{Output: sb.String()}
 }
 
 func runVendor(sess *session.State, args []string) Result {

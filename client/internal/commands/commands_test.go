@@ -82,17 +82,20 @@ func TestSlashModel(t *testing.T) {
 	sess, client, root := setupTestSession(t)
 	defer client.Close()
 
-	resList := Execute("/model", sess, client, root)
-	if !strings.Contains(resList.Output, "claude-opus-5.5") {
-		t.Fatalf("missing default model in /model: %s", resList.Output)
+	resBad := Execute("/model deepseek-v4.1-flash", sess, client, root)
+	if !strings.Contains(resBad.Output, "Invalid model") {
+		t.Fatalf("bare id must be rejected: %s", resBad.Output)
+	}
+	if sess.CurrentModel != "" {
+		t.Fatalf("CurrentModel must stay empty, got: %s", sess.CurrentModel)
 	}
 
-	resSet := Execute("/model deepseek-v4.1-flash", sess, client, root)
-	if !strings.Contains(resSet.Output, "Active model set to: deepseek-v4.1-flash") {
+	resSet := Execute("/model groq:llama-3.3-70b-versatile", sess, client, root)
+	if !strings.Contains(resSet.Output, "Active model set to: groq:llama-3.3-70b-versatile") {
 		t.Fatalf("failed to switch model: %s", resSet.Output)
 	}
-	if sess.CurrentModel != "deepseek-v4.1-flash" {
-		t.Fatalf("expected CurrentModel deepseek-v4.1-flash, got: %s", sess.CurrentModel)
+	if sess.CurrentModel != "groq:llama-3.3-70b-versatile" {
+		t.Fatalf("unexpected CurrentModel: %s", sess.CurrentModel)
 	}
 }
 
