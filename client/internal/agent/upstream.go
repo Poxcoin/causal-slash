@@ -38,6 +38,7 @@ func NewUpstreamRouter() *UpstreamRouter {
 type ModelEntry struct {
 	Provider string // "groq" or "openrouter"
 	ID       string
+	Name     string
 }
 
 // Ref returns the "provider:id" reference stored as the active model.
@@ -74,7 +75,8 @@ func (r *UpstreamRouter) fetchModels(ctx context.Context, url, key, provider str
 	}
 	var body struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID   string `json:"id"`
+			Name string `json:"name"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -83,7 +85,7 @@ func (r *UpstreamRouter) fetchModels(ctx context.Context, url, key, provider str
 	out := make([]ModelEntry, 0, len(body.Data))
 	for _, d := range body.Data {
 		if d.ID != "" {
-			out = append(out, ModelEntry{Provider: provider, ID: d.ID})
+			out = append(out, ModelEntry{Provider: provider, ID: d.ID, Name: d.Name})
 		}
 	}
 	return out, nil
