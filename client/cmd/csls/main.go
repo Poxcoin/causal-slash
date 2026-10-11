@@ -121,7 +121,6 @@ func main() {
 		app,
 		tea.WithAltScreen(),
 		tea.WithReportFocus(),
-		tea.WithMouseCellMotion(),
 	)
 
 	if _, err := p.Run(); err != nil {

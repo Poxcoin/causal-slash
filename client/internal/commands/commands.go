@@ -30,7 +30,7 @@ const (
 	colorWarn   = "#F59E0B"
 	colorError  = "#EF4444"
 	colorGreen  = "#10B981"
-	colorPrompt = "#3B82F6"
+	colorPrompt = "#38BDF8"
 )
 
 // CommandInfo describes a registered slash command.

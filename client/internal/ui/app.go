@@ -588,7 +588,7 @@ func (m AppModel) statusLine(w int) string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
 	modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal))
 
-	left := "? for shortcuts • Right-Click / Ctrl+Shift+C / Ctrl+C to copy"
+	left := "? for shortcuts"
 	if m.flashMsg != "" && time.Now().Before(m.flashUntil) {
 		left = "[" + m.flashMsg + "]"
 		dim = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
