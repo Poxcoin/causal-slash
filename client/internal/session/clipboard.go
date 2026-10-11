@@ -14,23 +14,50 @@ import (
 )
 
 // CopyToClipboard writes text to all clipboard targets:
-// 1. System clipboard via atotto/clipboard (xclip/xsel/wl-copy/Windows/macOS)
-// 2. Primary X11 selection (for terminal paste / middle-click on Linux)
+// 1. System clipboard via atotto/clipboard
+// 2. Direct xclip / xsel calls to both 'clipboard' and 'primary' selections (Linux desktop)
 // 3. OSC-52 escape sequence (for terminal emulators over SSH, tmux, or local GUI)
 func CopyToClipboard(text string) error {
 	var firstErr error
+
+	// 1. atotto/clipboard
 	if err := clipboard.WriteAll(text); err != nil {
 		firstErr = err
 	}
 
-	// Also write to primary selection if xclip is available
-	go func() {
-		cmd := exec.Command("xclip", "-selection", "primary")
-		cmd.Stdin = strings.NewReader(text)
-		_ = cmd.Run()
-	}()
+	// 2. Direct xclip to clipboard and primary
+	if _, err := exec.LookPath("xclip"); err == nil {
+		// Write to clipboard selection
+		cmdClip := exec.Command("xclip", "-selection", "clipboard")
+		cmdClip.Stdin = strings.NewReader(text)
+		_ = cmdClip.Run()
 
-	// Always emit OSC-52 escape sequence to stdout/tty
+		// Write to primary selection (for middle-click / terminal selection)
+		cmdPrim := exec.Command("xclip", "-selection", "primary")
+		cmdPrim.Stdin = strings.NewReader(text)
+		_ = cmdPrim.Run()
+		firstErr = nil
+	} else if _, err := exec.LookPath("xsel"); err == nil {
+		cmdClip := exec.Command("xsel", "--clipboard", "--input")
+		cmdClip.Stdin = strings.NewReader(text)
+		_ = cmdClip.Run()
+
+		cmdPrim := exec.Command("xsel", "--primary", "--input")
+		cmdPrim.Stdin = strings.NewReader(text)
+		_ = cmdPrim.Run()
+		firstErr = nil
+	} else if _, err := exec.LookPath("wl-copy"); err == nil {
+		cmdWl := exec.Command("wl-copy")
+		cmdWl.Stdin = strings.NewReader(text)
+		_ = cmdWl.Run()
+
+		cmdWlPrim := exec.Command("wl-copy", "--primary")
+		cmdWlPrim.Stdin = strings.NewReader(text)
+		_ = cmdWlPrim.Run()
+		firstErr = nil
+	}
+
+	// 3. Always emit OSC-52 escape sequence to stdout/tty
 	b64 := base64.StdEncoding.EncodeToString([]byte(text))
 	osc52 := fmt.Sprintf("\x1b]52;c;%s\x07", b64)
 
