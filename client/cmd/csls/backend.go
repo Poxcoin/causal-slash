@@ -57,6 +57,9 @@ func (b *appBackend) StreamQuery(ctx context.Context, query string) (<-chan stri
 			return
 		}
 
+		if height == 0 {
+			return
+		}
 		auditLine := fmt.Sprintf("── $0.0005 USDC settled (0 gas) | seq #%d | model: %s", height, b.sess.CurrentModel)
 		select {
 		case tokenChan <- "\n\n" + auditLine:

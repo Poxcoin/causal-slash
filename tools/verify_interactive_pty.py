@@ -110,6 +110,8 @@ def run_checks():
     master, slave = pty.openpty()
     set_winsize(slave, 24, 80)
     env_pty = os.environ.copy()
+    env_pty.pop("GROQ_API_KEY", None)
+    env_pty.pop("OPENROUTER_API_KEY", None)
     env_pty["TERM"] = "xterm-256color"
     env_pty["COLORFGBG"] = "15;0"
     env_pty["LD_LIBRARY_PATH"] = repo_dir
@@ -165,10 +167,12 @@ def run_checks():
 
         # Test live interactive agent query with wire clearing settlement
         os.write(master, b"hello\n")
-        query_out = read_until(master, "settled (0 gas)", 4.0)
+        query_out = read_until(master, "Agent error", 4.0)
         full_session_output += query_out
-        assert "settled (0 gas)" in query_out or "settled (0 gas)" in full_session_output, "Micro-cheque wire settlement audit line missing in query response"
-        print("  [OK] Interactive agent query streamed & 167-byte Session MAC settled (0 gas)")
+        assert "settled (0 gas)" not in full_session_output, "Fake settlement shown without vendor"
+        assert "Processed query" not in full_session_output, "Canned fake reply detected"
+        assert "Agent error" in full_session_output or "no inference upstream" in full_session_output or "upstream" in full_session_output, "Expected fail-fast error without vendor/upstream"
+        print("  [OK] Agent query fails fast with no fake reply and no fake settlement")
 
         # The visible screen in AltScreen must have exactly 2 rule lines around input
         last_frame = read_available(master, 0.3)

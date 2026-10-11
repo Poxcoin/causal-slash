@@ -101,7 +101,10 @@ func Execute(raw string, sess *session.State, agentClient *agent.Client, repoRoo
 		auditLine := dim.Render(fmt.Sprintf("── $0.0005 USDC settled (0 gas) | seq #%d | model: ", height)) +
 			teal.Render(sess.CurrentModel)
 
-		output := reply + "\n\n" + auditLine
+		output := reply
+		if height > 0 {
+			output += "\n\n" + auditLine
+		}
 		return Result{Output: output}
 	}
 
@@ -757,8 +760,8 @@ func runStatus(sess *session.State) Result {
 		marginVal = fmt.Sprintf("$%.6f USDC", sess.Wallet.FreeMargin)
 	}
 
-	upstreamInfo := "Sovereign Embedded LPU (Groq / OpenRouter)"
-	if sess.VendorURL != "" && sess.VendorURL != "csls://sovereign-embedded" {
+	upstreamInfo := "none (direct upstream, no vendor)"
+	if sess.VendorURL != "" {
 		upstreamInfo = sess.VendorURL
 	}
 

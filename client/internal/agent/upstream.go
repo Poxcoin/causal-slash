@@ -16,9 +16,6 @@ import (
 	"time"
 )
 
-// Sovereign fallback vendor public key (33 bytes compressed secp256k1).
-const SovereignFallbackVendorPKHex = "02e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-
 // UpstreamRouter provides resilient frontier inference via non-custodial sovereign routing.
 type UpstreamRouter struct {
 	httpClient    *http.Client
@@ -101,10 +98,10 @@ func (r *UpstreamRouter) ExecuteStreaming(
 		}
 	}
 
-	_ = lastErr
-	// Attempt 3: Sovereign Protocol Synthesizer (In-Process Sovereign Fallback)
-	// Guaranteed non-crashing offline/local inference with 167-byte Session MAC wire clearing
-	return r.synthesizeResponse(ctx, model, payloadMessages, onChunk)
+	if lastErr != nil {
+		return "", fmt.Errorf("upstream inference failed: %w", lastErr)
+	}
+	return "", fmt.Errorf("no inference upstream configured: set GROQ_API_KEY or OPENROUTER_API_KEY")
 }
 
 func (r *UpstreamRouter) streamGroq(
@@ -214,65 +211,3 @@ func parseSSEStream(r io.Reader, onChunk StreamCallback) (string, error) {
 	}
 	return full.String(), scanner.Err()
 }
-
-func (r *UpstreamRouter) synthesizeResponse(
-	ctx context.Context,
-	model string,
-	messages []map[string]string,
-	onChunk StreamCallback,
-) (string, error) {
-	var userQuery string
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i]["role"] == "user" {
-			userQuery = strings.TrimSpace(messages[i]["content"])
-			break
-		}
-	}
-
-	reply := generateSovereignResponse(userQuery, model)
-
-	// Stream response chunk by chunk to simulate natural LLM token arrival
-	words := strings.Split(reply, " ")
-	var streamed strings.Builder
-	for i, word := range words {
-		select {
-		case <-ctx.Done():
-			return streamed.String(), ctx.Err()
-		default:
-		}
-		chunk := word
-		if i < len(words)-1 {
-			chunk += " "
-		}
-		streamed.WriteString(chunk)
-		if onChunk != nil {
-			onChunk(chunk)
-		}
-		time.Sleep(12 * time.Millisecond)
-	}
-
-	return streamed.String(), nil
-}
-
-func generateSovereignResponse(query, model string) string {
-	lower := strings.ToLower(query)
-
-	if strings.Contains(lower, "hello") || strings.Contains(lower, "hi") || strings.Contains(lower, "привет") || strings.Contains(lower, "старт") {
-		return fmt.Sprintf("CSLS Sovereign Agent active on Base L2 (model: %s).\n\nAutonomous clearing session established: 167-byte Session MAC wire cheques are actively signed in-process per generated token with 0 gas.\nType any coding task or query, or type /help to inspect available protocol commands.", model)
-	}
-
-	if strings.Contains(lower, "axiom") || strings.Contains(lower, "аксиом") {
-		return "Causal-Slash Protocol enforces 6 core architectural axioms:\n1. Swarm Subagent Quota Isolation (SwarmDelegationVault Merkle trees).\n2. O(1) Schnorr EOTS Equivocation Trap (Exact One-Time Signatures).\n3. 167-Byte Session MAC Wire Format (sub-microsecond C11 RAM clearing).\n4. Monotonic Nonce & Single-Writer Isolation.\n5. Zero Client Web2 API Keys (Sovereign secp256k1 keypairs on Base L2).\n6. Atomic in-RAM Kirchhoff Netting (100% gas savings for micro-transactions)."
-	}
-
-	if strings.Contains(lower, "status") || strings.Contains(lower, "состояние") || strings.Contains(lower, "баланс") {
-		return "To inspect live on-chain collateral status and Base L2 wallet details, run /status or /bond. To inspect sovereign secp256k1 keypair details, run /wallet."
-	}
-
-	if strings.Contains(lower, "code") || strings.Contains(lower, "код") || strings.Contains(lower, "func") || strings.Contains(lower, "solidity") || strings.Contains(lower, "golang") {
-		return fmt.Sprintf("// CSLS Sovereign Agent synthesis for: %s\n// Model: %s (Base L2 Non-Custodial Session)\n\nfunc VerifyWireCheque(cheque []byte, sessionKey []byte) bool {\n    if len(cheque) != 167 {\n        return false\n    }\n    // C11 FFI verifies SipHash-2-4 MAC in < 1.72 us\n    return cslsffi.VerifyChequeMAC(cheque, sessionKey) == 0\n}\n\n// Wire settlement completed with 0 gas overhead.", query, model)
-	}
-
-	return fmt.Sprintf("CSLS Sovereign Agent (%s): Processed query '%s'.\n\nWire clearing confirmed: micro-cheque signed and committed to the protocol truth ledger. Full cryptographic settlement completed in-process.", model, query)
-}
-
