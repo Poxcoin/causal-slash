@@ -20,11 +20,7 @@ import (
 	"csls/internal/session"
 )
 
-var publicRelays = []string{
-	"https://gateway.causal-slash.net",
-	"https://gateway.kadoclub.net",
-	"https://relay.causal-slash.org",
-}
+var publicRelays = []string{}
 
 // Client manages agent wallet, channel sessions, and M2M inference.
 type Client struct {
@@ -115,20 +111,15 @@ type healthResponse struct {
 }
 
 // DiscoverVendor finds the active vendor node URL and its 33-byte compressed public key.
-// Falls back immediately (< 50ms) to sovereign embedded routing if remote relays are offline.
+// Returns an error when no vendor is reachable.
 func (c *Client) DiscoverVendor(ctx context.Context) (string, []byte, error) {
 	c.mu.Lock()
-	if c.sess.VendorURL == "csls://sovereign-embedded" && len(c.sess.VendorPK) == 33 {
-		u := c.sess.VendorURL
-		pk := c.sess.VendorPK
-		c.mu.Unlock()
-		return u, pk, nil
-	}
+	vurl := c.sess.VendorURL
 	c.mu.Unlock()
 
 	candidates := make([]string, 0, len(publicRelays)+1)
-	if c.sess.VendorURL != "" && !strings.HasPrefix(c.sess.VendorURL, "csls://") {
-		candidates = append(candidates, strings.TrimRight(c.sess.VendorURL, "/"))
+	if vurl != "" && !strings.HasPrefix(vurl, "csls://") {
+		candidates = append(candidates, strings.TrimRight(vurl, "/"))
 	}
 	for _, r := range publicRelays {
 		r = strings.TrimRight(r, "/")
@@ -241,13 +232,7 @@ func (c *Client) DiscoverVendor(ctx context.Context) (string, []byte, error) {
 		}
 	}
 
-	// Transparent Failover (< 50ms): Sovereign Embedded M2M Route
-	fallbackPK, _ := cslsffi.HexToBytes(SovereignFallbackVendorPKHex)
-	c.mu.Lock()
-	c.sess.VendorURL = "csls://sovereign-embedded"
-	c.sess.VendorPK = fallbackPK
-	c.mu.Unlock()
-	return "csls://sovereign-embedded", fallbackPK, nil
+	return "", nil, fmt.Errorf("no vendor reachable: connect one with /vendor url <url>")
 }
 
 // StreamCallback is called for each token chunk received.
@@ -260,42 +245,8 @@ func (c *Client) ProcessQuery(ctx context.Context, query string, onChunk StreamC
 		return "", 0, err
 	}
 
-	vendorURL, vendorPK, err := c.DiscoverVendor(ctx)
-	if err != nil {
-		return "", 0, err
-	}
+	vendorURL, vendorPK, derr := c.DiscoverVendor(ctx)
 
-	// 1. Session MAC handshake if needed
-	if !c.sess.SessionInitialized {
-		initPkt, err := agent.SessionBegin(vendorPK)
-		if err != nil {
-			return "", 0, fmt.Errorf("session begin failed: %w", err)
-		}
-		if strings.HasPrefix(vendorURL, "http://") || strings.HasPrefix(vendorURL, "https://") {
-			initPayload, _ := json.Marshal(map[string]string{
-				"session_init_pkt": hex.EncodeToString(initPkt),
-			})
-			initReq, err := http.NewRequestWithContext(ctx, "POST", vendorURL+"/v1/session/init", bytes.NewReader(initPayload))
-			if err == nil {
-				initReq.Header.Set("Content-Type", "application/json")
-				if initResp, err := c.httpClient.Do(initReq); err == nil {
-					_ = initResp.Body.Close()
-				}
-			}
-		}
-		c.sess.SessionInitialized = true
-	}
-
-	// 2. Sign 167-Byte Session MAC Micro-Cheque (0 Gas)
-	// $0.0005 USDC = 500 micro-USDC
-	const priceMicroUSDC = 500
-	wireCheque, height, err := agent.SignChequeMAC(vendorPK, priceMicroUSDC)
-	if err != nil {
-		return "", 0, fmt.Errorf("cheque signing failed: %w", err)
-	}
-	chequeHex := "0x" + hex.EncodeToString(wireCheque)
-
-	// 3. Assemble messages from persistent memory
 	history := c.sess.Memory.Messages()
 	messages := make([]map[string]string, 0, len(history)+1)
 	for _, m := range history {
@@ -303,51 +254,81 @@ func (c *Client) ProcessQuery(ctx context.Context, query string, onChunk StreamC
 	}
 	messages = append(messages, map[string]string{"role": "user", "content": query})
 
-	var reply string
-
-	// 4. Remote Vendor Relay or Sovereign Upstream Router
-	if strings.HasPrefix(vendorURL, "http://") || strings.HasPrefix(vendorURL, "https://") {
-		reqBody, _ := json.Marshal(map[string]any{
-			"model":    c.sess.CurrentModel,
-			"messages": messages,
-			"stream":   true,
-		})
-
-		httpReq, reqErr := http.NewRequestWithContext(ctx, "POST", vendorURL+"/v1/chat/completions", bytes.NewReader(reqBody))
-		var resp *http.Response
-		if reqErr == nil {
-			httpReq.Header.Set("Content-Type", "application/json")
-			httpReq.Header.Set("X-Causal-Cheque", chequeHex)
-			resp, reqErr = c.httpClient.Do(httpReq)
+	// No vendor reachable: direct upstream inference, no cheque, no settlement claimed.
+	if derr != nil {
+		reply, err := c.upstreamRouter.ExecuteStreaming(ctx, c.sess.CurrentModel, messages, onChunk)
+		if err != nil {
+			return "", 0, fmt.Errorf("no vendor (%v); %w", derr, err)
 		}
+		_ = c.sess.Memory.AddTurn(query, reply)
+		c.sess.TotalQueries++
+		return reply, 0, nil
+	}
 
-		if reqErr == nil && resp != nil && resp.StatusCode == 200 {
-			defer resp.Body.Close()
-			reply, _ = parseSSEStream(resp.Body, onChunk)
-		} else {
-			if resp != nil {
-				_ = resp.Body.Close()
-			}
-			// Failover to Upstream Router
-			reply, err = c.upstreamRouter.ExecuteStreaming(ctx, c.sess.CurrentModel, messages, onChunk)
-			if err != nil {
-				return "", 0, err
-			}
+	if !c.sess.SessionInitialized {
+		initPkt, err := agent.SessionBegin(vendorPK)
+		if err != nil {
+			return "", 0, fmt.Errorf("session begin failed: %w", err)
 		}
-	} else {
-		// Pure In-Process Sovereign Upstream Router (Groq LPU / OpenRouter)
-		reply, err = c.upstreamRouter.ExecuteStreaming(ctx, c.sess.CurrentModel, messages, onChunk)
+		initPayload, err := json.Marshal(map[string]string{"session_init_pkt": hex.EncodeToString(initPkt)})
 		if err != nil {
 			return "", 0, err
 		}
+		initReq, err := http.NewRequestWithContext(ctx, "POST", vendorURL+"/v1/session/init", bytes.NewReader(initPayload))
+		if err != nil {
+			return "", 0, err
+		}
+		initReq.Header.Set("Content-Type", "application/json")
+		initResp, err := c.httpClient.Do(initReq)
+		if err != nil {
+			return "", 0, fmt.Errorf("session init failed: %w", err)
+		}
+		_ = initResp.Body.Close()
+		if initResp.StatusCode/100 != 2 {
+			return "", 0, fmt.Errorf("session init rejected: HTTP %d", initResp.StatusCode)
+		}
+		c.sess.SessionInitialized = true
 	}
 
-	if reply != "" {
-		_ = c.sess.Memory.AddTurn(query, reply)
+	const priceMicroUSDC = 500
+	wireCheque, height, err := agent.SignChequeMAC(vendorPK, priceMicroUSDC)
+	if err != nil {
+		return "", 0, fmt.Errorf("cheque signing failed: %w", err)
 	}
+	chequeHex := "0x" + hex.EncodeToString(wireCheque)
+
+	reqBody, err := json.Marshal(map[string]any{
+		"model":    c.sess.CurrentModel,
+		"messages": messages,
+		"stream":   true,
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", vendorURL+"/v1/chat/completions", bytes.NewReader(reqBody))
+	if err != nil {
+		return "", 0, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Causal-Cheque", chequeHex)
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return "", 0, fmt.Errorf("vendor request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", 0, fmt.Errorf("vendor returned HTTP %d", resp.StatusCode)
+	}
+	reply, err := parseSSEStream(resp.Body, onChunk)
+	if err != nil {
+		return "", 0, fmt.Errorf("vendor stream failed: %w", err)
+	}
+	if reply == "" {
+		return "", 0, fmt.Errorf("vendor returned empty reply")
+	}
+	_ = c.sess.Memory.AddTurn(query, reply)
 	c.sess.AccumulatedSpentUSDC += 0.0005
 	c.sess.TotalQueries++
-
 	return reply, height, nil
 }
 

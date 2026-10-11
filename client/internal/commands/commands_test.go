@@ -267,25 +267,13 @@ func TestSlashSend(t *testing.T) {
 		t.Fatalf("unexpected /send usage output: %s", resUsage.Output)
 	}
 
-	// 2. /send 0.0005 (500 micro-USDC)
+	// 2. /send with no reachable vendor must fail fast and claim no spend
 	resSend := Execute("/send 0.0005", sess, client, root)
-	if !strings.Contains(resSend.Output, "167-Byte Session MAC Micro-Cheque Signed") {
-		t.Fatalf("unexpected /send output: %s", resSend.Output)
+	if !strings.Contains(resSend.Output, "no vendor reachable") {
+		t.Fatalf("expected fail-fast on missing vendor, got: %s", resSend.Output)
 	}
-	if !strings.Contains(resSend.Output, "167 Bytes") {
-		t.Fatalf("missing 167 bytes wire packet in /send output: %s", resSend.Output)
-	}
-	if sess.AccumulatedSpentUSDC < 0.00049 {
-		t.Fatalf("expected AccumulatedSpentUSDC >= 0.0005, got: %f", sess.AccumulatedSpentUSDC)
-	}
-	if sess.TotalQueries < 1 {
-		t.Fatalf("expected TotalQueries >= 1, got: %d", sess.TotalQueries)
-	}
-
-	// 3. /send excessive amount fails
-	resExcess := Execute("/send 999.0", sess, client, root)
-	if !strings.Contains(resExcess.Output, "Insufficient margin") {
-		t.Fatalf("expected Insufficient margin on /send 999.0, got: %s", resExcess.Output)
+	if sess.AccumulatedSpentUSDC != 0 {
+		t.Fatalf("spend must stay 0 without vendor, got: %f", sess.AccumulatedSpentUSDC)
 	}
 }
 
