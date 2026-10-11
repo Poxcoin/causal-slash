@@ -15,7 +15,7 @@ const (
 
 	colorTeal   = "#21E2CC"
 	colorDim    = "#888888"
-	colorPrompt = "#38BDF8"
+	colorPrompt = "#7AA2F7"
 	colorWarn   = "#F59E0B"
 	colorError  = "#EF4444"
 )
