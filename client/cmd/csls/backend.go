@@ -35,6 +35,19 @@ func (b *appBackend) ActiveModel() string {
 	return ""
 }
 
+func (b *appBackend) ReasoningEffort() string {
+	if b.sess != nil && b.sess.ReasoningEffort != "" {
+		return b.sess.ReasoningEffort
+	}
+	return "medium"
+}
+
+func (b *appBackend) SetReasoningEffort(effort string) {
+	if b.sess != nil {
+		b.sess.ReasoningEffort = effort
+	}
+}
+
 func (b *appBackend) Commands() []ui.CommandItem {
 	out := make([]ui.CommandItem, 0, len(commands.Registry))
 	for _, c := range commands.Registry {
