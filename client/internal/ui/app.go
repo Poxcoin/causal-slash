@@ -96,9 +96,21 @@ func NewApp(backend Backend, version, cwd string) AppModel {
 	ti.Placeholder = ""
 	ti.Blur()
 
+	var initLines []string
+	var cmdHistory []string
+	if backend != nil {
+		initLines = backend.InitialLines()
+		cmdHistory = backend.CommandHistory()
+	}
+
 	vp := viewport.New(76, 13)
 	vp.Style = lipgloss.NewStyle().PaddingLeft(2).PaddingRight(2)
-	vp.SetContent("")
+	if len(initLines) > 0 {
+		vp.SetContent(strings.Join(initLines, "\n"))
+		vp.GotoBottom()
+	} else {
+		vp.SetContent("")
+	}
 
 	return AppModel{
 		backend:    backend,
@@ -108,9 +120,9 @@ func NewApp(backend Backend, version, cwd string) AppModel {
 		height:     24,
 		viewport:   vp,
 		input:      ti,
-		lines:      nil,
-		history:    nil,
-		historyIdx: 0,
+		lines:      initLines,
+		history:    cmdHistory,
+		historyIdx: len(cmdHistory),
 		focused:    false,
 	}
 }
@@ -444,6 +456,7 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.history = append(m.history, line)
 			m.historyIdx = len(m.history)
+			session.AppendInputHistory(line)
 
 			promptMarker := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true).Render("> ")
 			userText := styleInput(line)

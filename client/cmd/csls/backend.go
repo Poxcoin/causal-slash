@@ -137,3 +137,14 @@ func (b *appBackend) StreamQuery(ctx context.Context, query string) (<-chan stri
 
 	return tokenChan, errChan
 }
+
+func (b *appBackend) InitialLines() []string {
+	if b.sess == nil || b.sess.Memory == nil {
+		return nil
+	}
+	return ui.FormatInitialTurns(b.sess.Memory.Messages())
+}
+
+func (b *appBackend) CommandHistory() []string {
+	return session.LoadInputHistory()
+}

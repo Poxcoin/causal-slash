@@ -39,4 +39,10 @@ type Backend interface {
 
 	// ListModels fetches the live model catalogue from the configured upstreams.
 	ListModels() ([]ModelItem, error)
+
+	// InitialLines returns loaded chat memory turns for terminal startup.
+	InitialLines() []string
+
+	// CommandHistory returns persisted command history for Up/Down arrows.
+	CommandHistory() []string
 }
