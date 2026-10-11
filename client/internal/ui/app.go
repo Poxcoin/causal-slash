@@ -373,7 +373,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.ScrollDown(1)
 			return m, focusCmd
 
-		case "ctrl+y":
+		case "ctrl+y", "ctrl+shift+c":
 			// Copy clean session output or last response to clipboard
 			textToCopy := m.getLastResponse()
 			if textToCopy == "" && len(m.lines) > 0 {
@@ -586,7 +586,7 @@ func (m AppModel) statusLine(w int) string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
 	modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal))
 
-	left := "? for shortcuts • Ctrl+Y / Right-Click / /copy to copy"
+	left := "? for shortcuts • Right-Click / Ctrl+Shift+C / Ctrl+C to copy"
 	if m.flashMsg != "" && time.Now().Before(m.flashUntil) {
 		left = "[" + m.flashMsg + "]"
 		dim = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
