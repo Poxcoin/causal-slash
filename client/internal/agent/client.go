@@ -235,6 +235,11 @@ func (c *Client) DiscoverVendor(ctx context.Context) (string, []byte, error) {
 	return "", nil, fmt.Errorf("no vendor reachable: connect one with /vendor url <url>")
 }
 
+// ListModels returns the live model catalogue of the configured upstreams.
+func (c *Client) ListModels(ctx context.Context) ([]ModelEntry, error) {
+	return c.upstreamRouter.ListModels(ctx)
+}
+
 // StreamCallback is called for each token chunk received.
 type StreamCallback func(chunk string)
 

@@ -10,21 +10,6 @@ import (
 	"sync"
 )
 
-// SupportedModels defines the standard list of sovereign frontier models.
-var SupportedModels = []struct {
-	ID          string
-	Description string
-}{
-	{"claude-opus-5.5", "Frontier reasoning, deep architecture, agentic coding (Default)"},
-	{"claude-opus-4.6", "Extended context reasoning and formal verification"},
-	{"deepseek-v4.1-flash", "Ultra-low-latency high-throughput agentic execution"},
-	{"deepseek-v4-pro", "Frontier mathematics, code synthesis, and deep reasoning"},
-	{"glm-5.3", "Multilingual frontier reasoning and complex workflows"},
-	{"glm-5.2", "High-efficiency multilingual coding and logic routing"},
-	{"gemini-3.8-flash", "Sub-10ms multimodal streaming and real-time tool orchestration"},
-	{"gemini-3.8-live", "Bidirectional live audio/vision and real-time streaming"},
-}
-
 // State manages the live CSLS runtime session state.
 type State struct {
 	mu                   sync.RWMutex
@@ -80,8 +65,7 @@ func NewState() *State {
 
 	s := &State{
 		Cwd:          cwd,
-		CurrentModel: "claude-opus-5.5",
-		VendorURL:    "https://gateway.causal-slash.net",
+		CurrentModel: "",
 		Memory:       NewMemoryManager(cwd),
 		Wallet:       wallet,
 		VaultAddress: "0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5",

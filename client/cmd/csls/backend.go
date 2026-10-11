@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"csls/internal/agent"
 	"csls/internal/commands"
@@ -30,7 +31,29 @@ func (b *appBackend) ActiveModel() string {
 	if b.sess != nil && b.sess.CurrentModel != "" {
 		return b.sess.CurrentModel
 	}
-	return "claude-opus-5.5"
+	return ""
+}
+
+func (b *appBackend) Commands() []ui.CommandItem {
+	out := make([]ui.CommandItem, 0, len(commands.Registry))
+	for _, c := range commands.Registry {
+		out = append(out, ui.CommandItem{Name: c.Name, Description: c.Description, ArgsSpec: c.ArgsSpec})
+	}
+	return out
+}
+
+func (b *appBackend) ListModels() ([]ui.ModelItem, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	models, err := b.agentClient.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ui.ModelItem, 0, len(models))
+	for _, m := range models {
+		out = append(out, ui.ModelItem{Ref: m.Ref()})
+	}
+	return out, nil
 }
 
 func (b *appBackend) ExecuteSlash(cmd string) (string, bool) {

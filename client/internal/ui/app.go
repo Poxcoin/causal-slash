@@ -76,6 +76,13 @@ type AppModel struct {
 	focused      bool
 	flashMsg     string
 	flashUntil   time.Time
+
+	menuIdx       int
+	dismissed     string
+	models        []ModelItem
+	modelsLoaded  bool
+	modelsLoading bool
+	modelsErr     string
 }
 
 // NewApp creates the initial AppModel.
@@ -127,8 +134,12 @@ func (m *AppModel) appendToken(token string) {
 	m.enforceScrollbackCap()
 }
 
+func (m AppModel) bottomHeight() int {
+	return 4 + m.menuHeight()
+}
+
 func (m *AppModel) recalculateViewport() {
-	bottomHeight := 4
+	bottomHeight := m.bottomHeight()
 	var headerHeight int
 	if len(m.lines) == 0 {
 		headerHeight = 1
@@ -155,7 +166,48 @@ func (m AppModel) Init() tea.Cmd {
 }
 
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	prevVal := m.input.Value()
+	prevH := m.menuHeight()
+	nm, cmd := m.update(msg)
+	am, ok := nm.(AppModel)
+	if !ok {
+		return nm, cmd
+	}
+	if am.input.Value() != prevVal {
+		am.menuIdx = 0
+		if am.dismissed != am.input.Value() {
+			am.dismissed = ""
+		}
+		if !strings.HasPrefix(am.input.Value(), modelPrefix) {
+			am.modelsErr = ""
+		}
+	}
+	if strings.HasPrefix(am.input.Value(), modelPrefix) && !am.modelsLoaded && !am.modelsLoading && am.modelsErr == "" && !am.streaming {
+		am.modelsLoading = true
+		cmd = tea.Batch(cmd, fetchModelsCmd(am.backend))
+	}
+	if am.menuHeight() != prevH {
+		atBottom := am.viewport.AtBottom()
+		am.recalculateViewport()
+		if atBottom {
+			am.viewport.GotoBottom()
+		}
+	}
+	return am, cmd
+}
+
+func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case modelsMsg:
+		m.modelsLoading = false
+		if msg.err != nil {
+			m.modelsErr = msg.err.Error()
+		} else {
+			m.models = msg.items
+			m.modelsLoaded = true
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -294,6 +346,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if handled, execute := m.applyMenu(msg.String()); handled && !execute {
+			return m, nil
+		} else if execute {
+			msg = tea.KeyMsg{Type: tea.KeyEnter}
+		}
+
 		// Escape explicitly removes focus (cursor turns into hollow white rectangle, static)
 		if msg.String() == "esc" {
 			m.focused = false
@@ -406,7 +464,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historyIdx = len(m.history)
 
 			promptMarker := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true).Render("> ")
-			userText := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true).Render(line)
+			userText := styleInput(line)
 			m.lines = append(m.lines, promptMarker+userText)
 			m.enforceScrollbackCap()
 			m.viewport.SetContent(strings.Join(m.lines, "\n"))
@@ -506,6 +564,35 @@ func (m AppModel) renderInput() string {
 	}
 
 	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt))
+	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
+	cmdEnd := 0
+	if len(runes) > 0 && runes[0] == '/' {
+		cmdEnd = len(runes)
+		for i, r := range runes {
+			if r == ' ' {
+				cmdEnd = i
+				break
+			}
+		}
+	}
+	renderRange := func(from, to int) string {
+		if from >= to {
+			return ""
+		}
+		var sb strings.Builder
+		if from < cmdEnd {
+			e := to
+			if e > cmdEnd {
+				e = cmdEnd
+			}
+			sb.WriteString(cmdStyle.Render(string(runes[from:e])))
+			from = e
+		}
+		if from < to {
+			sb.WriteString(blueStyle.Render(string(runes[from:to])))
+		}
+		return sb.String()
+	}
 
 	var text string
 	if pos < len(runes) {
@@ -520,9 +607,9 @@ func (m AppModel) renderInput() string {
 		} else {
 			cursorChar = blueStyle.Underline(true).Render(char)
 		}
-		text = blueStyle.Render(string(runes[:pos])) + cursorChar + blueStyle.Render(string(runes[pos+1:]))
+		text = renderRange(0, pos) + cursorChar + renderRange(pos+1, len(runes))
 	} else {
-		text = blueStyle.Render(string(runes)) + cursorStr
+		text = renderRange(0, len(runes)) + cursorStr
 	}
 	return prompt + text
 }
@@ -544,7 +631,10 @@ func (m AppModel) renderBottom() string {
 
 func (m AppModel) View() string {
 	bottom := m.renderBottom()
-	bottomHeight := 4
+	if menu := m.renderMenu(); len(menu) > 0 {
+		bottom += "\n" + strings.Join(menu, "\n")
+	}
+	bottomHeight := m.bottomHeight()
 
 	if len(m.lines) == 0 {
 		header := renderHeader(m.version, m.cwd, m.width)
@@ -598,7 +688,7 @@ func (m AppModel) statusLine(w int) string {
 
 	model := m.backend.ActiveModel()
 	if model == "" {
-		model = "claude-opus-5.5"
+		model = "none"
 	}
 	right := "model: " + model
 

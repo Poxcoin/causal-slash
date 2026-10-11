@@ -26,6 +26,18 @@ func (b *testBackend) BondStatus() string {
 	return "ready"
 }
 
+func (b *testBackend) Commands() []CommandItem {
+	return []CommandItem{
+		{Name: "/help", Description: "show help"},
+		{Name: "/model", Description: "select model", ArgsSpec: "[model]"},
+		{Name: "/status", Description: "status"},
+	}
+}
+
+func (b *testBackend) ListModels() ([]ModelItem, error) {
+	return []ModelItem{{Ref: "groq:alpha"}, {Ref: "openrouter:beta/gamma"}}, nil
+}
+
 func (b *testBackend) ActiveModel() string {
 	return "claude-opus-5.5"
 }
