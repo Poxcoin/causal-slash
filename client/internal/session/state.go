@@ -136,9 +136,6 @@ func LoadActiveModel() string {
 			}
 		}
 	}
-	if os.Getenv("GROQ_API_KEY") != "" {
-		return "groq:openai/gpt-oss-120b"
-	}
 	return "openai:gpt-6.1-sol"
 }
 
