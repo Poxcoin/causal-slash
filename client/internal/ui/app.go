@@ -83,6 +83,7 @@ type AppModel struct {
 	modelsLoaded  bool
 	modelsLoading bool
 	modelsErr     string
+	selectedCompany string
 }
 
 // NewApp creates the initial AppModel.
