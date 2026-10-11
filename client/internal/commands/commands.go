@@ -747,6 +747,8 @@ func runStatus(sess *session.State) Result {
 	bStatus := warn.Render(sess.BondStatus())
 	if sess.BondStatus() == "ready" {
 		bStatus = green.Render("ready")
+	} else if sess.BondStatus() == "unfunded" || sess.BondStatus() == "no bond" {
+		bStatus = dim.Render("unfunded")
 	}
 
 	addr := "Not initialized (/wallet new)"
@@ -754,8 +756,16 @@ func runStatus(sess *session.State) Result {
 	marginVal := "$0.00 USDC"
 	if sess.Wallet != nil && sess.Wallet.Address != "" {
 		addr = sess.Wallet.Address
-		bondVal = fmt.Sprintf("$%.6f USDC", sess.Wallet.CollateralBond)
-		marginVal = fmt.Sprintf("$%.6f USDC", sess.Wallet.FreeMargin)
+		if sess.Wallet.OnChainBond > 0 {
+			bondVal = fmt.Sprintf("$%.6f USDC", sess.Wallet.OnChainBond)
+		} else {
+			bondVal = fmt.Sprintf("$%.6f USDC", sess.Wallet.CollateralBond)
+		}
+		if sess.Wallet.OnChainFreeMargin > 0 {
+			marginVal = fmt.Sprintf("$%.6f USDC", sess.Wallet.OnChainFreeMargin)
+		} else {
+			marginVal = fmt.Sprintf("$%.6f USDC", sess.Wallet.FreeMargin)
+		}
 	}
 
 	upstreamInfo := "none (direct upstream, no vendor)"
