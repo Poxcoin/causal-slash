@@ -170,9 +170,9 @@ func (m AppModel) renderMenu() []string {
 
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
 	sel := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
-	norm := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt))
+	norm := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
-	categoryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn)).Bold(true)
+	categoryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
 	currentTag := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Italic(true)
 
 	labelW := 0
@@ -256,34 +256,51 @@ func renderEffortSlider(effort string) (bar string, subtext string) {
 	yellow := lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Bold(true)
 	salmon := lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")).Bold(true)
 
-	arrow := dim.Render("◄")
+	arrowL := dim.Render("◄")
 	arrowR := dim.Render("►")
+	segment := "────────────" // 12 chars
+	dimSeg := dim.Render(segment)
+
+	var dLow, dMed, dHigh string
+	var seg1, seg2 string
+	var lLow, lMed, lHigh string
 
 	switch effort {
 	case "low":
-		activeDot := green.Render("◎")
-		inactiveDot := dim.Render("○")
-		barLine := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981")).Render("──────────────")
-		dimLine := dim.Render("──────────────")
-		labels := "      " + green.Render("low") + "           " + dim.Render("medium") + "          " + dim.Render("high")
-		bar = fmt.Sprintf("%s   %s%s%s%s%s   %s\n%s", arrow, activeDot, barLine, inactiveDot, dimLine, inactiveDot, arrowR, labels)
+		dLow = green.Render("◎")
+		dMed = dim.Render("○")
+		dHigh = dim.Render("○")
+		seg1 = dimSeg
+		seg2 = dimSeg
+		lLow = green.Render("low")
+		lMed = dim.Render("medium")
+		lHigh = dim.Render("high")
 		subtext = "Faster responses, lighter reasoning - great for simpler tasks"
 	case "high":
-		inactiveDot := dim.Render("○")
-		activeDot := salmon.Render("◎")
-		fullLine := lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")).Render("────────────────────────────")
-		labels := "      " + dim.Render("low") + "          " + dim.Render("medium") + "          " + salmon.Render("high")
-		bar = fmt.Sprintf("%s   %s%s%s   %s\n%s", arrow, inactiveDot, fullLine, activeDot, arrowR, labels)
+		dLow = dim.Render("○")
+		dMed = dim.Render("○")
+		dHigh = salmon.Render("◎")
+		seg1 = lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")).Render(segment)
+		seg2 = lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")).Render(segment)
+		lLow = dim.Render("low")
+		lMed = dim.Render("medium")
+		lHigh = salmon.Render("high")
 		subtext = "Deepest reasoning for complex problems - slower but strongest"
 	default: // medium
-		activeDot := yellow.Render("◎")
-		inactiveDot := dim.Render("○")
-		halfLine := lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render("──────────────")
-		dimLine := dim.Render("──────────────")
-		labels := "      " + dim.Render("low") + "          " + yellow.Render("medium") + "          " + dim.Render("high")
-		bar = fmt.Sprintf("%s   %s%s%s%s%s   %s\n%s", arrow, inactiveDot, halfLine, activeDot, dimLine, inactiveDot, arrowR, labels)
+		dLow = dim.Render("○")
+		dMed = yellow.Render("◎")
+		dHigh = dim.Render("○")
+		seg1 = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render(segment)
+		seg2 = dimSeg
+		lLow = dim.Render("low")
+		lMed = yellow.Render("medium")
+		lHigh = dim.Render("high")
 		subtext = "Balanced speed and reasoning quality for most tasks"
 	}
+
+	track := fmt.Sprintf("%s   %s%s%s%s%s   %s", arrowL, dLow, seg1, dMed, seg2, dHigh, arrowR)
+	labels := fmt.Sprintf("    %s          %s          %s", lLow, lMed, lHigh)
+	bar = track + "\n" + labels
 	return bar, subtext
 }
 
