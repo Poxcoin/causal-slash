@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -114,7 +113,7 @@ func (b *appBackend) StreamQuery(ctx context.Context, query string) (<-chan stri
 		defer close(tokenChan)
 		defer close(errChan)
 
-		_, height, err := b.agentClient.ProcessQuery(ctx, query, func(chunk string) {
+		_, _, err := b.agentClient.ProcessQuery(ctx, query, func(chunk string) {
 			select {
 			case tokenChan <- chunk:
 			case <-ctx.Done():
@@ -124,25 +123,13 @@ func (b *appBackend) StreamQuery(ctx context.Context, query string) (<-chan stri
 			errChan <- err
 			return
 		}
-
-		if height == 0 {
-			return
-		}
-		auditLine := fmt.Sprintf("── $0.0005 USDC settled (0 gas) | seq #%d | model: %s", height, b.sess.CurrentModel)
-		select {
-		case tokenChan <- "\n\n" + auditLine:
-		case <-ctx.Done():
-		}
 	}()
 
 	return tokenChan, errChan
 }
 
 func (b *appBackend) InitialLines() []string {
-	if b.sess == nil || b.sess.Memory == nil {
-		return nil
-	}
-	return ui.FormatInitialTurns(b.sess.Memory.Messages())
+	return nil
 }
 
 func (b *appBackend) CommandHistory() []string {
