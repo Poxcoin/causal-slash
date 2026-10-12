@@ -52,6 +52,9 @@ func main() {
 	}
 
 	sess := session.NewState()
+	if sess.Memory != nil {
+		sess.Memory.Clear()
+	}
 	agentClient := agent.NewClient(sess)
 	defer agentClient.Close()
 
