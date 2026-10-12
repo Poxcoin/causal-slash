@@ -163,7 +163,6 @@ GO ?= $(shell which go 2>/dev/null || echo $(HOME)/.local/bin/go)
 csls-client: libcausal_slash.a
 	@mkdir -p bin
 	cd client && $(GO) build -o ../bin/csls ./cmd/csls
-	cp -f bin/csls bin/csls-go
 	@mkdir -p $(HOME)/.local/bin
 	cp -f bin/csls $(HOME)/.local/bin/csls
 

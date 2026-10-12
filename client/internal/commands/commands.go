@@ -87,23 +87,13 @@ func Execute(raw string, sess *session.State, agentClient *agent.Client, repoRoo
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 		defer cancel()
 
-		reply, height, err := agentClient.ProcessQuery(ctx, trimmed, nil)
+		reply, _, err := agentClient.ProcessQuery(ctx, trimmed, nil)
 		if err != nil {
 			errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorError))
 			return Result{Output: errStyle.Render(fmt.Sprintf("Agent error: %v", err))}
 		}
 
-		dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
-		teal := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
-
-		auditLine := dim.Render(fmt.Sprintf("── $0.0005 USDC settled (0 gas) | seq #%d | model: ", height)) +
-			teal.Render(sess.CurrentModel)
-
-		output := reply
-		if height > 0 {
-			output += "\n\n" + auditLine
-		}
-		return Result{Output: output}
+		return Result{Output: reply}
 	}
 
 	parts := strings.Fields(trimmed)
