@@ -129,9 +129,11 @@ func (r *UpstreamRouter) ExecuteStreaming(
 	}
 
 	// Route 3: High-speed Groq LPU Pool
-	reply, err := r.streamGroq(ctx, model, messages, onChunk)
-	if err == nil && len(strings.TrimSpace(reply)) > 0 {
-		return reply, nil
+	if r.groqKey != "" {
+		reply, err := r.streamGroq(ctx, model, messages, onChunk)
+		if err == nil && len(strings.TrimSpace(reply)) > 0 {
+			return reply, nil
+		}
 	}
 
 	// Failover Pipeline: try Gemini if Groq was unavailable
@@ -148,7 +150,7 @@ func (r *UpstreamRouter) ExecuteStreaming(
 		return orReply, nil
 	}
 
-	return "", fmt.Errorf("shared pool execution failed: %v", err)
+	return "", fmt.Errorf("shared pool execution failed: all providers exhausted")
 }
 
 func (r *UpstreamRouter) streamGemini(
@@ -169,6 +171,25 @@ func (r *UpstreamRouter) streamGemini(
 		gemModel = "gemini-3.8-flash"
 	}
 
+	res, err := r.streamGeminiTarget(ctx, gemModel, messages, onChunk)
+	if err == nil && len(strings.TrimSpace(res)) > 0 {
+		return res, nil
+	}
+
+	// Auto fallback to gemini-3.5-flash if a sub-variant failed
+	if gemModel != "gemini-3.5-flash" {
+		return r.streamGeminiTarget(ctx, "gemini-3.5-flash", messages, onChunk)
+	}
+
+	return "", err
+}
+
+func (r *UpstreamRouter) streamGeminiTarget(
+	ctx context.Context,
+	gemModel string,
+	messages []map[string]string,
+	onChunk StreamCallback,
+) (string, error) {
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse&key=%s", gemModel, r.geminiKey)
 
 	var parts []map[string]string

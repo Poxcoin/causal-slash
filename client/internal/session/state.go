@@ -136,7 +136,7 @@ func LoadActiveModel() string {
 			}
 		}
 	}
-	return "openai:gpt-6.1-sol"
+	return "google:gemini-3.5-flash"
 }
 
 // SaveActiveModel persists the chosen model reference to disk.
