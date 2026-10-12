@@ -280,9 +280,7 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 │   ├── quickstart_agent.py                   # Agent micro-payment quickstart
 │   └── quickstart_sidecar.py                 # SlashProxy sidecar quickstart
 ├── scripts/                                  # Deployment Scripts & Receipts
-│   ├── deploy_base_sepolia.js                # Base Sepolia contract deployer
-│   ├── deploy_arbitrum_sepolia.js            # Arbitrum Sepolia contract deployer
-│   └── deploy_optimism_sepolia.js            # Optimism Sepolia contract deployer
+│   └── deploy_base_sepolia.js                # Base Sepolia contract deployer
 ├── Makefile                                  # Build and audit orchestration
 ├── LICENSE                                   # Dual Licensing Specification (Apache-2.0 / MIT)
 └── README.md                                 # Technical Specification
