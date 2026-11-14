@@ -478,8 +478,8 @@ func runDeposit(sess *session.State, args []string) Result {
 		sb.WriteString("\n" + teal.Render("Non-Custodial Cast CLI Instructions:") + "\n")
 		sb.WriteString(dim.Render("1. Approve USDC transfer to PerformanceCollateralVault:") + "\n")
 		sb.WriteString(teal.Render(fmt.Sprintf("   cast send <USDC_ADDR> \"approve(address,uint256)\" %s 5000000 --rpc-url https://sepolia.base.org", sess.VaultAddress)) + "\n\n")
-		sb.WriteString(dim.Render("2. Call deposit on the Vault contract:") + "\n")
-		sb.WriteString(teal.Render(fmt.Sprintf("   cast send %s \"deposit(uint256)\" 5000000 --rpc-url https://sepolia.base.org", sess.VaultAddress)) + "\n\n")
+		sb.WriteString(dim.Render("2. Call depositCollateral on the PerformanceCollateralVault contract:") + "\n")
+		sb.WriteString(teal.Render(fmt.Sprintf("   cast send %s \"depositCollateral(uint256,bytes32,address)\" 5000000 <NONCE_MERKLE_ROOT> %s --rpc-url https://sepolia.base.org", sess.VaultAddress, addr)) + "\n\n")
 		sb.WriteString(dim.Render("3. Run `/deposit sync` to verify on-chain confirmation in terminal.") + "\n")
 		return Result{Output: sb.String()}
 	}
