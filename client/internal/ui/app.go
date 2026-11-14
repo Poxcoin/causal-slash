@@ -155,11 +155,22 @@ func (m AppModel) bottomHeight() int {
 	return 4 + m.menuHeight()
 }
 
+func (m *AppModel) syncViewportContent() {
+	raw := strings.Join(m.lines, "\n")
+	contentWidth := m.viewport.Width - m.viewport.Style.GetHorizontalFrameSize()
+	if contentWidth > 10 && raw != "" {
+		raw = ansi.Wrap(raw, contentWidth, "")
+	}
+	prevOffset := m.viewport.YOffset
+	m.viewport.SetContent(raw)
+	m.viewport.SetYOffset(prevOffset)
+}
+
 func (m *AppModel) recalculateViewport() {
 	bottomHeight := m.bottomHeight()
 	var headerHeight int
 	if len(m.lines) == 0 {
-		headerHeight = 1
+		headerHeight = lipgloss.Height(renderHeader(m.version, m.cwd, m.width))
 	}
 	vpHeight := m.height - headerHeight - bottomHeight
 	if vpHeight < 1 {
@@ -171,7 +182,7 @@ func (m *AppModel) recalculateViewport() {
 	}
 	m.viewport.Width = vpWidth
 	m.viewport.Height = vpHeight
-	m.viewport.SetContent(strings.Join(m.lines, "\n"))
+	m.syncViewportContent()
 	m.input.Width = m.width - 6
 	if m.input.Width < 1 {
 		m.input.Width = 1
@@ -235,7 +246,7 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokenMsg:
 		wasAtBottom := m.viewport.AtBottom()
 		m.appendToken(string(msg))
-		m.viewport.SetContent(strings.Join(m.lines, "\n"))
+		m.syncViewportContent()
 		if wasAtBottom {
 			m.viewport.GotoBottom()
 		}
@@ -250,7 +261,7 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.lines = append(m.lines, "")
 		m.enforceScrollbackCap()
-		m.viewport.SetContent(strings.Join(m.lines, "\n"))
+		m.syncViewportContent()
 		if wasAtBottom {
 			m.viewport.GotoBottom()
 		}
@@ -272,13 +283,15 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
-		switch msg.Button {
-		case tea.MouseButtonWheelUp:
+		if msg.Button == tea.MouseButtonWheelUp || msg.Type == tea.MouseWheelUp {
 			m.viewport.ScrollUp(3)
 			return m, nil
-		case tea.MouseButtonWheelDown:
+		}
+		if msg.Button == tea.MouseButtonWheelDown || msg.Type == tea.MouseWheelDown {
 			m.viewport.ScrollDown(3)
 			return m, nil
+		}
+		switch msg.Button {
 		case tea.MouseButtonRight:
 			// Right-click: quick copy of response or chat history to clipboard
 			if msg.Action != tea.MouseActionMotion {
@@ -314,7 +327,7 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streaming = false
 				m.lines = append(m.lines, lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn)).Render("[Stream interrupted]"))
 				m.enforceScrollbackCap()
-				m.viewport.SetContent(strings.Join(m.lines, "\n"))
+				m.syncViewportContent()
 				m.viewport.GotoBottom()
 				m.lastCtrlC = now
 				return m, nil
@@ -371,12 +384,77 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.HalfViewDown()
 			return m, focusCmd
 
-		case "shift+up", "alt+up":
-			m.viewport.ScrollUp(2)
+		case "shift+up":
+			m.viewport.ScrollUp(3)
 			return m, focusCmd
 
-		case "shift+down", "alt+down":
-			m.viewport.ScrollDown(2)
+		case "shift+down":
+			m.viewport.ScrollDown(3)
+			return m, focusCmd
+
+		case "up":
+			// When viewport has scrollable content, Up (and terminal Alternate-Scroll wheel up)
+			// scrolls the viewport instead of dumping command history into the prompt.
+			if m.viewport.TotalLineCount() > m.viewport.Height {
+				m.viewport.ScrollUp(3)
+				return m, focusCmd
+			}
+			if len(m.history) > 0 && m.historyIdx > 0 {
+				m.historyIdx--
+				if m.historyIdx >= 0 && m.historyIdx < len(m.history) {
+					m.input.SetValue(m.history[m.historyIdx])
+					m.input.CursorEnd()
+				}
+				return m, focusCmd
+			}
+			m.viewport.ScrollUp(1)
+			return m, focusCmd
+
+		case "down":
+			if m.viewport.TotalLineCount() > m.viewport.Height {
+				m.viewport.ScrollDown(3)
+				return m, focusCmd
+			}
+			if len(m.history) > 0 {
+				if m.historyIdx < len(m.history)-1 {
+					m.historyIdx++
+					if m.historyIdx >= 0 && m.historyIdx < len(m.history) {
+						m.input.SetValue(m.history[m.historyIdx])
+						m.input.CursorEnd()
+					}
+					return m, focusCmd
+				} else if m.historyIdx == len(m.history)-1 {
+					m.historyIdx = len(m.history)
+					m.input.SetValue("")
+					return m, focusCmd
+				}
+			}
+			m.viewport.ScrollDown(1)
+			return m, focusCmd
+
+		case "ctrl+p", "alt+up":
+			if len(m.history) > 0 && m.historyIdx > 0 {
+				m.historyIdx--
+				if m.historyIdx >= 0 && m.historyIdx < len(m.history) {
+					m.input.SetValue(m.history[m.historyIdx])
+					m.input.CursorEnd()
+				}
+			}
+			return m, focusCmd
+
+		case "ctrl+n", "alt+down":
+			if len(m.history) > 0 {
+				if m.historyIdx < len(m.history)-1 {
+					m.historyIdx++
+					if m.historyIdx >= 0 && m.historyIdx < len(m.history) {
+						m.input.SetValue(m.history[m.historyIdx])
+						m.input.CursorEnd()
+					}
+				} else if m.historyIdx == len(m.history)-1 {
+					m.historyIdx = len(m.history)
+					m.input.SetValue("")
+				}
+			}
 			return m, focusCmd
 
 		case "ctrl+u":
@@ -394,38 +472,6 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.GotoBottom()
 				return m, focusCmd
 			}
-
-		case "up":
-			if len(m.history) > 0 && m.historyIdx > 0 {
-				m.historyIdx--
-				if m.historyIdx >= 0 && m.historyIdx < len(m.history) {
-					m.input.SetValue(m.history[m.historyIdx])
-					m.input.CursorEnd()
-				}
-				return m, focusCmd
-			}
-			// When at top of command history or no history, scroll output viewport up
-			m.viewport.ScrollUp(1)
-			return m, focusCmd
-
-		case "down":
-			if len(m.history) > 0 {
-				if m.historyIdx < len(m.history)-1 {
-					m.historyIdx++
-					if m.historyIdx >= 0 && m.historyIdx < len(m.history) {
-						m.input.SetValue(m.history[m.historyIdx])
-						m.input.CursorEnd()
-					}
-					return m, focusCmd
-				} else if m.historyIdx == len(m.history)-1 {
-					m.historyIdx = len(m.history)
-					m.input.SetValue("")
-					return m, focusCmd
-				}
-			}
-			// When at bottom of history, scroll output viewport down
-			m.viewport.ScrollDown(1)
-			return m, focusCmd
 
 		case "ctrl+y", "ctrl+shift+c":
 			// Copy clean session output or last response to clipboard
@@ -458,7 +504,7 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historyIdx = len(m.history)
 			session.AppendInputHistory(line)
 
-			promptMarker := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true).Render("> ")
+			promptMarker := lipgloss.NewStyle().Foreground(lipgloss.Color(activePromptColor())).Bold(true).Render("> ")
 			userText := styleInput(line)
 			m.lines = append(m.lines, promptMarker+userText)
 			m.enforceScrollbackCap()
@@ -532,7 +578,7 @@ func (m AppModel) getLastResponse() string {
 }
 
 func (m AppModel) renderInput() string {
-	prompt := m.input.PromptStyle.Render(m.input.Prompt)
+	prompt := lipgloss.NewStyle().Foreground(lipgloss.Color(activePromptColor())).Bold(true).Render(m.input.Prompt)
 	val := m.input.Value()
 	pos := m.input.Position()
 	runes := []rune(val)
@@ -559,7 +605,7 @@ func (m AppModel) renderInput() string {
 	}
 
 	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
-	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
+	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(activePrimaryColor())).Bold(true)
 	cmdEnd := 0
 	if len(runes) > 0 && runes[0] == '/' {
 		cmdEnd = len(runes)
@@ -673,12 +719,12 @@ func (m AppModel) View() string {
 
 func (m AppModel) statusLine(w int) string {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
-	modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal))
+	modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(activePrimaryColor()))
 
 	left := "? for shortcuts"
 	if m.flashMsg != "" && time.Now().Before(m.flashUntil) {
 		left = "[" + m.flashMsg + "]"
-		dim = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
+		dim = lipgloss.NewStyle().Foreground(lipgloss.Color(activePrimaryColor())).Bold(true)
 	}
 
 	model := m.backend.ActiveModel()

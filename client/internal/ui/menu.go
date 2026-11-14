@@ -245,10 +245,10 @@ func (m AppModel) renderMenu() []string {
 	}
 
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
-	sel := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
+	sel := lipgloss.NewStyle().Foreground(lipgloss.Color(activePrimaryColor())).Bold(true)
 	norm := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
-	currentTag := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Italic(true)
+	currentTag := lipgloss.NewStyle().Foreground(lipgloss.Color(activePrimaryColor())).Italic(true)
 
 	labelW := 0
 	for _, it := range items[start:end] {
@@ -470,9 +470,14 @@ func (m *AppModel) applyMenu(key string) (handled, execute bool) {
 		}
 
 		val := strings.TrimSpace(m.input.Value())
-		if val != sel.value || (sel.value == "/model" && key != "tab") || key == "tab" {
+		if val == "/model" && (key == "enter" || key == "tab" || key == "ctrl+j") {
+			m.input.SetValue(modelPrefix)
+			m.input.CursorEnd()
+			return true, false
+		}
+		if val != sel.value || key == "tab" {
 			next := sel.value
-			if sel.value == "/model" || strings.Contains(sel.label, " ") {
+			if key == "tab" && (sel.value == "/model" || strings.Contains(sel.label, " ")) {
 				next += " "
 			}
 			m.input.SetValue(next)
@@ -494,11 +499,11 @@ func (m *AppModel) setEffort(effort string) {
 
 // styleInput colors a leading slash command token differently from its arguments.
 func styleInput(s string) string {
-	blue := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true)
+	blue := lipgloss.NewStyle().Foreground(lipgloss.Color(activePromptColor())).Bold(true)
 	if !strings.HasPrefix(s, "/") {
 		return blue.Render(s)
 	}
-	cmd := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
+	cmd := lipgloss.NewStyle().Foreground(lipgloss.Color(activePrimaryColor())).Bold(true)
 	i := strings.IndexByte(s, ' ')
 	if i < 0 {
 		return cmd.Render(s)
@@ -512,7 +517,7 @@ func FormatInitialTurns(messages []session.ChatMessage) []string {
 		return nil
 	}
 	var lines []string
-	promptMarker := lipgloss.NewStyle().Foreground(lipgloss.Color(colorPrompt)).Bold(true).Render("> ")
+	promptMarker := lipgloss.NewStyle().Foreground(lipgloss.Color(activePromptColor())).Bold(true).Render("> ")
 	for _, m := range messages {
 		switch m.Role {
 		case "user":

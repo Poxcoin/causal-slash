@@ -12,22 +12,26 @@ import (
 
 // State manages the live CSLS runtime session state.
 type State struct {
-	mu                   sync.RWMutex
-	Cwd                  string
-	CurrentModel         string
-	ReasoningEffort      string // "low", "medium", "high"
-	VendorURL            string
-	Memory               *MemoryManager
-	Wallet               *WalletData
-	VendorPK             []byte
+	mu                     sync.RWMutex
+	Cwd                    string
+	CurrentModel           string
+	ReasoningEffort        string // "low", "medium", "high"
+	VendorURL              string
+	Memory                 *MemoryManager
+	Wallet                 *WalletData
+	VendorPK               []byte
 	SessionInitialized     bool
+	LastSessionVendorPKHex string
 	AccumulatedSpentUSDC   float64
 	TotalQueries           int
 	VaultAddress           string
 	ProviderID             string
+	MerchantName           string
 	ProviderPayoutAddress  string
 	ProviderCapabilities   []string
 	ProviderUnitPriceMicro uint64
+	MerchantPaidUSDC       map[string]float64
+	MerchantPayoutMap      map[string]string
 }
 
 // NewState creates a fresh session state.
@@ -47,8 +51,6 @@ func NewState() *State {
 				}
 			}
 		} else {
-			// Existing wallet file could not be parsed or read; do NOT overwrite!
-			// Fallback to in-memory unfunded wallet to avoid crashing while preserving disk file.
 			wallet = &WalletData{
 				Status: "unfunded",
 				Chain:  "base-l2",
@@ -65,14 +67,36 @@ func NewState() *State {
 	}
 
 	s := &State{
-		Cwd:             cwd,
-		CurrentModel:    LoadActiveModel(),
-		ReasoningEffort: "medium",
-		Memory:          NewMemoryManager(cwd),
-		Wallet:          wallet,
-		VaultAddress:    "0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5",
+		Cwd:               cwd,
+		CurrentModel:      LoadActiveModel(),
+		ReasoningEffort:   "medium",
+		Memory:            NewMemoryManager(cwd),
+		Wallet:            wallet,
+		VaultAddress:      "0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5",
+		MerchantPaidUSDC:  make(map[string]float64),
+		MerchantPayoutMap: make(map[string]string),
 	}
 	return s
+}
+
+// RecordMerchantPayment records a direct micro-cheque payment to a merchant's Base L2 payout address.
+func (s *State) RecordMerchantPayment(merchantID, payoutAddr string, amountUSDC float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.MerchantPaidUSDC == nil {
+		s.MerchantPaidUSDC = make(map[string]float64)
+	}
+	if s.MerchantPayoutMap == nil {
+		s.MerchantPayoutMap = make(map[string]string)
+	}
+	key := strings.ToLower(strings.TrimSpace(merchantID))
+	if key == "" {
+		key = "default"
+	}
+	s.MerchantPaidUSDC[key] += amountUSDC
+	if payoutAddr != "" {
+		s.MerchantPayoutMap[key] = payoutAddr
+	}
 }
 
 // BondStatus returns "ready" or "no bond".
@@ -148,4 +172,56 @@ func SaveActiveModel(model string) {
 	}
 	_ = os.MkdirAll(ConfigDir(), 0700)
 	_ = os.WriteFile(ActiveModelFile(), []byte(model+"\n"), 0600)
+}
+
+var (
+	themeMu     sync.RWMutex
+	cachedTheme string
+)
+
+// ThemeFile returns path to ~/.csls/theme
+func ThemeFile() string {
+	return filepath.Join(ConfigDir(), "theme")
+}
+
+// HasThemeConfigured checks if user has previously configured a theme.
+func HasThemeConfigured() bool {
+	_, err := os.Stat(ThemeFile())
+	return err == nil
+}
+
+// LoadTheme loads active theme or returns default cyber-emerald.
+func LoadTheme() string {
+	themeMu.RLock()
+	if cachedTheme != "" {
+		t := cachedTheme
+		themeMu.RUnlock()
+		return t
+	}
+	themeMu.RUnlock()
+
+	themeMu.Lock()
+	defer themeMu.Unlock()
+	if raw, err := os.ReadFile(ThemeFile()); err == nil {
+		t := strings.TrimSpace(string(raw))
+		if t != "" {
+			cachedTheme = t
+			return t
+		}
+	}
+	cachedTheme = "cyber-emerald"
+	return cachedTheme
+}
+
+// SaveTheme persists selected theme.
+func SaveTheme(theme string) {
+	theme = strings.TrimSpace(theme)
+	if theme == "" {
+		theme = "cyber-emerald"
+	}
+	themeMu.Lock()
+	cachedTheme = theme
+	themeMu.Unlock()
+	_ = os.MkdirAll(ConfigDir(), 0700)
+	_ = os.WriteFile(ThemeFile(), []byte(theme+"\n"), 0600)
 }

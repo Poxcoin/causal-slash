@@ -61,6 +61,7 @@ var Registry = []CommandInfo{
 	{Name: "/net", Description: "in-RAM Kirchhoff netting summary", ArgsSpec: ""},
 	{Name: "/bench", Description: "latency and throughput benchmark", ArgsSpec: "[quick | e2e | stream]"},
 	{Name: "/proxy", Description: "start SlashSidecarProxy sidecar (optional)", ArgsSpec: ""},
+	{Name: "/theme", Description: "select terminal appearance and color theme", ArgsSpec: "[emerald|amber|cyan|mono]"},
 	{Name: "/exit", Description: "exit CSLS shell", ArgsSpec: ""},
 }
 
@@ -169,7 +170,10 @@ func Execute(raw string, sess *session.State, agentClient *agent.Client, repoRoo
 		return runProxy(repoRoot, args)
 
 	case "/stream":
-		return runStream(args)
+		return runStream(sess, args)
+
+	case "/theme":
+		return runTheme(args)
 
 	default:
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorError))
@@ -315,10 +319,14 @@ func runWallet(sess *session.State, args []string) Result {
 		sess.Wallet = w
 		var sb strings.Builder
 		sb.WriteString(green.Render("New sovereign agent wallet generated:") + "\n")
-		sb.WriteString(fmt.Sprintf("  %s    %s\n", teal.Render("Address:"), w.Address))
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Address:"), w.Address))
 		if len(w.PublicKey) > 48 {
-			sb.WriteString(fmt.Sprintf("  %s %s...%s\n", teal.Render("Public Key:"), w.PublicKey[:32], w.PublicKey[len(w.PublicKey)-16:]))
+			sb.WriteString(fmt.Sprintf("  %-22s %s...%s\n", teal.Render("Public Key:"), w.PublicKey[:32], w.PublicKey[len(w.PublicKey)-16:]))
 		}
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Identity Derivation:"), dim.Render("secp256k1 (uncompressed) -> native keccak256[12:]")))
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Network:"), dim.Render("Base Sepolia L2 (Chain ID 84532)")))
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Vault Contract:"), dim.Render(sess.VaultAddress)))
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Vault Status:"), dim.Render("UNFUNDED (run /deposit 1.0 or /deposit sync)")))
 		sb.WriteString(dim.Render(fmt.Sprintf("  Keystore saved to %s", session.WalletPath())) + "\n")
 		return Result{Output: sb.String()}
 
@@ -333,10 +341,21 @@ func runWallet(sess *session.State, args []string) Result {
 		sess.Wallet = w
 		var sb strings.Builder
 		sb.WriteString(teal.Render("Agent Wallet Status:") + "\n")
-		sb.WriteString(fmt.Sprintf("  %s    %s\n", teal.Render("Address:"), w.Address))
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Address:"), w.Address))
 		if len(w.PublicKey) > 48 {
-			sb.WriteString(fmt.Sprintf("  %s %s...%s\n", teal.Render("Public Key:"), w.PublicKey[:32], w.PublicKey[len(w.PublicKey)-16:]))
+			sb.WriteString(fmt.Sprintf("  %-22s %s...%s\n", teal.Render("Public Key:"), w.PublicKey[:32], w.PublicKey[len(w.PublicKey)-16:]))
 		}
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Identity Derivation:"), dim.Render("secp256k1 (uncompressed) -> native keccak256[12:]")))
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Network:"), dim.Render("Base Sepolia L2 (Chain ID 84532)")))
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Vault Contract:"), dim.Render(sess.VaultAddress)))
+
+		vaultStatus := "UNFUNDED (run /deposit 1.0 or /deposit sync)"
+		if w.OnChainBond > 0 {
+			vaultStatus = fmt.Sprintf("ON-CHAIN ACTIVE (Bond: $%.4f USDC, Free Margin: $%.4f USDC)", w.OnChainBond, w.OnChainFreeMargin)
+		} else if w.CollateralBond > 0 {
+			vaultStatus = fmt.Sprintf("DEMO ACTIVE (Bond: $%.4f USDC, Free Margin: $%.4f USDC)", w.CollateralBond, w.FreeMargin)
+		}
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Vault Status:"), green.Render(vaultStatus)))
 		sb.WriteString(dim.Render(fmt.Sprintf("  Keystore: %s", session.WalletPath())) + "\n")
 		return Result{Output: sb.String()}
 
@@ -598,13 +617,15 @@ func runSend(sess *session.State, agentClient *agent.Client, args []string) Resu
 
 	if len(args) == 0 {
 		var sb strings.Builder
-		sb.WriteString("\n" + teal.Render("CSLS 167-Byte Session MAC Micro-Cheque Streaming:") + "\n")
+		sb.WriteString("\n" + teal.Render("CSLS 167-Byte Session MAC Micro-Cheque Direct Merchant Payment:") + "\n")
 		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Format:"), dim.Render("151B EOTS Cheque + 16B SipHash-2-4 MAC")))
-		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Gas Cost:"), green.Render("0 Gas (Off-Chain Cryptographic Wire)")))
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Gas Cost:"), green.Render("0 Gas (Off-Chain Wire Clearing on Base L2)")))
 		sb.WriteString("\n" + teal.Render("Usage:") + "\n")
-		sb.WriteString(dim.Render("  /send <amount_usdc> [vendor_pk | vendor_url]") + "\n")
-		sb.WriteString(dim.Render("  Example: /send 0.0005") + "\n")
-		sb.WriteString(dim.Render("  Example: /send 0.05 0x02e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") + "\n")
+		sb.WriteString(dim.Render("  /send <amount_usdc> [merchant_id | vendor_pk | vendor_url]") + "\n")
+		sb.WriteString(dim.Render("  Example: /send 0.05 anthropic") + "\n")
+		sb.WriteString(dim.Render("  Example: /send 0.01 deepseek") + "\n")
+		sb.WriteString(dim.Render("  Example: /send 0.005 groq") + "\n")
+		sb.WriteString(dim.Render("  Example: /send 0.0005 (sends to active model merchant)") + "\n")
 		return Result{Output: sb.String()}
 	}
 
@@ -630,18 +651,22 @@ func runSend(sess *session.State, agentClient *agent.Client, args []string) Resu
 		return Result{Output: errStyle.Render(fmt.Sprintf("Insufficient margin: $%.6f available, $%.6f requested. Use /deposit to top up.", availMargin, amount))}
 	}
 
-	// If explicit vendor target supplied
+	// If explicit merchant or vendor target supplied
 	if len(args) > 1 {
 		arg1 := args[1]
 		if strings.HasPrefix(arg1, "http://") || strings.HasPrefix(arg1, "https://") {
 			sess.VendorURL = arg1
 			sess.SessionInitialized = false
+		} else if m, ok := agent.ResolveMerchant(arg1); ok {
+			agentClient.BindMerchant(m)
 		} else {
 			pkBytes, err := cslsffi.HexToBytes(arg1)
 			if err == nil && len(pkBytes) == 33 {
 				sess.VendorPK = pkBytes
 			}
 		}
+	} else if sess.ProviderID == "" || len(sess.VendorPK) != 33 {
+		agentClient.BindMerchant(agent.MerchantForModel(sess.CurrentModel))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -652,7 +677,8 @@ func runSend(sess *session.State, agentClient *agent.Client, args []string) Resu
 		return Result{Output: errStyle.Render(fmt.Sprintf("Vendor discovery failed: %v", err))}
 	}
 
-	if !sess.SessionInitialized {
+	pkHex := hex.EncodeToString(vendorPK)
+	if !sess.SessionInitialized || sess.LastSessionVendorPKHex != pkHex {
 		initPkt, err := agentClient.InitSession(vendorPK)
 		if err != nil {
 			return Result{Output: errStyle.Render(fmt.Sprintf("Session handshake initiation failed: %v", err))}
@@ -671,6 +697,7 @@ func runSend(sess *session.State, agentClient *agent.Client, args []string) Resu
 			}
 		}
 		sess.SessionInitialized = true
+		sess.LastSessionVendorPKHex = pkHex
 	}
 
 	wireCheque, height, err := agentClient.SignCheque(vendorPK, microUSDC)
@@ -679,7 +706,7 @@ func runSend(sess *session.State, agentClient *agent.Client, args []string) Resu
 	}
 	chequeHex := "0x" + hex.EncodeToString(wireCheque)
 
-	deliveryStatus := "SOVEREIGN IN-PROCESS WIRE (0 Gas)"
+	deliveryStatus := "DIRECT M2M CLEARING TO MERCHANT (0 Gas)"
 	if strings.HasPrefix(vendorURL, "http://") || strings.HasPrefix(vendorURL, "https://") {
 		payload, _ := json.Marshal(map[string]string{"cheque": chequeHex})
 		req, err := http.NewRequestWithContext(ctx, "POST", vendorURL+"/v1/cheque", bytes.NewReader(payload))
@@ -689,7 +716,7 @@ func runSend(sess *session.State, agentClient *agent.Client, args []string) Resu
 			c := &http.Client{Timeout: 2 * time.Second}
 			if resp, err := c.Do(req); err == nil {
 				if resp.StatusCode == 200 {
-					deliveryStatus = "DELIVERED TO REMOTE VENDOR (HTTP 200)"
+					deliveryStatus = "DELIVERED TO REMOTE PROVIDER (HTTP 200)"
 				}
 				_ = resp.Body.Close()
 			}
@@ -708,18 +735,28 @@ func runSend(sess *session.State, agentClient *agent.Client, args []string) Resu
 	}
 	sess.AccumulatedSpentUSDC += amount
 	sess.TotalQueries++
+	sess.RecordMerchantPayment(sess.ProviderID, sess.ProviderPayoutAddress, amount)
 
 	dispPK := hex.EncodeToString(vendorPK)
 	if len(dispPK) > 20 {
 		dispPK = dispPK[:10] + "..." + dispPK[len(dispPK)-8:]
 	}
 
+	merchantDisplayName := sess.MerchantName
+	if merchantDisplayName == "" {
+		merchantDisplayName = sess.ProviderID
+	}
+
 	var sb strings.Builder
-	sb.WriteString("\n" + teal.Render("167-Byte Session MAC Micro-Cheque Signed:") + "\n")
+	sb.WriteString("\n" + teal.Render("167-Byte Session MAC Micro-Cheque Dispatched to Gateway:") + "\n")
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Provider Target:"), green.Render(merchantDisplayName)))
+	if sess.ProviderPayoutAddress != "" {
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Clearinghouse:"), green.Render("CSLS Gateway ("+sess.ProviderPayoutAddress+")")))
+	}
 	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Cheque Sequence:"), green.Render(fmt.Sprintf("#%d", height))))
 	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Amount Settled:"), green.Render(fmt.Sprintf("$%.6f USDC (%d micro-USDC)", amount, microUSDC))))
-	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Recipient Vendor:"), dim.Render("0x"+dispPK)))
-	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Wire Packet:"), dim.Render(fmt.Sprintf("167 Bytes (151B Cheque + 16B MAC)"))))
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Merchant Public Key:"), dim.Render("0x"+dispPK)))
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Wire Packet:"), dim.Render("167 Bytes (151B Cheque + 16B MAC)")))
 	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Wire Hex:"), dim.Render(chequeHex[:26]+"..."+chequeHex[len(chequeHex)-16:])))
 	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Settlement Status:"), green.Render(deliveryStatus)))
 	if sess.Wallet != nil {
@@ -758,9 +795,14 @@ func runStatus(sess *session.State) Result {
 		}
 	}
 
-	upstreamInfo := "none (direct upstream, no vendor)"
-	if sess.VendorURL != "" {
-		upstreamInfo = sess.VendorURL
+	merchantInfo := "Anthropic Partner Network"
+	if sess.MerchantName != "" {
+		merchantInfo = sess.MerchantName
+	} else if sess.ProviderID != "" {
+		merchantInfo = sess.ProviderID
+	}
+	if sess.ProviderPayoutAddress != "" {
+		merchantInfo += " (" + sess.ProviderPayoutAddress[:6] + "..." + sess.ProviderPayoutAddress[len(sess.ProviderPayoutAddress)-4:] + ")"
 	}
 
 	var sb strings.Builder
@@ -772,7 +814,7 @@ func runStatus(sess *session.State) Result {
 	sb.WriteString(fmt.Sprintf("  %-20s %s\n", teal.Render("Free Margin:"), green.Render(marginVal)))
 	sb.WriteString(fmt.Sprintf("  %-20s %s\n", teal.Render("Wallet (Base L2):"), dim.Render(addr)))
 	sb.WriteString(fmt.Sprintf("  %-20s %s\n", teal.Render("Active Model:"), teal.Render(sess.CurrentModel)))
-	sb.WriteString(fmt.Sprintf("  %-20s %s\n", teal.Render("Upstream Router:"), dim.Render(upstreamInfo)))
+	sb.WriteString(fmt.Sprintf("  %-20s %s\n", teal.Render("Active Merchant:"), green.Render(merchantInfo)))
 	sb.WriteString(fmt.Sprintf("  %-20s %s\n", teal.Render("Spent to Date:"), dim.Render(fmt.Sprintf("$%.6f USDC (%d queries)", sess.AccumulatedSpentUSDC, sess.TotalQueries))))
 	sb.WriteString(fmt.Sprintf("  %-20s %s\n", teal.Render("Local Daemons:"), green.Render("None required (100% In-Process M2M Protocol)")))
 	return Result{Output: sb.String()}
@@ -781,6 +823,7 @@ func runStatus(sess *session.State) Result {
 func runModel(sess *session.State, agentClient *agent.Client, args []string) Result {
 	teal := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
 	green := lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorError))
 
 	if len(args) > 0 {
@@ -791,7 +834,15 @@ func runModel(sess *session.State, agentClient *agent.Client, args []string) Res
 		canonicalRef := p + ":" + id
 		sess.CurrentModel = canonicalRef
 		session.SaveActiveModel(canonicalRef)
-		return Result{Output: green.Render("Active model set to: ") + teal.Render(canonicalRef)}
+
+		// Switch merchant payout destination directly
+		m := agent.MerchantForModel(canonicalRef)
+		agentClient.BindMerchant(m)
+
+		var sb strings.Builder
+		sb.WriteString(green.Render("Active model set to: ") + teal.Render(canonicalRef) + "\n")
+		sb.WriteString(dim.Render("Provider route: ") + green.Render(m.Name) + " " + dim.Render("(Clearing via CSLS Gateway)"))
+		return Result{Output: sb.String()}
 	}
 
 	active := sess.CurrentModel
@@ -806,7 +857,7 @@ func runModel(sess *session.State, agentClient *agent.Client, args []string) Res
 	}
 	var sb strings.Builder
 	sb.WriteString(teal.Render("Active model: ") + active + "\n")
-	sb.WriteString(fmt.Sprintf("%d models available. Type /model <provider:id>.\n", len(models)))
+	sb.WriteString(fmt.Sprintf("%d models available across connected providers. Type /model <provider:id>.\n", len(models)))
 	return Result{Output: sb.String()}
 }
 
@@ -814,50 +865,91 @@ func runVendor(sess *session.State, args []string) Result {
 	teal := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
 	green := lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen))
-	warn := lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
 
-	if len(args) > 0 && strings.HasPrefix(args[0], "http") {
-		sess.VendorURL = args[0]
-		sess.SessionInitialized = false
-		sess.VendorPK = nil
+	if len(args) > 0 {
+		sub := strings.ToLower(args[0])
+		if sub == "list" || sub == "all" || sub == "directory" {
+			merchants := agent.CanonicalMerchants()
+			var sb strings.Builder
+			sb.WriteString("\n" + teal.Render("Supported AI Provider Routes (Clearing via CSLS Base L2 Gateway):") + "\n\n")
+			for _, m := range merchants {
+				activeTag := "  "
+				if sess.ProviderID == m.ID {
+					activeTag = green.Render("* ")
+				}
+				sb.WriteString(fmt.Sprintf("%s%-14s %-28s %-16s %s\n",
+					activeTag,
+					teal.Render(m.ID),
+					dim.Render(m.Name),
+					green.Render(fmt.Sprintf("$%.4f/req", float64(m.UnitPriceMicro)/1e6)),
+					dim.Render(strings.Join(m.Capabilities, ", ")),
+				))
+			}
+			sb.WriteString("\n" + dim.Render("All usage clears off-chain to Gateway: 0x5C94B2254e528074E06A3506F7AC5109d5578E70") + "\n")
+			sb.WriteString(dim.Render("To select a provider route: /vendor <id> (e.g. /vendor anthropic, /vendor deepseek)") + "\n")
+			return Result{Output: sb.String()}
+		}
+
+		if strings.HasPrefix(args[0], "http://") || strings.HasPrefix(args[0], "https://") {
+			sess.VendorURL = args[0]
+			sess.SessionInitialized = false
+			sess.VendorPK = nil
+		} else if m, ok := agent.ResolveMerchant(args[0]); ok {
+			sess.ProviderID = m.ID
+			sess.MerchantName = m.Name
+			sess.ProviderPayoutAddress = m.PayoutAddress
+			sess.ProviderUnitPriceMicro = m.UnitPriceMicro
+			sess.ProviderCapabilities = m.Capabilities
+			sess.VendorPK = m.PublicKeyBytes()
+			sess.VendorURL = "csls://merchant/" + m.ID
+			sess.SessionInitialized = false
+
+			var sb strings.Builder
+			sb.WriteString("\n" + green.Render("Provider Route Connected:") + "\n")
+			sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Provider:"), green.Render(m.Name+" ("+m.ID+")")))
+			sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Clearing Gateway:"), green.Render(m.PayoutAddress)))
+			sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Unit Price:"), green.Render(fmt.Sprintf("%d micro-USDC ($%.4f USDC)", m.UnitPriceMicro, float64(m.UnitPriceMicro)/1e6))))
+			sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Models:"), dim.Render(strings.Join(m.Capabilities, ", "))))
+			sb.WriteString("\n" + dim.Render("Queries clear off-chain to the CSLS Gateway with zero gas.") + "\n")
+			return Result{Output: sb.String()}
+		}
 	}
 
-	vendorURL := strings.TrimRight(sess.VendorURL, "/")
-
-	start := time.Now()
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(vendorURL + "/health")
-	latency := time.Since(start)
-
-	isHealthy := (err == nil && resp.StatusCode == 200)
-	var healthData map[string]any
-	if isHealthy {
-		_ = json.NewDecoder(resp.Body).Decode(&healthData)
-		_ = resp.Body.Close()
-	} else if resp != nil {
-		_ = resp.Body.Close()
+	// Default: show current merchant connection
+	activeMerchant := sess.MerchantName
+	if activeMerchant == "" {
+		if m, ok := agent.ResolveMerchant(sess.CurrentModel); ok {
+			activeMerchant = m.Name
+			sess.MerchantName = m.Name
+			if sess.ProviderPayoutAddress == "" {
+				sess.ProviderPayoutAddress = m.PayoutAddress
+			}
+			if len(sess.VendorPK) != 33 {
+				sess.VendorPK = m.PublicKeyBytes()
+			}
+		} else {
+			activeMerchant = "Anthropic Partner Network"
+		}
 	}
 
 	var sb strings.Builder
-	sb.WriteString("\n" + teal.Render("Causal-Slash Frontier Vendor Connection:") + "\n")
-	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Vendor Node:"), vendorURL))
+	sb.WriteString("\n" + teal.Render("Causal-Slash Provider Route & Clearing Details:") + "\n")
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Active Provider:"), green.Render(activeMerchant)))
+	if sess.ProviderPayoutAddress != "" {
+		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Clearing Gateway:"), green.Render(sess.ProviderPayoutAddress)))
+	}
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Settlement Mode:"), dim.Render("167-byte Session MAC (0 gas wire)")))
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Active Model:"), teal.Render(sess.CurrentModel)))
 
-	if isHealthy {
-		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Node Status:"), green.Render(fmt.Sprintf("ONLINE (%.1f ms)", float64(latency.Microseconds())/1000.0))))
-		if pk, ok := healthData["vendor_pk"].(string); ok && len(pk) > 18 {
-			sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Vendor Public Key:"), dim.Render(pk[:18]+"...")))
+	// Direct payment ledger per merchant
+	if len(sess.MerchantPaidUSDC) > 0 {
+		sb.WriteString("\n" + teal.Render("Usage by Provider to Date:") + "\n")
+		for mID, amt := range sess.MerchantPaidUSDC {
+			sb.WriteString(fmt.Sprintf("  %-16s %s\n", dim.Render(mID), green.Render(fmt.Sprintf("$%.6f USDC", amt))))
 		}
-		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Settlement Mode:"), dim.Render("167-byte Session MAC")))
-		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Web2 API Keys:"), dim.Render("BANNED")))
-		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Edge Guardrail:"), green.Render("ACTIVE")))
-	} else {
-		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Node Status:"), warn.Render("UNREACHABLE")))
 	}
 
-	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Active Model:"), teal.Render(sess.CurrentModel)))
-	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Conversation Memory:"), dim.Render(fmt.Sprintf("%d turns recorded", len(sess.Memory.Messages())/2))))
-	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Session Queries:"), dim.Render(fmt.Sprintf("%d", sess.TotalQueries))))
-	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Cumulative Settled:"), green.Render(fmt.Sprintf("$%.4f USDC (0 gas)", sess.AccumulatedSpentUSDC))))
+	sb.WriteString("\n" + dim.Render("Type /vendor list to inspect supported providers | /vendor <id> to switch provider") + "\n")
 	return Result{Output: sb.String()}
 }
 
@@ -1315,23 +1407,26 @@ func runProxy(repoRoot string, args []string) Result {
 	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Wire Settlement:"), green.Render("ACTIVE in-process (0 gas, 167-byte Session MAC)")))
 	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Terminal Client:"), green.Render("Pure sovereign client (no sidecar required)")))
 	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Sidecar Script:"), dim.Render(proxyScript)))
-	sb.WriteString("\n" + dim.Render("Sidecar proxy is designed for external Web2 applications and third-party agents.") + "\n")
-	sb.WriteString(dim.Render("To run sidecar proxy on port 8402: python3 sdk/slash_proxy.py --port 8402 &") + "\n")
+	sb.WriteString(dim.Render("Client terminal operates in-process with zero background daemons.") + "\n")
 	return Result{Output: sb.String()}
 }
 
-func runStream(args []string) Result {
+func runStream(sess *session.State, args []string) Result {
 	teal := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
 	green := lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen))
 
 	var sb strings.Builder
 	sb.WriteString("\n" + teal.Render("167-Byte Session MAC Wire Cheque Stream:") + "\n")
-	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Settlement Mode:"), green.Render("In-Process Wire Clearing (0 Gas)")))
-	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Packet Size:"), dim.Render("167 Bytes (151B Cheque + 16B SipHash-2-4 MAC)")))
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Settlement Mode:"), green.Render("In-Process Wire Clearing (0 Gas on Base L2)")))
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Packet Format:"), dim.Render("167 Bytes (151B Cheque + 16B SipHash-2-4 MAC)")))
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Monotonic Height (h):"), green.Render(fmt.Sprintf("h = %d (incremented monotonically per turn)", sess.TotalQueries))))
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Per-Turn Clearing:"), green.Render("$0.0005 USDC per turn (500 µUSDC, 0 gas)")))
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Cumulative Cleared:"), green.Render(fmt.Sprintf("$%.4f USDC (%d turns)", sess.AccumulatedSpentUSDC, sess.TotalQueries))))
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Collateral Vault:"), dim.Render(sess.VaultAddress+" on Base Sepolia")))
 	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Wire Latency:"), green.Render("Sub-microsecond (< 1.68 µs in C11 RAM)")))
-	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Stream State:"), green.Render("ACTIVE (cheques signed and emitted per query)")))
-	sb.WriteString("\n" + dim.Render("Cheques are signed and settled cryptographically with each query turn.") + "\n")
+	sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Stream State:"), green.Render("ACTIVE (cheques signed and emitted per query turn)")))
+	sb.WriteString("\n" + dim.Render("Cheques are signed and settled cryptographically with zero on-chain gas overhead.") + "\n")
 	return Result{Output: sb.String()}
 }
 
@@ -1342,4 +1437,51 @@ func findClosestMatch(target string) string {
 		}
 	}
 	return ""
+}
+
+func runTheme(args []string) Result {
+	teal := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal)).Bold(true)
+	green := lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorError))
+
+	themes := []struct {
+		ID   string
+		Name string
+		Desc string
+	}{
+		{"cyber-emerald", "Cyber Emerald", "Deep black with glowing Base L2 teal & emerald accents (Default)"},
+		{"neon-amber", "Neon Amber", "Warm retro phosphor terminal amber with golden prompt accents"},
+		{"cyberpunk-cyan", "Cyberpunk Cyan", "Electric cyan & violet neon Tokyo Night aesthetic"},
+		{"monochrome-dark", "Monochrome Dark", "Minimalist ultra-high contrast pure white & slate monochrome"},
+	}
+
+	if len(args) > 0 {
+		choice := strings.ToLower(strings.TrimSpace(args[0]))
+		matchedID := ""
+		for _, t := range themes {
+			if choice == t.ID || strings.Contains(t.ID, choice) {
+				matchedID = t.ID
+				break
+			}
+		}
+		if matchedID == "" {
+			return Result{Output: errStyle.Render(fmt.Sprintf("Unknown theme '%s'. Available themes: cyber-emerald, neon-amber, cyberpunk-cyan, monochrome-dark", args[0]))}
+		}
+		session.SaveTheme(matchedID)
+		return Result{Output: green.Render("Theme successfully set to: ") + teal.Render(matchedID) + "\n" + dim.Render("Theme persisted to ~/.csls/theme")}
+	}
+
+	current := session.LoadTheme()
+	var sb strings.Builder
+	sb.WriteString("\n" + teal.Render("Available CSLS Terminal Themes:") + "\n")
+	for i, t := range themes {
+		tag := "  "
+		if t.ID == current {
+			tag = green.Render("* ")
+		}
+		sb.WriteString(fmt.Sprintf("  %s[%d] %-18s %s\n", tag, i+1, teal.Render(t.Name), dim.Render(t.Desc)))
+	}
+	sb.WriteString("\n" + dim.Render("To switch theme: /theme <name> (e.g. /theme amber, /theme cyan, /theme emerald)") + "\n")
+	return Result{Output: sb.String()}
 }

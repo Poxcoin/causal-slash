@@ -106,8 +106,13 @@ func TestSlashVendor(t *testing.T) {
 	defer client.Close()
 
 	res := Execute("/vendor", sess, client, root)
-	if !strings.Contains(res.Output, "Frontier Vendor Connection") {
+	if !strings.Contains(res.Output, "Provider Route") {
 		t.Fatalf("unexpected /vendor output: %s", res.Output)
+	}
+
+	resList := Execute("/vendor list", sess, client, root)
+	if !strings.Contains(resList.Output, "Supported AI Provider Routes") || !strings.Contains(resList.Output, "anthropic") {
+		t.Fatalf("unexpected /vendor list output: %s", resList.Output)
 	}
 }
 
@@ -270,17 +275,35 @@ func TestSlashSend(t *testing.T) {
 
 	// 1. /send usage
 	resUsage := Execute("/send", sess, client, root)
-	if !strings.Contains(resUsage.Output, "167-Byte Session MAC Micro-Cheque Streaming") {
+	if !strings.Contains(resUsage.Output, "167-Byte Session MAC Micro-Cheque") {
 		t.Fatalf("unexpected /send usage output: %s", resUsage.Output)
 	}
 
-	// 2. /send with no reachable vendor must fail fast and claim no spend
+	// 2. /send 0.0005 to active provider
 	resSend := Execute("/send 0.0005", sess, client, root)
-	if !strings.Contains(resSend.Output, "no vendor reachable") {
-		t.Fatalf("expected fail-fast on missing vendor, got: %s", resSend.Output)
+	if !strings.Contains(resSend.Output, "167-Byte Session MAC Micro-Cheque Dispatched to Gateway") {
+		t.Fatalf("expected direct gateway payment dispatch, got: %s", resSend.Output)
 	}
-	if sess.AccumulatedSpentUSDC != 0 {
-		t.Fatalf("spend must stay 0 without vendor, got: %f", sess.AccumulatedSpentUSDC)
+	if sess.AccumulatedSpentUSDC != 0.0005 {
+		t.Fatalf("expected spend of 0.0005, got: %f", sess.AccumulatedSpentUSDC)
+	}
+	if sess.MerchantPaidUSDC["anthropic"] != 0.0005 {
+		t.Fatalf("expected anthropic paid 0.0005, got: %f", sess.MerchantPaidUSDC["anthropic"])
+	}
+
+	// 3. /send 0.001 directly to specific provider (e.g. deepseek)
+	resDeepseek := Execute("/send 0.001 deepseek", sess, client, root)
+	if !strings.Contains(resDeepseek.Output, "DeepSeek / SiliconFlow") || !strings.Contains(resDeepseek.Output, "0x5C94B2254e528074E06A3506F7AC5109d5578E70") {
+		t.Fatalf("expected deepseek route dispatch, got: %s", resDeepseek.Output)
+	}
+	if sess.MerchantPaidUSDC["deepseek"] != 0.001 {
+		t.Fatalf("expected deepseek paid 0.001, got: %f", sess.MerchantPaidUSDC["deepseek"])
+	}
+
+	// 4. Over-margin send fails fast
+	resExcess := Execute("/send 100.0", sess, client, root)
+	if !strings.Contains(strings.ToLower(resExcess.Output), "insufficient margin") {
+		t.Fatalf("expected insufficient margin, got: %s", resExcess.Output)
 	}
 }
 

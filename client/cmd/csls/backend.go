@@ -60,7 +60,7 @@ func detectFamily(id string) string {
 	if strings.Contains(lower, "claude") || strings.HasPrefix(lower, "anthropic/") {
 		return "Claude (Anthropic)"
 	}
-	if strings.Contains(lower, "gpt") || strings.Contains(lower, "o1") || strings.Contains(lower, "o3") || strings.HasPrefix(lower, "openai/") {
+	if strings.Contains(lower, "gpt") || strings.HasPrefix(lower, "openai/") {
 		return "ChatGPT (OpenAI)"
 	}
 	if strings.Contains(lower, "gemini") || strings.HasPrefix(lower, "google/") {

@@ -46,15 +46,20 @@ func findRepoRoot() string {
 	return "."
 }
 
+func isTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
 func main() {
 	if os.Getenv("COLORFGBG") == "" {
 		_ = os.Setenv("COLORFGBG", "15;0")
 	}
 
 	sess := session.NewState()
-	if sess.Memory != nil {
-		sess.Memory.Clear()
-	}
 	agentClient := agent.NewClient(sess)
 	defer agentClient.Close()
 
@@ -73,6 +78,14 @@ func main() {
 			fmt.Println(res.Output)
 			return
 		}
+		if first == "--theme" || first == "theme" {
+			wizard := ui.NewThemeWizard()
+			wp := tea.NewProgram(wizard)
+			if _, err := wp.Run(); err != nil {
+				session.SaveTheme("cyber-emerald")
+			}
+			return
+		}
 	}
 
 	// 2. Interactive TUI shell (Bubble Tea with AltScreen and MouseCellMotion)
@@ -86,6 +99,7 @@ func main() {
 	p := tea.NewProgram(
 		app,
 		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 		tea.WithReportFocus(),
 	)
 

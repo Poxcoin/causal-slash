@@ -154,6 +154,19 @@ func TestInspectView(t *testing.T) {
 		if mShiftUp.viewport.YOffset >= initialOffset {
 			t.Errorf("Shift+Up should decrease YOffset, got %d (was %d)", mShiftUp.viewport.YOffset, initialOffset)
 		}
+
+		// Even with command history populated, Up/Down (including terminal Alternate Scroll wheel events)
+		// must scroll the viewport and NEVER dump old commands into the input box.
+		m.history = []string{"/help", "/status", "/bond"}
+		m.historyIdx = len(m.history)
+		uKeyUp, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		mKeyUp := uKeyUp.(AppModel)
+		if mKeyUp.viewport.YOffset >= initialOffset {
+			t.Errorf("KeyUp must scroll viewport up, got YOffset=%d (was %d)", mKeyUp.viewport.YOffset, initialOffset)
+		}
+		if mKeyUp.input.Value() != "" {
+			t.Errorf("KeyUp / wheel scroll must NOT overwrite input with history command, got %q", mKeyUp.input.Value())
+		}
 	})
 
 	// Test Active Conversation state: startup header disappears, zero permanent header
@@ -169,6 +182,9 @@ func TestInspectView(t *testing.T) {
 		}
 		if !strings.Contains(startupView, "Causal-Slash CLI") {
 			t.Errorf("Startup view should contain 'Causal-Slash CLI'")
+		}
+		if !strings.Contains(startupView, "████████████████") || !strings.Contains(startupView, "◥█") {
+			t.Errorf("Startup view should contain authentic 4-bar CSLS glyph logo")
 		}
 
 		// 2. User executes /help: startup header vanishes completely
@@ -203,8 +219,9 @@ func TestInspectView(t *testing.T) {
 		if len(clearedLines) != 24 {
 			t.Errorf("Cleared view expected 24 lines, got %d", len(clearedLines))
 		}
-		if !strings.Contains(clearedView, "Causal-Slash CLI") {
-			t.Errorf("Cleared view must restore startup state")
+		if !strings.Contains(clearedView, "Causal-Slash CLI") || !strings.Contains(clearedView, "████████████████") {
+			t.Errorf("Cleared view must restore startup state with logo")
 		}
 	})
 }
+

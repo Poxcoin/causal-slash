@@ -9,26 +9,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 )
-
-var (
-	poolGroq   = []byte{}
-	poolOR     = []byte{}
-	poolGemini = []byte{}
-)
-
-func decodePoolKey(encoded []byte, key byte) string {
-	res := make([]byte, len(encoded))
-	for i, b := range encoded {
-		res[i] = b ^ key
-	}
-	return string(res)
-}
 
 // UpstreamRouter provides resilient frontier inference via non-custodial sovereign routing.
 type UpstreamRouter struct {
@@ -38,34 +23,22 @@ type UpstreamRouter struct {
 	geminiKey     string
 }
 
-// NewUpstreamRouter initializes the upstream router with shared public pool defaults.
+// NewUpstreamRouter initializes the upstream router strictly from environment variables.
+// Zero hardcoded Web2 API keys are permitted in client source code.
 func NewUpstreamRouter() *UpstreamRouter {
-	gKey := os.Getenv("GROQ_API_KEY")
-	if gKey == "" {
-		gKey = decodePoolKey(poolGroq, 0x5A)
-	}
-	orKey := os.Getenv("OPENROUTER_API_KEY")
-	if orKey == "" {
-		orKey = decodePoolKey(poolOR, 0x5A)
-	}
-	gemKey := os.Getenv("GEMINI_API_KEY")
-	if gemKey == "" {
-		gemKey = decodePoolKey(poolGemini, 0x5A)
-	}
-
 	return &UpstreamRouter{
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
-		groqKey:       gKey,
-		openRouterKey: orKey,
-		geminiKey:     gemKey,
+		groqKey:       os.Getenv("GROQ_API_KEY"),
+		openRouterKey: os.Getenv("OPENROUTER_API_KEY"),
+		geminiKey:     os.Getenv("GEMINI_API_KEY"),
 	}
 }
 
 // ModelEntry is one model offered by a real upstream provider.
 type ModelEntry struct {
-	Provider string // e.g. "anthropic", "openai", "deepseek", "google"
+	Provider string // e.g. "anthropic", "openai", "deepseek", "google", "kuaishou", "elevenlabs"
 	ID       string
 	Name     string
 }
@@ -73,16 +46,19 @@ type ModelEntry struct {
 // Canonical2026Models returns the official October 2026 model directory.
 func Canonical2026Models() []ModelEntry {
 	return []ModelEntry{
+		{Provider: "anthropic", ID: "claude-opus-5.5", Name: "Claude Opus 5.5 (Flagship Long-Horizon Reasoning)"},
+		{Provider: "anthropic", ID: "claude-sonnet-5.5", Name: "Claude Sonnet 5.5 (High-Speed Agentic Coding)"},
+		{Provider: "openai", ID: "gpt-6.1-sol", Name: "GPT-6.1 Sol (Frontier Reasoning & Tools)"},
+		{Provider: "openai", ID: "gpt-6-luna", Name: "GPT-6 Luna (Low-Latency Agent Execution)"},
+		{Provider: "deepseek", ID: "deepseek-v4-pro", Name: "DeepSeek-V4-Pro (1.6T MoE Architecture)"},
+		{Provider: "google", ID: "gemini-4-argon", Name: "Gemini 4 Argon (DeepSWE & Cybersecurity Leader)"},
 		{Provider: "google", ID: "gemini-3.5-flash", Name: "Gemini 3.5 Flash (Shared Pool)"},
-		{Provider: "google", ID: "gemini-3.7-flash", Name: "Gemini 3.7 Flash"},
-		{Provider: "openai", ID: "gpt-oss-120b", Name: "GPT-OSS 120B (LPU Fast)"},
-		{Provider: "qwen", ID: "qwen3.8-27b", Name: "Qwen 3.8 27B Coder"},
-		{Provider: "anthropic", ID: "claude-opus-5.5", Name: "Claude Opus 5.5"},
-		{Provider: "anthropic", ID: "claude-sonnet-5.5", Name: "Claude Sonnet 5.5"},
-		{Provider: "openai", ID: "gpt-6.1-sol", Name: "GPT-6.1 Sol"},
-		{Provider: "deepseek", ID: "deepseek-v4-pro", Name: "DeepSeek-V4-Pro"},
-		{Provider: "meta-llama", ID: "llama-4-scout", Name: "Llama 4 Scout"},
-		{Provider: "openrouter", ID: "nemotron-free", Name: "Nemotron 3.5 Lightning (Free)"},
+		{Provider: "groq", ID: "gpt-oss-120b", Name: "GPT-OSS 120B (Groq LPU Fast)"},
+		{Provider: "qwen", ID: "qwen3.8-27b", Name: "Qwen 3.8 27B Coder (Hyperbolic)"},
+		{Provider: "meta-llama", ID: "llama-4-scout", Name: "Llama 4 Scout (Together AI)"},
+		{Provider: "kuaishou", ID: "kling-4.0", Name: "Kling 4.0 (Autonomous Video Diffusion)"},
+		{Provider: "elevenlabs", ID: "eleven-v4", Name: "ElevenLabs v4 (Real-Time Audio Synthesis)"},
+		{Provider: "openrouter", ID: "nemotron-free", Name: "Nemotron 3.5 Lightning (UsePod / OpenRouter)"},
 	}
 }
 
@@ -103,7 +79,8 @@ func (r *UpstreamRouter) ListModels(ctx context.Context) ([]ModelEntry, error) {
 	return Canonical2026Models(), nil
 }
 
-// ExecuteStreaming executes live token streaming through the shared public pool.
+// ExecuteStreaming executes live token streaming after the 167-byte Session MAC micro-cheque
+// has been signed and credited to the target merchant.
 func (r *UpstreamRouter) ExecuteStreaming(
 	ctx context.Context,
 	model string,
@@ -150,7 +127,7 @@ func (r *UpstreamRouter) ExecuteStreaming(
 		return orReply, nil
 	}
 
-	return "", fmt.Errorf("shared pool execution failed: all providers exhausted")
+	return "", fmt.Errorf("merchant upstream pool execution failed: all providers exhausted")
 }
 
 func (r *UpstreamRouter) streamGemini(
@@ -176,7 +153,6 @@ func (r *UpstreamRouter) streamGemini(
 		return res, nil
 	}
 
-	// Auto fallback to gemini-3.5-flash if a sub-variant failed
 	if gemModel != "gemini-3.5-flash" {
 		return r.streamGeminiTarget(ctx, "gemini-3.5-flash", messages, onChunk)
 	}
@@ -349,37 +325,4 @@ func (r *UpstreamRouter) streamOpenRouter(
 	}
 
 	return parseSSEStream(resp.Body, onChunk)
-}
-
-// parseSSEStream decodes incoming Server-Sent Events from the CSLS vendor node.
-func parseSSEStream(r io.Reader, onChunk StreamCallback) (string, error) {
-	var full strings.Builder
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		dataStr := strings.TrimSpace(line[6:])
-		if dataStr == "[DONE]" {
-			break
-		}
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content string `json:"content"`
-				} `json:"delta"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal([]byte(dataStr), &chunk); err == nil && len(chunk.Choices) > 0 {
-			c := chunk.Choices[0].Delta.Content
-			if c != "" {
-				full.WriteString(c)
-				if onChunk != nil {
-					onChunk(c)
-				}
-			}
-		}
-	}
-	return full.String(), scanner.Err()
 }

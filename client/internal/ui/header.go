@@ -4,14 +4,19 @@
 package ui
 
 import (
+	_ "embed"
 	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
 
+//go:embed logo.txt
+var logoTxt string
+
 const (
-	Tagline = "Sovereign M2M Clearing for Autonomous Agents"
+	Tagline   = "Sovereign M2M Clearing for Autonomous Agents"
+	LogoWidth = 16
 
 	colorTeal   = "#21E2CC"
 	colorDim    = "#888888"
@@ -36,42 +41,63 @@ func formatCwd(cwd string) string {
 	return cwd
 }
 
-// renderHeader renders a sleek, minimalist single-line header (Claude Code / Lazygit style).
-// Maximizes vertical terminal real estate for prompts, streaming responses, and full scrollback.
+// renderHeader renders the CSLS startup header with the 4-bar geometric glyph logo
+// on wide terminals (width >= 56) and falls back to compact text-only on narrow terminals.
 func renderHeader(version, cwd string, width int, maxHeight ...int) string {
-	teal := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTeal))
+	primary := lipgloss.NewStyle().Foreground(lipgloss.Color(activePrimaryColor()))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
 
 	vStr := version
 	if !strings.HasPrefix(vStr, "v") {
 		vStr = "v" + vStr
 	}
-	title := teal.Bold(true).Render("Causal-Slash CLI " + vStr)
-	descStr := Tagline
-	if width < 60 {
-		descStr = "Sovereign M2M Clearing"
-	}
-	desc := dim.Render(descStr)
+	title := primary.Bold(true).Render("Causal-Slash CLI " + vStr)
 	path := dim.Render(formatCwd(cwd))
-	sep := dim.Render(" │ ")
 
-	// Full single-line header: CSLS v0.3.0 │ Sovereign M2M Clearing │ ~/workspace
-	content := title + sep + desc + sep + path
-	if width > 0 && lipgloss.Width(content)+4 > width {
-		// Medium width: CSLS v0.3.0 │ ~/workspace
-		content = title + sep + path
+	// Narrow terminal (< 56 cols, e.g. 40 cols): suppress logo, single-line text header without wrapping
+	if width > 0 && width < LogoWidth+40 {
+		sep := dim.Render(" │ ")
+		content := title + sep + path
 		if lipgloss.Width(content)+4 > width {
-			// Narrow width (e.g. 40 cols): CSLS v0.3.0
 			content = title
 		}
+		return lipgloss.NewStyle().Padding(0, 2, 0, 2).Render(content)
 	}
 
-	return lipgloss.NewStyle().Padding(0, 2, 0, 2).Render(content)
+	desc := dim.Render(Tagline)
+	proto := dim.Render("Base L2 • 167B Session MAC • O(1) Schnorr EOTS")
+	info := strings.Join([]string{
+		"",
+		title,
+		desc,
+		path,
+		proto,
+	}, "\n")
+
+	trimmedLogo := strings.TrimRight(logoTxt, "\r\n")
+	logo := primary.Bold(true).Render(trimmedLogo)
+	content := lipgloss.JoinHorizontal(lipgloss.Top, logo, "   ", info)
+
+	return lipgloss.NewStyle().Padding(1, 2, 1, 2).Render(content)
 }
 
-// renderHeaderCompact is an alias for renderHeader in modern single-line layout.
+// renderHeaderCompact renders a single-line compact header.
 func renderHeaderCompact(version, cwd string, width int) string {
-	return renderHeader(version, cwd, width)
+	primary := lipgloss.NewStyle().Foreground(lipgloss.Color(activePrimaryColor()))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
+
+	vStr := version
+	if !strings.HasPrefix(vStr, "v") {
+		vStr = "v" + vStr
+	}
+	title := primary.Bold(true).Render("Causal-Slash CLI " + vStr)
+	path := dim.Render(formatCwd(cwd))
+	sep := dim.Render(" │ ")
+	content := title + sep + path
+	if width > 0 && lipgloss.Width(content)+4 > width {
+		content = title
+	}
+	return lipgloss.NewStyle().Padding(0, 2, 0, 2).Render(content)
 }
 
 // Header is a backward-compatible wrapper returning rendered string and its line height.
@@ -79,3 +105,4 @@ func Header(version, cwd string, width int) (string, int) {
 	rendered := renderHeader(version, cwd, width)
 	return rendered, lipgloss.Height(rendered)
 }
+
