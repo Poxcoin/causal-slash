@@ -313,6 +313,9 @@ func TestSlashDepositVariations(t *testing.T) {
 
 	// 1. /deposit onchain instructions
 	resOnchain := Execute("/deposit onchain", sess, client, root)
+	if !strings.Contains(resOnchain.Output, "0xa07eA15D1FE0B884Ffb51b19d98D938b2Bf04D6B") || strings.Contains(resOnchain.Output, "<USDC_ADDR>") || !strings.Contains(resOnchain.Output, "mint(address,uint256)") {
+		t.Fatalf("invalid onchain USDC instructions: %s", resOnchain.Output)
+	}
 	if !strings.Contains(resOnchain.Output, "PerformanceCollateralVault") || !strings.Contains(resOnchain.Output, "cast send") {
 		t.Fatalf("unexpected /deposit onchain output: %s", resOnchain.Output)
 	}
@@ -363,6 +366,13 @@ func TestSlashProvider(t *testing.T) {
 }
 
 func TestSlashCopy(t *testing.T) {
+	previousCopy := copyToClipboard
+	t.Cleanup(func() { copyToClipboard = previousCopy })
+	var copied []string
+	copyToClipboard = func(text string) error {
+		copied = append(copied, text)
+		return nil
+	}
 	sess, client, root := setupTestSession(t)
 	defer client.Close()
 
@@ -384,7 +394,9 @@ func TestSlashCopy(t *testing.T) {
 	}
 
 	// 3. Add turns to memory
-	_ = sess.Memory.AddTurn("What is CSLS?", "CSLS is a sovereign clearing protocol.")
+	if err := sess.Memory.AddTurn("What is CSLS?", "CSLS is a sovereign clearing protocol."); err != nil {
+		t.Fatal(err)
+	}
 
 	// 4. Default /copy (implicit last)
 	resDefault := Execute("/copy", sess, client, root)
@@ -421,19 +433,42 @@ func TestSlashCopy(t *testing.T) {
 	}
 
 	// 8. Edge case: user message only, empty assistant response
-	sess.Memory.Clear()
-	_ = sess.Memory.AddTurn("Only user query", "")
+	if _, err := sess.Memory.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Memory.AddTurn("Only user query", ""); err != nil {
+		t.Fatal(err)
+	}
 	resUserOnly := Execute("/copy last", sess, client, root)
 	if !strings.Contains(resUserOnly.Output, "Last response copied to clipboard") {
 		t.Fatalf("unexpected /copy with user-only turn: %s", resUserOnly.Output)
 	}
 
 	// 9. Edge case: empty message contents
-	sess.Memory.Clear()
-	_ = sess.Memory.AddTurn("", "")
+	if _, err := sess.Memory.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Memory.AddTurn("", ""); err != nil {
+		t.Fatal(err)
+	}
 	resNothing := Execute("/copy", sess, client, root)
 	if !strings.Contains(resNothing.Output, "Nothing to copy.") {
 		t.Fatalf("expected 'Nothing to copy.', got: %s", resNothing.Output)
 	}
+	want := []string{
+		"CSLS is a sovereign clearing protocol.",
+		"CSLS is a sovereign clearing protocol.",
+		"CSLS is a sovereign clearing protocol.",
+		"USER:\nWhat is CSLS?\n\nASSISTANT:\nCSLS is a sovereign clearing protocol.",
+		"USER:\nWhat is CSLS?\n\nASSISTANT:\nCSLS is a sovereign clearing protocol.",
+		"Only user query",
+	}
+	if len(copied) != len(want) {
+		t.Fatalf("clipboard calls = %d, want %d: %q", len(copied), len(want), copied)
+	}
+	for i := range want {
+		if copied[i] != want[i] {
+			t.Errorf("clipboard call %d = %q, want %q", i, copied[i], want[i])
+		}
+	}
 }
-

@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -85,6 +87,12 @@ func (c *Client) getOrInitAgent() (*cslsffi.Agent, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.sess == nil {
+		return nil, errors.New("session is not initialized")
+	}
+	if c.sess.WalletLoadErr != nil {
+		return nil, fmt.Errorf("failed to load wallet.json: %w", c.sess.WalletLoadErr)
+	}
 	if c.agentHandle != nil {
 		return c.agentHandle, nil
 	}
@@ -92,17 +100,19 @@ func (c *Client) getOrInitAgent() (*cslsffi.Agent, error) {
 	w := c.sess.Wallet
 	if w == nil || w.PrivateKey == "" {
 		loaded, err := session.LoadWallet()
-		if err == nil && loaded.PrivateKey != "" {
-			c.sess.Wallet = loaded
-			w = loaded
-		} else {
-			newWallet, err := session.GenerateNewWallet()
+		if errors.Is(err, os.ErrNotExist) {
+			loaded, err = session.GenerateNewWallet()
 			if err != nil {
 				return nil, fmt.Errorf("failed to generate agent identity: %w", err)
 			}
-			c.sess.Wallet = newWallet
-			w = newWallet
+		} else if err != nil {
+			return nil, fmt.Errorf("failed to load wallet.json: %w", err)
 		}
+		if loaded == nil || loaded.PrivateKey == "" {
+			return nil, errors.New("invalid private key in wallet.json")
+		}
+		c.sess.Wallet = loaded
+		w = loaded
 	}
 
 	skBytes, err := cslsffi.HexToBytes(w.PrivateKey)
@@ -113,10 +123,7 @@ func (c *Client) getOrInitAgent() (*cslsffi.Agent, error) {
 	walPath := filepath.Join(session.ConfigDir(), "agent_wal.bin")
 	ag, err := cslsffi.NewAgent(skBytes, walPath)
 	if err != nil {
-		ag, err = cslsffi.NewAgent(skBytes, "")
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize C11 agent: %w", err)
-		}
+		return nil, fmt.Errorf("failed to initialize persistent C11 agent: %w", err)
 	}
 
 	c.agentHandle = ag
@@ -145,11 +152,14 @@ func (c *Client) DiscoverVendor(ctx context.Context) (string, []byte, error) {
 	c.mu.Unlock()
 
 	candidates := make([]string, 0, len(publicRelays)+1)
-	if vurl != "" && !strings.HasPrefix(vurl, "csls://") {
-		candidates = append(candidates, strings.TrimRight(vurl, "/"))
-	}
-	for _, r := range publicRelays {
-		r = strings.TrimRight(r, "/")
+	routes := append([]string{vurl}, publicRelays...)
+	routes = append(routes, strings.Split(os.Getenv("CSLS_PUBLIC_RELAYS"), ",")...)
+	for _, r := range routes {
+		r = strings.TrimRight(strings.TrimSpace(r), "/")
+		u, err := url.Parse(r)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			continue
+		}
 		found := false
 		for _, ex := range candidates {
 			if ex == r {
@@ -180,10 +190,10 @@ func (c *Client) DiscoverVendor(ctx context.Context) (string, []byte, error) {
 	}
 
 	resChan := make(chan probeResult, len(candidates))
-	probeCtx, probeCancel := context.WithTimeout(ctx, 40*time.Millisecond)
+	probeCtx, probeCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer probeCancel()
 
-	probeClient := &http.Client{Timeout: 40 * time.Millisecond}
+	probeClient := &http.Client{Timeout: 1500 * time.Millisecond}
 
 	var wg sync.WaitGroup
 	for _, cand := range candidates {
@@ -273,18 +283,13 @@ type StreamCallback func(chunk string)
 // ProcessQuery runs inference with wire clearing via 167-byte Session MAC micro-cheque
 // paid directly to the active model's merchant.
 func (c *Client) ProcessQuery(ctx context.Context, query string, onChunk StreamCallback) (string, uint64, error) {
-	agent, err := c.getOrInitAgent()
-	if err != nil {
-		return "", 0, err
-	}
-
 	var vendorURL string
 	var vendorPK []byte
 	var isRemoteHTTPVendor bool
 
-	if strings.HasPrefix(c.sess.VendorURL, "http://") || strings.HasPrefix(c.sess.VendorURL, "https://") {
+	{
 		vURL, vPK, derr := c.DiscoverVendor(ctx)
-		if derr == nil {
+		if derr == nil && (strings.HasPrefix(vURL, "http://") || strings.HasPrefix(vURL, "https://")) {
 			vendorURL = vURL
 			vendorPK = vPK
 			isRemoteHTTPVendor = true
@@ -293,6 +298,10 @@ func (c *Client) ProcessQuery(ctx context.Context, query string, onChunk StreamC
 
 	if !isRemoteHTTPVendor {
 		return "", 0, fmt.Errorf("no reachable sovereign CSLS merchant node (configure an http(s):// vendor endpoint; Web2 fallback disabled)")
+	}
+	agent, err := c.getOrInitAgent()
+	if err != nil {
+		return "", 0, err
 	}
 
 	history := c.sess.Memory.Messages()
@@ -373,19 +382,23 @@ func (c *Client) ProcessQuery(ctx context.Context, query string, onChunk StreamC
 	}
 
 	amountUSDC := float64(priceMicroUSDC) / 1e6
+	c.sess.AccumulatedSpentUSDC += amountUSDC
+	c.sess.TotalQueries++
+	c.sess.RecordMerchantPayment(c.sess.ProviderID, c.sess.ProviderPayoutAddress, amountUSDC)
 	if c.sess.Wallet != nil {
 		if c.sess.Wallet.FreeMargin >= amountUSDC {
 			c.sess.Wallet.FreeMargin -= amountUSDC
 		} else {
 			c.sess.Wallet.FreeMargin = 0
 		}
-		_ = session.SaveWallet(c.sess.Wallet)
+		if err := session.SaveWallet(c.sess.Wallet); err != nil {
+			return reply, height, fmt.Errorf("cheque settled at height %d, failed to persist wallet state: %w", height, err)
+		}
 	}
 
-	_ = c.sess.Memory.AddTurn(query, reply)
-	c.sess.AccumulatedSpentUSDC += amountUSDC
-	c.sess.TotalQueries++
-	c.sess.RecordMerchantPayment(c.sess.ProviderID, c.sess.ProviderPayoutAddress, amountUSDC)
+	if err := c.sess.Memory.AddTurn(query, reply); err != nil {
+		return reply, height, fmt.Errorf("cheque settled at height %d, failed to persist conversation: %w", height, err)
+	}
 
 	return reply, height, nil
 }
@@ -511,6 +524,16 @@ func (c *Client) ExecuteService(ctx context.Context, capability string, input an
 	c.sess.AccumulatedSpentUSDC += amountUSDC
 	c.sess.TotalQueries++
 	c.sess.RecordMerchantPayment(c.sess.ProviderID, c.sess.ProviderPayoutAddress, amountUSDC)
+	if c.sess.Wallet != nil {
+		if c.sess.Wallet.FreeMargin >= amountUSDC {
+			c.sess.Wallet.FreeMargin -= amountUSDC
+		} else {
+			c.sess.Wallet.FreeMargin = 0
+		}
+		if err := session.SaveWallet(c.sess.Wallet); err != nil {
+			return &result, height, fmt.Errorf("cheque settled at height %d, failed to persist wallet state: %w", height, err)
+		}
+	}
 
 	return &result, height, nil
 }

@@ -102,6 +102,11 @@ func (b *appBackend) ListModels() ([]ui.ModelItem, error) {
 
 func (b *appBackend) ExecuteSlash(cmd string) (string, bool) {
 	res := commands.Execute(cmd, b.sess, b.agentClient, b.repoRoot)
+	// An empty successful /clear response restores the startup view. Errors
+	// remain visible and must not clear the existing conversation display.
+	if cmd == "/clear" && res.Err == nil {
+		return "", res.Quit
+	}
 	return res.Output, res.Quit
 }
 

@@ -19,6 +19,7 @@ type State struct {
 	VendorURL              string
 	Memory                 *MemoryManager
 	Wallet                 *WalletData
+	WalletLoadErr          error
 	VendorPK               []byte
 	SessionInitialized     bool
 	LastSessionVendorPKHex string
@@ -41,29 +42,8 @@ func NewState() *State {
 		cwd = "."
 	}
 	wallet, err := LoadWallet()
-	if err != nil {
-		if os.IsNotExist(err) {
-			wallet, err = GenerateNewWallet()
-			if err != nil {
-				wallet = &WalletData{
-					Status: "unfunded",
-					Chain:  "base-l2",
-				}
-			}
-		} else {
-			wallet = &WalletData{
-				Status: "unfunded",
-				Chain:  "base-l2",
-			}
-		}
-	} else if wallet == nil {
+	if os.IsNotExist(err) || (err == nil && wallet == nil) {
 		wallet, err = GenerateNewWallet()
-		if err != nil {
-			wallet = &WalletData{
-				Status: "unfunded",
-				Chain:  "base-l2",
-			}
-		}
 	}
 
 	s := &State{
@@ -72,6 +52,7 @@ func NewState() *State {
 		ReasoningEffort:   "medium",
 		Memory:            NewMemoryManager(cwd),
 		Wallet:            wallet,
+		WalletLoadErr:     err,
 		VaultAddress:      "0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5",
 		MerchantPaidUSDC:  make(map[string]float64),
 		MerchantPayoutMap: make(map[string]string),
@@ -164,14 +145,15 @@ func LoadActiveModel() string {
 }
 
 // SaveActiveModel persists the chosen model reference to disk.
-func SaveActiveModel(model string) {
+func SaveActiveModel(model string) error {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		_ = os.Remove(ActiveModelFile())
-		return
+		if err := os.Remove(ActiveModelFile()); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
 	}
-	_ = os.MkdirAll(ConfigDir(), 0700)
-	_ = os.WriteFile(ActiveModelFile(), []byte(model+"\n"), 0600)
+	return writeAtomicFile(ActiveModelFile(), []byte(model+"\n"))
 }
 
 var (
@@ -214,14 +196,16 @@ func LoadTheme() string {
 }
 
 // SaveTheme persists selected theme.
-func SaveTheme(theme string) {
+func SaveTheme(theme string) error {
 	theme = strings.TrimSpace(theme)
 	if theme == "" {
 		theme = "cyber-emerald"
 	}
 	themeMu.Lock()
+	defer themeMu.Unlock()
+	if err := writeAtomicFile(ThemeFile(), []byte(theme+"\n")); err != nil {
+		return err
+	}
 	cachedTheme = theme
-	themeMu.Unlock()
-	_ = os.MkdirAll(ConfigDir(), 0700)
-	_ = os.WriteFile(ThemeFile(), []byte(theme+"\n"), 0600)
+	return nil
 }

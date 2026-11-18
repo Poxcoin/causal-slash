@@ -5,12 +5,16 @@ package agent_test
 
 import (
 	"context"
-	"os"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"csls/internal/agent"
+	"csls/internal/session"
 )
 
 func TestCanonical2026ModelCatalogue(t *testing.T) {
@@ -72,32 +76,81 @@ func TestMerchantDirectRoutingAndKeys(t *testing.T) {
 	}
 }
 
-func TestSharedPoolExecution(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping live network test in short mode")
+func TestProcessQueryRequiresReachableMerchant(t *testing.T) {
+	t.Setenv("CSLS_PUBLIC_RELAYS", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	for _, endpoint := range []string{"", "csls://merchant/anthropic", server.URL} {
+		c := agent.NewClient(&session.State{VendorURL: endpoint})
+		start := time.Now()
+		reply, height, err := c.ProcessQuery(context.Background(), "ping", nil)
+		c.Close()
+		if err == nil || !strings.Contains(err.Error(), "no reachable sovereign CSLS merchant node") || reply != "" || height != 0 {
+			t.Fatalf("endpoint %q: reply=%q height=%d err=%v", endpoint, reply, height, err)
+		}
+		if time.Since(start) > 2*time.Second {
+			t.Fatal("discovery did not fail fast")
+		}
 	}
-	if os.Getenv("GEMINI_API_KEY") == "" && os.Getenv("GROQ_API_KEY") == "" && os.Getenv("OPENROUTER_API_KEY") == "" {
-		t.Skip("skipping live network test: no upstream API key env vars set")
+}
+
+func TestDiscoverVendorWANLatency(t *testing.T) {
+	t.Setenv("CSLS_PUBLIC_RELAYS", "")
+	pk := agent.CanonicalMerchants()[0].PublicKeyHex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+		fmt.Fprintf(w, `{"vendor_pk":%q}`, pk)
+	}))
+	defer server.Close()
+	c := agent.NewClient(&session.State{VendorURL: server.URL})
+	defer c.Close()
+	start := time.Now()
+	endpoint, key, err := c.DiscoverVendor(context.Background())
+	if err != nil || endpoint != server.URL || len(key) != 33 {
+		t.Fatalf("endpoint=%q key=%x err=%v", endpoint, key, err)
 	}
-
-	router := agent.NewUpstreamRouter()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	messages := []map[string]string{
-		{"role": "user", "content": "Return the word PONG and nothing else."},
+	if time.Since(start) < 100*time.Millisecond {
+		t.Fatal("health handler was not awaited")
 	}
+	// Discover a relay even when no explicit merchant endpoint is configured.
+	t.Setenv("CSLS_PUBLIC_RELAYS", "ftp://invalid, file:///invalid, "+server.URL+", "+server.URL)
+	c = agent.NewClient(&session.State{})
+	defer c.Close()
+	if endpoint, _, err := c.DiscoverVendor(context.Background()); err != nil || endpoint != server.URL {
+		t.Fatalf("relay discovery: %s %v", endpoint, err)
+	}
+}
 
-	var chunks []string
-	reply, err := router.ExecuteStreaming(ctx, "google:gemini-3.5-flash", messages, func(chunk string) {
-		chunks = append(chunks, chunk)
-	})
-
+func TestDiscoverVendorFailsFast(t *testing.T) {
+	t.Setenv("CSLS_PUBLIC_RELAYS", "")
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) }))
+	defer failed.Close()
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	defer slow.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("ExecuteStreaming failed: %v", err)
+		t.Fatal(err)
 	}
-
-	if len(reply) == 0 {
-		t.Fatalf("expected non-empty reply")
+	unreachable := "http://" + listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, endpoint := range []string{failed.URL, slow.URL, unreachable} {
+		c := agent.NewClient(&session.State{VendorURL: endpoint})
+		start := time.Now()
+		_, _, err := c.DiscoverVendor(context.Background())
+		c.Close()
+		if err == nil || !strings.Contains(err.Error(), "no vendor reachable") {
+			t.Fatalf("endpoint=%s err=%v", endpoint, err)
+		}
+		if time.Since(start) > 2500*time.Millisecond {
+			t.Fatal("discovery exceeded bounded timeout")
+		}
 	}
 }

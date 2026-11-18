@@ -38,6 +38,90 @@ jobs:
       - name: Run Memory Safety Tests (AddressSanitizer & UB Sanitizer)
         run: make test-asan
 
+      - name: Run Bloodhound Memory Safety Tests
+        run: make test-bloodhound
+
+      - name: Run Network Daemon Tests
+        run: make test-daemon
+
+      - name: Run ThreadSanitizer Tests
+        run: make test-tsan
+
+  go-client:
+    name: Go Client, Race Detector & Interactive PTY
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+      # go.mod may request a newer toolchain; Go 1.22 bootstraps it.
+      GOTOOLCHAIN: auto
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: client/go.sum
+
+      - name: Install Native Dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc libssl-dev make python3
+
+      - name: Build Static C Library
+        run: make libcausal_slash.a && make all
+
+      - name: Set up Python for Provider E2E
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Provider E2E Dependencies
+        run: python3 -m pip install -e . coincurve
+
+      - name: Build Interactive Client Binary
+        working-directory: client
+        run: go build -o ../bin/csls ./cmd/csls
+
+      - name: Vet Go Client
+        working-directory: client
+        run: go vet ./...
+
+      - name: Run Go Race Tests
+        working-directory: client
+        run: go test -race ./...
+
+      - name: Verify Interactive PTY
+        run: python3 tools/verify_interactive_pty.py
+
+      - name: Check Gate 1 Persistence and Gate 6 Zero Client Web2 API Keys
+        run: bash scripts/check.sh --gates-only
+
+  ts-integrations:
+    name: TypeScript Integrations
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        integration: [agentkit-causal-slash, elizaos-plugin-causal-slash]
+    defaults:
+      run:
+        working-directory: integrations/${{ matrix.integration }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Integration Dependencies
+        run: npm install --no-package-lock
+
+      - name: Build Integration
+        run: npm run build
+
+      - name: Test Integration
+        run: npm test
+
   python-sdk:
     name: Python Native SDK & Multi-Agent Simulations
     runs-on: ubuntu-latest

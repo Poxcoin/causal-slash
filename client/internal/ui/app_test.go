@@ -43,6 +43,9 @@ func (b *testBackend) ActiveModel() string {
 }
 
 func (b *testBackend) ExecuteSlash(cmd string) (string, bool) {
+	if cmd == "/clear" {
+		return "", false
+	}
 	if cmd == "/help" {
 		return "Available commands: /help, /bond, /status, /model, /wallet, /clear, /exit", false
 	}

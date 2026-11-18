@@ -5,6 +5,7 @@ package session
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,31 +31,25 @@ func CopyToClipboard(text string) error {
 		// Write to clipboard selection
 		cmdClip := exec.Command("xclip", "-selection", "clipboard")
 		cmdClip.Stdin = strings.NewReader(text)
-		_ = cmdClip.Run()
 
 		// Write to primary selection (for middle-click / terminal selection)
 		cmdPrim := exec.Command("xclip", "-selection", "primary")
 		cmdPrim.Stdin = strings.NewReader(text)
-		_ = cmdPrim.Run()
-		firstErr = nil
+		firstErr = clipboardCommandErrors(firstErr, text, cmdClip, cmdPrim)
 	} else if _, err := exec.LookPath("xsel"); err == nil {
 		cmdClip := exec.Command("xsel", "--clipboard", "--input")
 		cmdClip.Stdin = strings.NewReader(text)
-		_ = cmdClip.Run()
 
 		cmdPrim := exec.Command("xsel", "--primary", "--input")
 		cmdPrim.Stdin = strings.NewReader(text)
-		_ = cmdPrim.Run()
-		firstErr = nil
+		firstErr = clipboardCommandErrors(firstErr, text, cmdClip, cmdPrim)
 	} else if _, err := exec.LookPath("wl-copy"); err == nil {
 		cmdWl := exec.Command("wl-copy")
 		cmdWl.Stdin = strings.NewReader(text)
-		_ = cmdWl.Run()
 
 		cmdWlPrim := exec.Command("wl-copy", "--primary")
 		cmdWlPrim.Stdin = strings.NewReader(text)
-		_ = cmdWlPrim.Run()
-		firstErr = nil
+		firstErr = clipboardCommandErrors(firstErr, text, cmdWl, cmdWlPrim)
 	}
 
 	// 3. Always emit OSC-52 escape sequence to stdout/tty
@@ -69,4 +64,19 @@ func CopyToClipboard(text string) error {
 	}
 
 	return firstErr
+}
+
+// A direct backend replaces the fallback error only if every selection succeeds.
+func clipboardCommandErrors(fallbackErr error, text string, commands ...*exec.Cmd) error {
+	var runErrors []error
+	for _, cmd := range commands {
+		cmd.Stdin = strings.NewReader(text)
+		if runErr := cmd.Run(); runErr != nil {
+			runErrors = append(runErrors, fmt.Errorf("%s: %w", cmd.Path, runErr))
+		}
+	}
+	if len(runErrors) == 0 {
+		return nil
+	}
+	return errors.Join(append(runErrors, fallbackErr)...)
 }

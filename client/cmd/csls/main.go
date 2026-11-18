@@ -60,6 +60,9 @@ func main() {
 	}
 
 	sess := session.NewState()
+	if err := sess.Memory.LoadError(); err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot load conversation memory; repair the file and restart, or use /clear to discard it. Saving is disabled: %v\n", err)
+	}
 	agentClient := agent.NewClient(sess)
 	defer agentClient.Close()
 
@@ -82,7 +85,8 @@ func main() {
 			wizard := ui.NewThemeWizard()
 			wp := tea.NewProgram(wizard)
 			if _, err := wp.Run(); err != nil {
-				session.SaveTheme("cyber-emerald")
+				fmt.Fprintf(os.Stderr, "Theme wizard failed: %v\n", err)
+				os.Exit(1)
 			}
 			return
 		}

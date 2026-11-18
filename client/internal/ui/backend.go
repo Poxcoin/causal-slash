@@ -29,6 +29,7 @@ type Backend interface {
 	ActiveModel() string
 
 	// ExecuteSlash processes slash commands (/help, /status, /bond, etc.).
+	// A successful /clear returns empty output; errors must return visible output.
 	ExecuteSlash(cmd string) (output string, quit bool)
 
 	// StreamQuery streams tokens from frontier vendor node over channels.

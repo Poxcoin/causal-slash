@@ -14,7 +14,7 @@ cd "$REPO_ROOT"
 
 # 1. Gate 1: Check for swallowed errors on critical persistence in Go
 echo "[-] Checking Gate 1: Zero swallowed errors on persistence..."
-SWALLOWED=$(grep -rnE "(_ = SaveWallet|_ = GenerateNewWallet|_ = m\.Save\(\)|_ = session\.SaveWallet)" client/ 2>/dev/null || true)
+SWALLOWED=$(grep -rnE --include='*.go' '_[[:space:]]*(:=|=)[[:space:]]*([[:alnum:]_]+\.)*(SaveWallet|GenerateNewWallet|Save|AddTurn|SaveActiveModel|SaveTheme|AppendInputHistory|MkdirAll|Remove|WriteFile)\(' client/ || test "$?" -eq 1)
 if [ -n "$SWALLOWED" ]; then
     echo "[FAIL] Found swallowed persistence errors in Go code:"
     echo "$SWALLOWED"
@@ -22,8 +22,25 @@ if [ -n "$SWALLOWED" ]; then
 fi
 echo "    [PASS] No critical persistence errors swallowed."
 
+# Gate 6 runs before expensive suites, including in gate-only CI mode.
+echo "[-] Checking Gate 6: Zero Client Web2 API Keys..."
+WEB2_KEYS=$(grep -rnaE "GROQ_API_KEY|OPENROUTER_API_KEY|GEMINI_API_KEY" client/ || test "$?" -eq 1)
+if [ -n "$WEB2_KEYS" ]; then
+    echo "[FAIL] Found forbidden client Web2 API key references:"
+    echo "$WEB2_KEYS"
+    exit 1
+fi
+echo "    [PASS] No client Web2 API key references."
+if [ "${1:-}" = "--gates-only" ]; then
+    exit 0
+elif [ "$#" -ne 0 ]; then
+    echo "Usage: scripts/check.sh [--gates-only]" >&2
+    exit 1
+fi
+
 # 2. Gate 2: C11 Compilation & Memory Safety
 echo "[-] Checking Gate 2: C11 Engine Compilation and Test..."
+make all
 make test
 echo "    [PASS] C11 Engine verified at >500k ops/sec."
 
@@ -43,5 +60,5 @@ pytest -q
 echo "    [PASS] Pytest suite passed."
 
 echo "======================================================================"
-echo "[CI GATE] ALL 5 PRODUCTION GATES PASSED (Tier-1 Quality Standard)"
+echo "[CI GATE] ALL 6 PRODUCTION GATES PASSED (Tier-1 Quality Standard)"
 echo "======================================================================"

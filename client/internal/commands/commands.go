@@ -33,6 +33,8 @@ const (
 	colorPrompt = "#7AA2F7"
 )
 
+var copyToClipboard = session.CopyToClipboard
+
 // CommandInfo describes a registered slash command.
 type CommandInfo struct {
 	Name        string
@@ -68,6 +70,7 @@ var Registry = []CommandInfo{
 // Result is the outcome of a command execution.
 type Result struct {
 	Output  string
+	Err     error
 	Quit    bool
 	ExecCmd *exec.Cmd
 }
@@ -230,7 +233,10 @@ func runHelp(target string) Result {
 func runClear(sess *session.State) Result {
 	green := lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorDim))
-	cleared := sess.Memory.Clear()
+	cleared, err := sess.Memory.Clear()
+	if err != nil {
+		return Result{Output: fmt.Sprintf("Cannot clear conversation memory: %v", err), Err: err}
+	}
 	return Result{
 		Output: green.Render("Conversation memory reset") + " " + dim.Render(fmt.Sprintf("(%d turns cleared).", cleared)),
 	}
@@ -286,7 +292,7 @@ func runCopy(sess *session.State, args []string) Result {
 		return Result{Output: dim.Render("Nothing to copy.")}
 	}
 
-	if err := session.CopyToClipboard(textToCopy); err != nil {
+	if err := copyToClipboard(textToCopy); err != nil {
 		return Result{Output: errStyle.Render(fmt.Sprintf("Clipboard error: %v", err))}
 	}
 
@@ -476,8 +482,10 @@ func runDeposit(sess *session.State, args []string) Result {
 		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Agent Address:"), dim.Render(addr)))
 		sb.WriteString(fmt.Sprintf("  %-22s %s\n", teal.Render("Network:"), dim.Render("Base Sepolia (Chain ID 84532)")))
 		sb.WriteString("\n" + teal.Render("Non-Custodial Cast CLI Instructions:") + "\n")
+		sb.WriteString(dim.Render("Optional testnet MockUSDC faucet (mint to the depositing wallet):") + "\n")
+		sb.WriteString(teal.Render(fmt.Sprintf("   cast send %s \"mint(address,uint256)\" %s 5000000 --rpc-url https://sepolia.base.org", session.DefaultBaseSepoliaUSDC, addr)) + "\n\n")
 		sb.WriteString(dim.Render("1. Approve USDC transfer to PerformanceCollateralVault:") + "\n")
-		sb.WriteString(teal.Render(fmt.Sprintf("   cast send <USDC_ADDR> \"approve(address,uint256)\" %s 5000000 --rpc-url https://sepolia.base.org", sess.VaultAddress)) + "\n\n")
+		sb.WriteString(teal.Render(fmt.Sprintf("   cast send %s \"approve(address,uint256)\" %s 5000000 --rpc-url https://sepolia.base.org", session.DefaultBaseSepoliaUSDC, sess.VaultAddress)) + "\n\n")
 		sb.WriteString(dim.Render("2. Call depositCollateral on the PerformanceCollateralVault contract:") + "\n")
 		sb.WriteString(teal.Render(fmt.Sprintf("   cast send %s \"depositCollateral(uint256,bytes32,address)\" 5000000 <NONCE_MERKLE_ROOT> %s --rpc-url https://sepolia.base.org", sess.VaultAddress, addr)) + "\n\n")
 		sb.WriteString(dim.Render("3. Run `/deposit sync` to verify on-chain confirmation in terminal.") + "\n")
@@ -832,8 +840,10 @@ func runModel(sess *session.State, agentClient *agent.Client, args []string) Res
 			return Result{Output: errStyle.Render(fmt.Sprintf("Invalid model '%s': expected <provider>:<model_id> (e.g. anthropic:claude-opus-5.5, openai:gpt-6.1-sol); type /model and pick from the list", args[0]))}
 		}
 		canonicalRef := p + ":" + id
+		if err := session.SaveActiveModel(canonicalRef); err != nil {
+			return Result{Output: errStyle.Render(fmt.Sprintf("Cannot save active model: %v", err)), Err: err}
+		}
 		sess.CurrentModel = canonicalRef
-		session.SaveActiveModel(canonicalRef)
 
 		// Switch merchant payout destination directly
 		m := agent.MerchantForModel(canonicalRef)
@@ -1468,7 +1478,9 @@ func runTheme(args []string) Result {
 		if matchedID == "" {
 			return Result{Output: errStyle.Render(fmt.Sprintf("Unknown theme '%s'. Available themes: cyber-emerald, neon-amber, cyberpunk-cyan, monochrome-dark", args[0]))}
 		}
-		session.SaveTheme(matchedID)
+		if err := session.SaveTheme(matchedID); err != nil {
+			return Result{Output: errStyle.Render(fmt.Sprintf("Cannot save theme: %v", err)), Err: err}
+		}
 		return Result{Output: green.Render("Theme successfully set to: ") + teal.Render(matchedID) + "\n" + dim.Render("Theme persisted to ~/.csls/theme")}
 	}
 

@@ -76,12 +76,12 @@ func activePromptColor() string {
 	}
 }
 
-
 // ThemeWizard provides a clean interactive first-launch theme selection model.
 type ThemeWizard struct {
 	cursor   int
 	selected string
 	quitting bool
+	saveErr  error
 }
 
 // NewThemeWizard creates the theme onboarding wizard.
@@ -101,7 +101,7 @@ func (m ThemeWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
-			session.SaveTheme("cyber-emerald")
+			// Cancelling must not overwrite an existing theme or hide save errors.
 			m.quitting = true
 			return m, tea.Quit
 
@@ -121,7 +121,11 @@ func (m ThemeWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter", " ":
 			chosen := AvailableThemes[m.cursor].ID
-			session.SaveTheme(chosen)
+			if err := session.SaveTheme(chosen); err != nil {
+				m.saveErr = err
+				return m, nil
+			}
+			m.saveErr = nil
 			m.selected = chosen
 			m.quitting = true
 			return m, tea.Quit
@@ -158,7 +162,10 @@ func (m ThemeWizard) View() string {
 		sb.WriteString(fmt.Sprintf("%s[%d] %-18s %s\n", cursor, i+1, itemStyle.Render(t.Name), dim.Render(t.Description)))
 	}
 
-	sb.WriteString("\n" + dim.Render("Use [Up/Down] arrows to navigate • [Enter] to confirm • [Esc] for default") + "\n")
+	if m.saveErr != nil {
+		sb.WriteString("\nCannot save theme: " + m.saveErr.Error() + "\n")
+	}
+	sb.WriteString("\n" + dim.Render("Use [Up/Down] arrows to navigate • [Enter] to confirm • [Esc] to cancel") + "\n")
 
 	return box.Render(sb.String())
 }

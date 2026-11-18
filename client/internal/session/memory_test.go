@@ -20,11 +20,11 @@ func TestInputHistoryPersistence(t *testing.T) {
 	}
 
 	// Append items
-	AppendInputHistory("/help")
-	AppendInputHistory("/model")
-	// Consecutive duplicate should be ignored
-	AppendInputHistory("/model")
-	AppendInputHistory("hello world")
+	for _, input := range []string{"/help", "/model", "/model", "hello world"} {
+		if err := AppendInputHistory(input); err != nil {
+			t.Fatalf("AppendInputHistory failed: %v", err)
+		}
+	}
 
 	h = LoadInputHistory()
 	if len(h) != 3 {
@@ -82,7 +82,9 @@ func TestMemoryManagerPersistence(t *testing.T) {
 
 	// Test compaction
 	for i := 0; i < 10; i++ {
-		_ = mm.AddTurn("query", "reply")
+		if err := mm.AddTurn("query", "reply"); err != nil {
+			t.Fatalf("AddTurn failed: %v", err)
+		}
 	}
 	purged, err := mm.CompactMemory(2)
 	if err != nil {
@@ -93,7 +95,10 @@ func TestMemoryManagerPersistence(t *testing.T) {
 	}
 
 	// Test Clear
-	cleared := mm.Clear()
+	cleared, err := mm.Clear()
+	if err != nil {
+		t.Fatalf("Clear failed: %v", err)
+	}
 	if cleared <= 0 {
 		t.Fatalf("expected cleared > 0, got %d", cleared)
 	}

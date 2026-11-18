@@ -502,7 +502,11 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.history = append(m.history, line)
 			m.historyIdx = len(m.history)
-			session.AppendInputHistory(line)
+			if err := session.AppendInputHistory(line); err != nil {
+				m.lines = append(m.lines, "Cannot save input history: "+err.Error())
+				m.flashMsg = "Cannot save input history: " + err.Error()
+				m.flashUntil = time.Now().Add(5 * time.Second)
+			}
 
 			promptMarker := lipgloss.NewStyle().Foreground(lipgloss.Color(activePromptColor())).Bold(true).Render("> ")
 			userText := styleInput(line)
@@ -516,9 +520,10 @@ func (m AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if quit {
 					return m, tea.Quit
 				}
-				if line == "/clear" {
+				if line == "/clear" && output == "" {
 					m.lines = nil
-				} else if output != "" {
+				}
+				if output != "" {
 					outLines := strings.Split(output, "\n")
 					m.lines = append(m.lines, outLines...)
 					m.lines = append(m.lines, "")

@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	DefaultBaseSepoliaUSDC  = "0xa07eA15D1FE0B884Ffb51b19d98D938b2Bf04D6B"
 	DefaultVaultAddress     = "0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5"
 	VaultsSelectorHex       = "a622ee7c" // vaults(address)
 	AllocatedExpSelectorHex = "62fe0452" // allocatedExposure(address)
