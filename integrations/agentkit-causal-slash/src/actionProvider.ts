@@ -74,8 +74,8 @@ export class CausalSlashActionProvider {
 
     this.agentPk = deriveCompressedPublicKey(this.agentSk);
     this.agentPkHex = "0x" + this.agentPk.toString("hex");
-    this.vaultAddress = options.vaultAddress || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
-    this.baseRpcUrl = options.baseRpcUrl || "https://mainnet.base.org";
+    this.vaultAddress = options.vaultAddress || "0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5";
+    this.baseRpcUrl = options.baseRpcUrl || "https://sepolia.base.org";
     this.defaultEndpointUrl = options.defaultEndpointUrl;
   }
 
@@ -379,7 +379,7 @@ export class CausalSlashActionProvider {
         action: "inspect_vault_bond",
         data: {
           vaultAddress: targetVault,
-          chain: "Base L2 (Chain ID 8453)",
+          chain: "Base L2 (via configured RPC)",
           rpcUrl,
           agentAddress: "0x" + this.agentPkAddressHex(),
           masterBondUsdc: microToUsdc(bondMicro),
@@ -393,11 +393,12 @@ export class CausalSlashActionProvider {
         timestamp: new Date().toISOString()
       };
     } catch (err: any) {
+      const errMsg = String(err?.message ?? err ?? "Unknown vault inspection error");
       return {
         success: false,
         action: "inspect_vault_bond",
         data: null,
-        error: err.message,
+        error: errMsg.startsWith("[FAIL] ") ? errMsg : `[FAIL] ${errMsg}`,
         timestamp: new Date().toISOString()
       };
     }

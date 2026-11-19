@@ -121,7 +121,7 @@ export class CausalSettlementService {
     this.agentPk = ecdh.getPublicKey(null, "compressed");
     this.agentPkHex = "0x" + this.agentPk.toString("hex");
 
-    this.vaultAddress = vaultAddress || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512";
+    this.vaultAddress = vaultAddress || "0x8faAD06ef5937Ad1019CD49f5Dcab36181e266A5";
   }
 
   /**

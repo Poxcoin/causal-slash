@@ -4,6 +4,14 @@
   "description": "ElizaOS Plugin for Causal-Slash Protocol - Streaming Per-Token M2M Settlement Backed by Base L2 Collateral Vaults",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "files": ["dist/src", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Poxcoin/causal-slash.git",
+    "directory": "integrations/elizaos-plugin-causal-slash"
+  },
+  "homepage": "https://kadoclub.net",
+  "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsc",
     "test": "node --test dist/test/plugin.test.js",

@@ -4,6 +4,14 @@
   "description": "Coinbase AgentKit Action Provider for Causal-Slash Protocol - Sovereign M2M Micro-Payments and Remote Compute Clearing on Base L2",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "files": ["dist/src", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Poxcoin/causal-slash.git",
+    "directory": "integrations/agentkit-causal-slash"
+  },
+  "homepage": "https://kadoclub.net",
+  "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsc",
     "test": "node --test dist/test/actionProvider.test.js",

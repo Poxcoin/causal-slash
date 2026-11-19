@@ -280,13 +280,32 @@ The protocol is validated through a comprehensive multi-tier test suite with 100
 │   ├── quickstart_agent.py                   # Agent micro-payment quickstart
 │   └── quickstart_sidecar.py                 # SlashProxy sidecar quickstart
 ├── scripts/                                  # Deployment Scripts & Receipts
-│   └── deploy_base_sepolia.js                # Base Sepolia contract deployer
+│   ├── deploy_base_sepolia.js                # Base Sepolia contract deployer
+│   ├── deploy_base_mainnet.js                # Mainnet deployer (deferred pending pilot and external audit)
+│   └── run_testnet_sandbox.py                # Local Base Sepolia cheque meter
+├── deploy/                                   # Sandbox Deployment
+│   └── csls-sandbox.service                  # Sandbox systemd unit
 ├── Makefile                                  # Build and audit orchestration
 ├── LICENSE                                   # Dual Licensing Specification (Apache-2.0 / MIT)
 └── README.md                                 # Technical Specification
 ```
 
 ## 8. Quickstart & Verification Commands
+
+### Testnet Sandbox Quickstart
+
+From the repository root with SDK dependencies and the `csls` binary installed,
+run the first command in one terminal; run the next two in another:
+
+```bash
+python3 scripts/run_testnet_sandbox.py
+python3 examples/quickstart_agent.py
+CSLS_PUBLIC_RELAYS=http://127.0.0.1:8402 csls
+```
+
+The Python example is a separate in-process cheque demonstration. The terminal
+connects to the sandbox meter, which verifies test cheques, not inference or
+on-chain settlement. Use testnet funds only; see [sandbox deployment](deploy/SANDBOX_DEPLOY.md).
 
 ### 1. Execute EVM Solidity Test Suite:
 ```bash
@@ -323,7 +342,10 @@ python3 examples/quickstart_agent.py
 ```
 
 ### 7. Sovereign Go Terminal Client (`csls` CLI):
-Zero manual gateways, zero local background daemons, zero configuration required. The client works out of the box:
+Fund a Base Sepolia testnet collateral bond via `/deposit`; no starter bond is
+active by default. Connect to a testnet sandbox using `CSLS_PUBLIC_RELAYS`, or
+start a local sandbox with `python3 scripts/run_testnet_sandbox.py` and use the
+relay URL shown in the Testnet Sandbox Quickstart above:
 ```
 Client visits site -> Installs terminal -> Funds bond -> Works like clockwork.
 ```
@@ -337,7 +359,7 @@ csls
 
 The terminal shell renders with Charm Bubble Tea & Lip Gloss, featuring persistent input history (`~/.csls/history`), project memory, and live cryptoeconomic settlement:
 * `/help` — show command reference table
-* `/deposit [amount]` — fund or top up Base L2 collateral bond (5.0 USDC starter bond active by default)
+* `/deposit [amount]` — follow the on-chain funding instructions for a Base Sepolia testnet collateral bond; fund it explicitly with testnet assets
 * `/status` — live node status and sovereign upstream routing summary
 * `/bond` — query Base L2 collateral bond and free margin
 * `/wallet [new|info]` — inspect or create agent wallet (secp256k1 keypair)

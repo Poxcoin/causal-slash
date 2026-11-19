@@ -35,6 +35,9 @@ cache/
 !/ISSUE_TEMPLATE.md
 !.github/**
 !docs/**
+!/deploy/SANDBOX_DEPLOY.md
+!/integrations/agentkit-causal-slash/README.md
+!/integrations/elizaos-plugin-causal-slash/README.md
 !/AGENT_COORDINATION_BOARD.md
 !/ARCHITECTURE_MANDATE.md
 !/ROLE_MANDATE.md
