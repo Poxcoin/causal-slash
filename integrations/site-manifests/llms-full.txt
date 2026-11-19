@@ -47,7 +47,7 @@ There is no registration portal, no e-mail verification, no hosted account: iden
 ## Integration
 
 - Coinbase AgentKit: `CausalSlashActionProvider` exposes `causal_create_channel`, `causal_sign_stream_cheque`, `causal_invoke_paid_inference`, and `causal_inspect_vault_bond` as native agent actions.
-- ElizaOS: `@elizaos/plugin-causal-slash` provides `STREAM_TOKEN_SETTLEMENT` and `GET_CHANNEL_BALANCE` actions plus a collateral state provider, settling per token against Base L2 vaults.
+- ElizaOS: `@causal-slash/elizaos-plugin` provides `STREAM_TOKEN_SETTLEMENT` and `GET_CHANNEL_BALANCE` actions plus a collateral state provider, settling per token against Base L2 vaults.
 - HTTP: Transport 167-byte Session MAC cheques over the `X-Causal-Cheque` header; sessions bootstrap at `/v1/session/init`; receiver verification at `/v1/cheque/verify`.
 
 ## Economics

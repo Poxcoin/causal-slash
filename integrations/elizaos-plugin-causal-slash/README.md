@@ -1,8 +1,8 @@
-# @elizaos/plugin-causal-slash
+# @causal-slash/elizaos-plugin
 > ElizaOS Plugin for Causal-Slash Protocol - Streaming Per-Token M2M Micro-Settlement Backed by Base L2 Collateral Vaults
 
 ## Overview
-`@elizaos/plugin-causal-slash` integrates Causal-Slash Protocol into autonomous agents built with ElizaOS (ai16z).
+`@causal-slash/elizaos-plugin` integrates Causal-Slash Protocol into autonomous agents built with ElizaOS (ai16z).
 
 It enables agents to purchase remote frontier LLM inference, vector retrieval, and web intelligence on a true per-token streaming basis. Settlement occurs off-chain in RAM via monotonic 167-byte Session MAC micro-cheques backed by smart contract vaults on Base L2 (`PerformanceCollateralVault.sol`, `SwarmDelegationVault.sol`).
 
@@ -15,14 +15,14 @@ It enables agents to purchase remote frontier LLM inference, vector retrieval, a
 
 ## Installation
 ```bash
-npm install @elizaos/plugin-causal-slash
+npm install @causal-slash/elizaos-plugin
 ```
 
 ## Plugin Registration
 
 ```typescript
 import { AgentRuntime } from "@elizaos/core";
-import { causalSlashPlugin } from "@elizaos/plugin-causal-slash";
+import { causalSlashPlugin } from "@causal-slash/elizaos-plugin";
 
 const runtime = new AgentRuntime({
   plugins: [causalSlashPlugin]

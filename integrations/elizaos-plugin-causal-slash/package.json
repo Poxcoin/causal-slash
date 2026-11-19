@@ -1,5 +1,5 @@
 {
-  "name": "@elizaos/plugin-causal-slash",
+  "name": "@causal-slash/elizaos-plugin",
   "version": "1.0.0",
   "description": "ElizaOS Plugin for Causal-Slash Protocol - Streaming Per-Token M2M Settlement Backed by Base L2 Collateral Vaults",
   "main": "dist/src/index.js",

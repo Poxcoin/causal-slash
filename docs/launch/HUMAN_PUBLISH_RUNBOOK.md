@@ -179,7 +179,7 @@ for package in agentkit-causal-slash elizaos-plugin-causal-slash; do
   test "$(readlink "integrations/$package/node_modules")" = '../../node_modules'
 done
 npm view @causal-slash/agentkit-action-provider@1.0.0 name version dist.integrity
-npm view @elizaos/plugin-causal-slash@1.0.0 name version dist.integrity
+npm view @causal-slash/elizaos-plugin@1.0.0 name version dist.integrity
 git status --short
 ```
 

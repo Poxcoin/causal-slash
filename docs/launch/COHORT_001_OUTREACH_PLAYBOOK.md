@@ -36,15 +36,15 @@ docs before sending cheques. Do not treat a local receipt as an on-chain payment
 ## B. ElizaOS, CrewAI, MCP, and Python agent builders
 
 Use `causal-slash-sdk` for Python-side integration, or
-`@elizaos/plugin-causal-slash` for ElizaOS:
+`@causal-slash/elizaos-plugin` for ElizaOS:
 [plugin README](../../integrations/elizaos-plugin-causal-slash/README.md).
 CrewAI and MCP are integration targets for a Python wrapper/tool, not a claim
 that dedicated framework packages have been shipped.
 
 | Channel | Copy, personalize, then send manually |
 | --- | --- |
-| X | ElizaOS / CrewAI / MCP / Python builders: want to test agent-native streaming cheques? CSLS Cohort #001 offers causal-slash-sdk and @elizaos/plugin-causal-slash source integrations. Start with the local quickstart, verify 10 test cheques, then share integration feedback. https://kadoclub.net/ |
-| Discord | [Name], could we pair on a small [framework] tool around causal-slash-sdk, or register @elizaos/plugin-causal-slash in your ElizaOS runtime? First milestone is 10 accepted test cheques, not production service delivery. Happy to help with session bootstrap and monotonic counters. |
+| X | ElizaOS / CrewAI / MCP / Python builders: want to test agent-native streaming cheques? CSLS Cohort #001 offers causal-slash-sdk and @causal-slash/elizaos-plugin source integrations. Start with the local quickstart, verify 10 test cheques, then share integration feedback. https://kadoclub.net/ |
+| Discord | [Name], could we pair on a small [framework] tool around causal-slash-sdk, or register @causal-slash/elizaos-plugin in your ElizaOS runtime? First milestone is 10 accepted test cheques, not production service delivery. Happy to help with session bootstrap and monotonic counters. |
 | Telegram | [Name], interested in a testnet-only CSLS integration for [agent]? Python SDK or ElizaOS plugin, a short quickstart, then 10 verifiable cheques. Could you share your runtime and one integration pain point? |
 | GitHub | Subject: Optional streaming-cheque integration for [repo]. We can propose a minimal Python tool using causal-slash-sdk, or an ElizaOS plugin registration. Acceptance: authenticated session, 10 accepted cheques, reproducible integration instructions, and maintainer feedback. Is that in scope? |
 

@@ -36,7 +36,7 @@ class MockElizaRuntime implements IAgentRuntime {
   }
 }
 
-describe("ElizaOS @elizaos/plugin-causal-slash Test Suite", () => {
+describe("ElizaOS @causal-slash/elizaos-plugin Test Suite", () => {
   const vendorSk = crypto.randomBytes(32);
   const vendorEcdh = crypto.createECDH("secp256k1");
   vendorEcdh.setPrivateKey(vendorSk);
